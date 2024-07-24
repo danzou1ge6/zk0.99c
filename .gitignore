@@ -1,0 +1,3 @@
+/build
+/.xmake
+/mont/src/mont.cuh

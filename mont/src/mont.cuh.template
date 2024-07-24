@@ -1,0 +1,385 @@
+#ifndef MONT_H
+#define MONT_H
+
+#include <iostream>
+#include <iomanip>
+
+namespace mont256
+{
+  typedef u_int32_t u32;
+
+  struct Number;
+
+  struct Number2
+  {
+    u32 c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15;
+
+    __host__ __device__ __forceinline__ void split(Number &hi, Number &lo) const;
+
+    static __host__ __device__ __forceinline__ Number2 load(const u32 *p, u32 stride = 1)
+    {
+      Number2 n;
+      n.c0 = p[0];
+      n.c1 = p[stride];
+      n.c2 = p[2 * stride];
+      n.c3 = p[3 * stride];
+      n.c4 = p[4 * stride];
+      n.c5 = p[5 * stride];
+      n.c6 = p[6 * stride];
+      n.c7 = p[7 * stride];
+      n.c8 = p[8 * stride];
+      n.c9 = p[9 * stride];
+      n.c10 = p[10 * stride];
+      n.c11 = p[11 * stride];
+      n.c12 = p[12 * stride];
+      n.c13 = p[13 * stride];
+      n.c14 = p[14 * stride];
+      n.c15 = p[15 * stride];
+      return n;
+    }
+
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    {
+      p[0] = c0;
+      p[stride] = c1;
+      p[2 * stride] = c2;
+      p[3 * stride] = c3;
+      p[4 * stride] = c4;
+      p[5 * stride] = c5;
+      p[6 * stride] = c6;
+      p[7 * stride] = c7;
+      p[8 * stride] = c8;
+      p[9 * stride] = c9;
+      p[10 * stride] = c10;
+      p[11 * stride] = c11;
+      p[12 * stride] = c12;
+      p[13 * stride] = c13;
+      p[14 * stride] = c14;
+      p[15 * stride] = c15;
+    }
+  };
+
+  // A bit number.
+  struct Number
+  {
+    // Little endian
+    u32 c0, c1, c2, c3, c4, c5, c6, c7;
+
+    __host__ __device__ Number() {}
+
+    static __host__ __device__ __forceinline__ Number zero() {
+      Number n;
+      n.c0 = 0;
+      n.c1 = 0;
+      n.c2 = 0;
+      n.c3 = 0;
+      n.c4 = 0;
+      n.c5 = 0;
+      n.c6 = 0;
+      n.c7 = 0;
+      return n;
+    }
+
+    // Load/Store a number from memory, where words are stored non-contiguously
+    static __host__ __device__ __forceinline__ Number load(const u32 *p, u32 stride = 1)
+    {
+      Number n;
+      n.c0 = p[0];
+      n.c1 = p[stride];
+      n.c2 = p[2 * stride];
+      n.c3 = p[3 * stride];
+      n.c4 = p[4 * stride];
+      n.c5 = p[5 * stride];
+      n.c6 = p[6 * stride];
+      n.c7 = p[7 * stride];
+      return n;
+    }
+
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    {
+      p[0] = c0;
+      p[stride] = c1;
+      p[2 * stride] = c2;
+      p[3 * stride] = c3;
+      p[4 * stride] = c4;
+      p[5 * stride] = c5;
+      p[6 * stride] = c6;
+      p[7 * stride] = c7;
+    }
+
+    // Big number addition/subtraction. NOT ON Fp.
+    __device__ __forceinline__ Number operator+(const Number &rhs) const &
+    {
+      Number n;
+      asm volatile(
+          "add.cc.u32 %0, %8, %16;"
+          "addc.cc.u32 %1, %9, %17;"
+          "addc.cc.u32 %2, %10, %18;"
+          "addc.cc.u32 %3, %11, %19;"
+          "addc.cc.u32 %4, %12, %20;"
+          "addc.cc.u32 %5, %13, %21;"
+          "addc.cc.u32 %6, %14, %22;"
+          "addc.cc.u32 %7, %15, %23;"
+          : "=r"(n.c0), "=r"(n.c1), "=r"(n.c2), "=r"(n.c3), "=r"(n.c4), "=r"(n.c5), "=r"(n.c6), "=r"(n.c7)
+          : "r"(c0), "r"(c1), "r"(c2), "r"(c3), "r"(c4), "r"(c5), "r"(c6), "r"(c7),
+            "r"(rhs.c0), "r"(rhs.c1), "r"(rhs.c2), "r"(rhs.c3), "r"(rhs.c4), "r"(rhs.c5), "r"(rhs.c6), "r"(rhs.c7));
+      return n;
+    }
+
+    __device__ __forceinline__ Number operator-(const Number &rhs) const &
+    {
+      Number n;
+      asm volatile(
+          "sub.cc.u32 %0, %8, %16;"
+          "subc.cc.u32 %1, %9, %17;"
+          "subc.cc.u32 %2, %10, %18;"
+          "subc.cc.u32 %3, %11, %19;"
+          "subc.cc.u32 %4, %12, %20;"
+          "subc.cc.u32 %5, %13, %21;"
+          "subc.cc.u32 %6, %14, %22;"
+          "subc.cc.u32 %7, %15, %23;"
+          : "=r"(n.c0), "=r"(n.c1), "=r"(n.c2), "=r"(n.c3), "=r"(n.c4), "=r"(n.c5), "=r"(n.c6), "=r"(n.c7)
+          : "r"(c0), "r"(c1), "r"(c2), "r"(c3), "r"(c4), "r"(c5), "r"(c6), "r"(c7),
+            "r"(rhs.c0), "r"(rhs.c1), "r"(rhs.c2), "r"(rhs.c3), "r"(rhs.c4), "r"(rhs.c5), "r"(rhs.c6), "r"(rhs.c7));
+      return n;
+    }
+
+    __device__ __forceinline__ Number2 operator*(const Number &rhs) const &
+    {
+      Number2 r;
+      // >>> GENERATED: mul
+      // >>> GENERATED END
+      return r;
+    }
+
+    // Big number subtraction.
+    // Returns `(r, borrow)`. If a borrow occurred, `borrow` would be U32::MAX
+    __device__ __forceinline__ Number sub_borrowed(const Number &rhs, u32 &borrow) const &
+    {
+      Number r = *this - rhs;
+      asm volatile(
+          "subc.u32 %0, %1, %2;"
+          : "=r"(borrow)
+          : "r"(0), "r"(0));
+      return r;
+    }
+
+    // Word-by-word equality.
+    __host__ __device__ __forceinline__ bool operator==(const Number &rhs) const &
+    {
+      bool eq = true;
+      eq = eq && c0 == rhs.c0;
+      eq = eq && c1 == rhs.c1;
+      eq = eq && c2 == rhs.c2;
+      eq = eq && c3 == rhs.c3;
+      eq = eq && c4 == rhs.c4;
+      eq = eq && c5 == rhs.c5;
+      eq = eq && c6 == rhs.c6;
+      eq = eq && c7 == rhs.c7;
+      return eq;
+    }
+
+    __host__ __device__ __forceinline__ bool operator!=(const Number &rhs) const &
+    {
+      bool eq = false;
+      eq = eq || c0 != rhs.c0;
+      eq = eq || c1 != rhs.c1;
+      eq = eq || c2 != rhs.c2;
+      eq = eq || c3 != rhs.c3;
+      eq = eq || c4 != rhs.c4;
+      eq = eq || c5 != rhs.c5;
+      eq = eq || c6 != rhs.c6;
+      eq = eq || c7 != rhs.c7;
+      return eq;
+    }
+
+    // 1 for true, 0 for false
+    __host__ __device__ __forceinline__ u32 is_zero() const & {
+      return (c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) == 0;
+    }
+  };
+
+  __host__ __device__ __forceinline__ void Number2::split(Number &hi, Number &lo) const
+  {
+    hi.c0 = c8;
+    hi.c1 = c9;
+    hi.c2 = c10;
+    hi.c3 = c11;
+    hi.c4 = c12;
+    hi.c5 = c13;
+    hi.c6 = c14;
+    hi.c7 = c15;
+    lo.c0 = c0;
+    lo.c1 = c1;
+    lo.c2 = c2;
+    lo.c3 = c3;
+    lo.c4 = c4;
+    lo.c5 = c5;
+    lo.c6 = c6;
+    lo.c7 = c7;
+  }
+
+  // A field element.
+  // For the number n, its corresponding field element is n R mod m.
+  struct Element
+  {
+    Number n;
+    // Inheritted methods
+    __host__ __device__ Element() {}
+
+    static __host__ __device__ __forceinline__ Element load(const u32 *p, u32 stride = 1)
+    {
+      Element elem;
+      elem.n = Number::load(p, stride);
+      return elem;
+    }
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    {
+      n.store(p, stride);
+    }
+    __host__ __device__ __forceinline__ bool operator==(const Element &rhs) const &
+    {
+      return n == rhs.n;
+    }
+    __host__ __device__ __forceinline__ bool operator!=(const Element &rhs) const &
+    {
+      return n != rhs.n;
+    }
+  };
+
+  struct Params
+  {
+    u32 m[8], r_mod[8], r2_mod[8];
+    u32 m_prime;
+  };
+
+  struct Env
+  {
+    Number m;
+    // m' = -m^(-1) mod b where b = 2^32
+    u32 m_prime;
+    // r_mod = R mod m,
+    // r2_mod = R^2 mod m
+    Number r_mod, r2_mod;
+
+    __device__ __host__ __forceinline__ Env(const Params &p)
+        : m_prime(m_prime)
+    {
+      m = Number::load(p.m, 1);
+      r_mod = Number::load(p.r_mod, 1);
+      r2_mod = Number::load(p.r2_mod, 1);
+      m_prime = p.m_prime;
+    }
+
+    // One in Fp
+    __device__ __host__ __forceinline__ Element one() const &
+    {
+      Element elem;
+      elem.n = r_mod;
+      return elem;
+    }
+    __device__ __host__ __forceinline__ Element zero() const &
+    {
+      Element elem;
+      elem.n = Number::zero();
+      return elem;
+    }
+
+    // Addition/Subtraction modulo m
+    __device__ __forceinline__ Number add_modulo(const Number &a, const Number &b)
+    {
+      auto r = a + b;
+      // If r > m , then r - m  > 0 and is the desired result;
+      // Otherwise, sub(r, m ) "wrapps-over" r in Fp.
+      r = sub_modulo(r, m);
+      return r;
+    }
+
+    __device__ __forceinline__ Number sub_modulo(const Number &a, const Number &b)
+    {
+      u32 borrow;
+      auto r = a.sub_borrowed(b, borrow);
+      if (borrow)
+        r = r + m;
+      return r;
+    }
+
+    // Negation modulo m
+    __device__ __forceinline__ Number neg_modulo(const Number &a)
+    {
+      if (a.is_zero()) return Number::zero();
+      Number r = m - a;
+      return r;
+    }
+
+    // Addition/Subtraction in Fp
+    __device__ __forceinline__ Element add(const Element &a, const Element &b)
+    {
+      Element r;
+      r.n = add_modulo(a.n, b.n);
+      return r;
+    }
+    __device__ __forceinline__ Element sub(const Element &a, const Element &b)
+    {
+      Element r;
+      r.n = sub_modulo(a.n, b.n);
+      return r;
+    }
+
+    // Negation in Fp
+    __device__ __forceinline__ Element neg(const Element &a)
+    {
+      Element r;
+      r.n = neg_modulo(a.n);
+      return r;
+    }
+
+    // For input A = (a15 ... a0)_b, calculates A R^(-1) mod m  where R = 2^256
+    __device__ __forceinline__ Number montgomery_reduction(Number2 &a)
+    {
+      // >>> GENERATED: montgomery_reduction
+      // >>> GENERATED END
+      Number r, useless;
+      a.split(r, useless);
+      r = sub_modulo(r, m);
+      return r;
+    }
+
+    // Multiplication on Fp;
+    // Essentially calculates a b R^(-1) mod m
+    __device__ __forceinline__ Element mul(const Element &a, const Element &b)
+    {
+      Number2 prod = a.n * b.n;
+      Element r;
+      r.n = montgomery_reduction(prod);
+      return r;
+    }
+
+    // Convert a big number to the corresponding element on field;
+    __device__ __forceinline__ Element from_number(const Number &n)
+    {
+      Number2 prod = n * r2_mod;
+      Element r;
+      r.n = montgomery_reduction(prod);
+      return r;
+    }
+  };
+
+  std::ostream &
+  operator<<(std::ostream &os, const Number &n)
+  {
+    os << "0x";
+    os << std::hex
+       << std::setfill('0') << std::setw(8) << n.c7 << '_'
+       << std::setfill('0') << std::setw(8) << n.c6 << '_'
+       << std::setfill('0') << std::setw(8) << n.c5 << '_'
+       << std::setfill('0') << std::setw(8) << n.c4 << '_'
+       << std::setfill('0') << std::setw(8) << n.c3 << '_'
+       << std::setfill('0') << std::setw(8) << n.c2 << '_'
+       << std::setfill('0') << std::setw(8) << n.c1 << '_'
+       << std::setfill('0') << std::setw(8) << n.c0;
+    return os;
+  }
+
+}
+#endif

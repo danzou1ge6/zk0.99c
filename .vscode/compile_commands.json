@@ -1,0 +1,6 @@
+[
+{
+  "directory": "/home/ylk/Important/repo/zksnark",
+  "arguments": ["/opt/cuda/bin/nvcc", "-c", "-Xcompiler", "-fPIE", "-I/opt/cuda/include", "-I/home/ylk/.xmake/packages/d/doctest/2.4.11/0a52cbf458ea46be8a84f4e85f2e0a21/include", "-m64", "-rdc=true", "-o", "build/.objs/test-mont/linux/x86_64/release/mont/tests/main.cu.o", "mont/tests/main.cu"],
+  "file": "mont/tests/main.cu"
+}]
