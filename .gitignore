@@ -2,3 +2,4 @@
 /.xmake
 /mont/src/mont.cuh
 /doc/book
+/.vscode
