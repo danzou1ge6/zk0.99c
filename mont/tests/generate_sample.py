@@ -32,7 +32,7 @@ def m_magic(m: int, n_words: int) -> int:
     return (-x) % (2 ** 32)
 
 def montgomery_reduction(x: int, bits: int, m: int) -> int:
-    return (product * inv_modulo(2 ** bits, m)) % m
+    return (x * inv_modulo(2 ** bits, m)) % m
 
 
 def one_sample(bits: int, m: int) -> str:
