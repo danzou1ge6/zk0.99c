@@ -152,6 +152,14 @@ namespace mont256
       return r;
     }
 
+    // Big number square
+    __device__ __forceinline__ Number2 square() const & {
+      Number2 r;
+      // >>> GENERATED: square
+      // >>> GENERATED END
+      return r;
+    }
+
     // Big number subtraction.
     // Returns `(r, borrow)`. If a borrow occurred, `borrow` would be U32::MAX
     __device__ __forceinline__ Number sub_borrowed(const Number &rhs, u32 &borrow) const &
@@ -355,6 +363,15 @@ namespace mont256
       return r;
     }
 
+    // Square on Fp
+    __device__ __forceinline__ Element square(const Element &a)
+    {
+      Number2 prod = a.n.square();
+      Element r;
+      r.n = montgomery_reduction(prod);
+      return r;
+    }
+
     // Convert a big number to the corresponding element on field;
     __device__ __forceinline__ Element from_number(const Number &n)
     {
@@ -362,6 +379,12 @@ namespace mont256
       Element r;
       r.n = montgomery_reduction(prod);
       return r;
+    }
+
+    // Convert an element on field to the corresponding big number
+    __device__ __forceinline__ Number to_number(const Element &elem)
+    {
+      return montgomery_reduction(elem.n);
     }
   };
 

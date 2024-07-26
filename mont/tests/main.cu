@@ -50,6 +50,13 @@ __global__ void bn_mul(u32 *r, const u32 *a, const u32 *b, const Params *p)
   nr.store(r);
 }
 
+__global__ void bn_square(u32 *r, const u32 *a, const u32 *b, const Params *p)
+{
+  auto na = Number::load(a);
+  auto nr = na.square();
+  nr.store(r);
+}
+
 __global__ void mont_mul(u32 *r, const u32 *a, const u32 *b, const Params *p)
 {
   Env env(*p);
@@ -72,6 +79,14 @@ __global__ void mont_neg(u32 *r, const u32 *a, const u32 *b, const Params *p)
   Env env(*p);
   auto na = Element::load(a);
   auto elem = env.neg(na);
+  elem.store(r);
+}
+
+__global__ void mont_square(u32 *r, const u32 *a, const u32 *b, const Params *p)
+{
+  Env env(*p);
+  auto na = Element::load(a);
+  auto elem = env.square(na);
   elem.store(r);
 }
 
@@ -175,6 +190,9 @@ namespace instance1
   const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x774ac, 0x40329d37, 0x4887cae6, 0xabcd9018, 0x5fbb6628, 0x03cbd7db, 0xc8d6bc53, 0xfd26ce8a,
                                                   0x65af4e11, 0x927fcb4e, 0x42fef4f7, 0xa5f0dbab, 0xcd81b0d6, 0x8d373fcc, 0xa68d257b, 0xc4a02ec2);
   const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS(0xa0b4f94, 0x130a8861, 0xaabacbd5, 0x67a95bc8, 0x940e2073, 0xad9f431c, 0x6e99ad03, 0x42f2abaa);
+  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x4ef84b, 0x46fd949c, 0x99569b59, 0x5297ce7c, 0x6a5d7232, 0x5b118f8f, 0x85c70946, 0xf18e468c, 0xb95b8544,
+                                                      0x68c79459, 0x84d592ba, 0x629083cc, 0x4a7dddf0, 0xd1355ef4, 0x1e01fe42, 0xa7229f84);
+  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xdf5cb5a, 0x096834f9, 0x4a6de8da, 0xc658cfdf, 0xa741c620, 0x551a3a6c, 0xbfbc374c, 0xeeb5da6e);
 
   TEST_CASE("Big number subtraction 1")
   {
@@ -206,11 +224,23 @@ namespace instance1
                              { bn_mul<<<1, 1>>>(r, a, b, p); });
   }
 
+  TEST_CASE("Big number square 1")
+  {
+    test_mont_kernel2<WORDS>(a_square, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                             { bn_square<<<1, 1>>>(r, a, b, p); });
+  }
+
   TEST_CASE("Montgomery multiplication 1")
   {
     // Here a, b are viewed as elements
     test_mont_kernel<WORDS>(prod_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_mul<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery square 1")
+  {
+    test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_square<<<1, 1>>>(r, a, b, p); });
   }
 }
 
@@ -227,6 +257,9 @@ namespace instance2
   const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS2(0xacb004, 0xd5cbdba3, 0x591dd36a, 0x7ed69756, 0xf3480eea, 0xaa33697c, 0x149a2485, 0x707be2ca,
                                                   0x7a7cb2d0, 0x8ce8f496, 0x220d4021, 0xf2d0727f, 0x5a1ce3c9, 0xe9685c76, 0xbfe043f5, 0xf9dd6b90);
   const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS(0xa4d8112, 0xe4160087, 0x732df738, 0x92988df5, 0x358c970e, 0x34dfabf9, 0x3c172b02, 0xba57ea39);
+  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x11a7121, 0x79f0ca8e, 0x721e7528, 0xb80c8b72, 0x3fb1eceb, 0x3825c3e1, 0x0b0c3d7d, 0x36bbf5e6,
+                                                      0xc3c79c07, 0x3f169f49, 0xb48894fd, 0xe2fef33b, 0x858ed52b, 0x42c51bd4, 0x8a794cdd, 0x309daa10);
+  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xcc71e43, 0x5420feed, 0xca1a0867, 0xa0807fcd, 0x1948fd76, 0xb4ad5ad7, 0x93ad57f9, 0x6b7942d5);
 
   TEST_CASE("Big number addition 2")
   {
@@ -258,10 +291,22 @@ namespace instance2
                              { bn_mul<<<1, 1>>>(r, a, b, p); });
   }
 
+  TEST_CASE("Big number square 2")
+  {
+    test_mont_kernel2<WORDS>(a_square, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                             { bn_square<<<1, 1>>>(r, a, b, p); });
+  }
+
   TEST_CASE("Montgomery multiplication 2")
   {
     test_mont_kernel<WORDS>(prod_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_mul<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery square 2")
+  {
+    test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_square<<<1, 1>>>(r, a, b, p); });
   }
 }
 

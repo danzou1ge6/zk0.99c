@@ -1,14 +1,15 @@
 from dataclasses import dataclass
-from typing import TypeVar, Callable, Optional
+from typing import TypeVar, Callable, Optional, List
 from pathlib import Path
+from math import ceil
 
 @dataclass
 class Asm:
-    inst: list[str]
-    outputs: list[str]
-    inputs: list[str]
+    inst: List[str]
+    outputs: List[str]
+    inputs: List[str]
 
-    def to_lines(self, volatile = True) -> list[str]:
+    def to_lines(self, volatile = True) -> List[str]:
         s = []
         s.append("asm " + ("volatile" if volatile else "") + "(")
         s.append(f'  "{{\\n\\t"')
@@ -21,6 +22,102 @@ class Asm:
     
     def to_str(self, volatile = True) -> str:
         return "\n".join(self.to_lines(volatile=volatile))
+
+def square(n_words: int) -> Asm:
+    @dataclass
+    class Cell:
+        hi: bool
+        a: int
+        b: int
+
+        def op(self, cc: bool, c: bool) -> str:
+            op = 'mad'
+            if c:
+                op += 'c'
+            if self.hi:
+                op += '.hi'
+            else:
+                op += '.lo'
+            if cc:
+                op += '.cc'
+            op += '.u32'
+            return op
+        
+        def r_i(self) -> int:
+            return self.a + self.b + (1 if self.hi else 0)
+
+    def cells_of_col(i_col: int) -> List[Cell]:
+        cells = []
+        for a in range(0, ceil((i_col - 1)/ 2)):
+            b = i_col - 1 - a
+            if 0 <= a < 8 and 0 <= b < 8:
+                cells.append(Cell(hi=True, a=a, b=b))
+        for a in range(0, ceil(i_col / 2)):
+            b = i_col - a
+            if 0 <= a < 8 and 0 <= b < 8:
+                cells.append(Cell(hi=False, a=a, b=b))
+        return cells
+
+    def plan_carries(cols: List[List[Cell]]) -> List[List[Cell]]:
+        scans = []
+        for end_i_col in range(2, 15):
+            cells = []
+            for i_col in range(end_i_col, 0, -1):
+                if len(cols[i_col]) != 0:
+                    cells.insert(0, cols[i_col].pop(0))
+                else:
+                    break
+            scans.append(cells)
+        return scans
+    
+    cols = [cells_of_col(i) for i in range(2 * n_words - 1)]
+    # A series of mads, beginning with mad.cc and ends with madc, with madc.cc in between
+    scans = plan_carries(cols)
+
+    input_a = lambda i: f"c{i}"
+    output_r = lambda i: f"r.c{i}"
+
+    reg_a = lambda i: f"%{i + 2 * n_words}"
+    r_defined = [False for _ in range(n_words * 2)]
+    reg_r_read = lambda i: f"%{i}" if r_defined[i] else "0"
+    def reg_r_write(i: int):
+        r_defined[i] = True
+        return f"%{i}"
+    reg_tmp = "t1"
+
+    inst = [
+        ".reg .u32 t1",
+    ]
+
+    # Calculates sum_(i != j) b^(i + j) a_i a_j, storing in R = (r15, ..., r0)
+    for scan in scans:
+        for i, cell in enumerate(scan):
+            op = cell.op(i != len(scan) - 1, i != 0)
+            i_r = cell.r_i()
+            reg_read = reg_r_read(i_r)
+            inst.append(f"{op} {reg_r_write(i_r)}, {reg_a(cell.a)}, {reg_a(cell.b)}, {reg_read}")
+
+    # Calculates 2 * sum_(i != j) b^(i + j) a_i a_j, storing in R
+    inst.append(f"shr.b32 {reg_r_write(2 * n_words - 1)}, {reg_r_read(2 * n_words - 2)}, 31")
+    for i in reversed(range(2, 2 * n_words - 1)):
+        inst.append(f"shl.b32 {reg_r_write(i)}, {reg_r_read(i)}, 1")
+        inst.append(f"shr.b32 {reg_tmp}, {reg_r_read(i - 1)}, 31")
+        inst.append(f"or.b32 {reg_r_write(i)}, {reg_tmp}, {reg_r_read(i)}")
+    inst.append(f"shl.b32 {reg_r_write(1)}, {reg_r_read(1)}, 1")
+
+    # Calculates sum_i b^(2i) a_i^2, storing in R
+    reg_read = reg_r_read(0)
+    inst.append(f"mad.lo.cc.u32 {reg_r_write(0)}, {reg_a(0)}, {reg_a(0)}, {reg_read}")
+    inst.append(f"mad.hi.cc.u32 {reg_r_write(1)}, {reg_a(0)}, {reg_a(0)}, {reg_r_read(1)}")
+    for i in range(1, n_words):
+        inst.append(f"madc.lo.cc.u32 {reg_r_write(2 * i)}, {reg_a(i)}, {reg_a(i)}, {reg_r_read(2 * i)}")
+        inst.append(f"madc.hi.cc.u32 {reg_r_write(2 * i + 1)}, {reg_a(i)}, {reg_a(i)}, {reg_r_read(2 * i + 1)}")
+    
+    return Asm(
+        inst = inst,
+        outputs = [f'"=r"({output_r(i)})' for i in range(2 * n_words)],
+        inputs = [f'"r"({input_a(i)})' for i in range(n_words)]
+    )
 
 
 def montgomery_reduction(n_words: int) -> Asm:
@@ -121,7 +218,7 @@ def mul(n_words):
     )
 
 T = TypeVar("T")
-def index_of_predicate(lst: list[T], predicate: Callable[[T], bool], begin: int = 0) -> Optional[int]:
+def index_of_predicate(lst: List[T], predicate: Callable[[T], bool], begin: int = 0) -> Optional[int]:
     for i, item in enumerate(lst):
         if i >= begin and predicate(item):
             return i
@@ -133,11 +230,13 @@ def count_indentation(s: str) -> int:
         cnt += 1
     return cnt
 
-def insert_generated(lines: list[str], point_name: str, to_insert: list[str]) -> list[str]:
+def insert_generated(lines: List[str], point_name: str, to_insert: List[str]) -> List[str]:
     i = index_of_predicate(lines, lambda line: line.lstrip().rstrip() == f"// >>> GENERATED: {point_name}")
-    j = index_of_predicate(lines, lambda line: line.lstrip().rstrip() == "// >>> GENERATED END", begin = i)
-    if i is None or j is None:
+    if i is None:
         raise RuntimeError(f"Point {point_name} not found in document")
+    j = index_of_predicate(lines, lambda line: line.lstrip().rstrip() == "// >>> GENERATED END", begin = i)
+    if j is None:
+        raise RuntimeError(f"Point {point_name} does not end")
     indent = count_indentation(lines[i])
     r = lines[:i + 1]
     r += (indent * " " + line for line in to_insert)
@@ -167,6 +266,11 @@ if __name__ == "__main__":
         code_lines,
         "mul",
         mul(8).to_lines()
+    )
+    code_lines = insert_generated(
+        code_lines,
+        "square",
+        square(8).to_lines()
     )
 
     with open(target, "w") as wf:
