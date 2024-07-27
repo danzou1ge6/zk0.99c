@@ -3,16 +3,48 @@
 
 #include <iostream>
 #include <iomanip>
+#include <tuple>
 
 namespace mont256
 {
   typedef u_int32_t u32;
+  typedef u_int64_t u64;
+
+  namespace host_arith
+  {
+    __host__ u32 addc(u32 a, u32 b, u32& carry)
+    {
+      u64 ret = (u64)a + (u64)b + (u64)carry;
+      carry = (u32)(ret >> 32);
+      return ret;
+    }
+
+    __host__ u32 subb(u32 a, u32 b, u32& borrow)
+    {
+      u64 ret = (u64)a - (u64)b - (u64)(borrow >> 31);
+      borrow = (u32)(ret >> 32);
+      return ret;
+    }
+
+    __host__ u32 madc(u32 a, u32 b, u32 c, u32& carry)
+    {
+      u64 ret = (u64)b * (u64)c + (u64)a + (u64)carry;
+      carry = (u32)(ret >> 32);
+      return ret;
+    }
+  }
 
   struct Number;
 
   struct Number2
   {
     u32 c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15;
+
+    __host__ __device__ Number2() {}
+    __host__ __device__ __forceinline__ Number2(
+        u32 c0, u32 c1, u32 c2, u32 c3, u32 c4, u32 c5, u32 c6, u32 c7,
+        u32 c8, u32 c9, u32 c10, u32 c11, u32 c12, u32 c13, u32 c14, u32 c15) : c0(c0), c1(c1), c2(c2), c3(c3), c4(c4), c5(c5), c6(c6), c7(c7),
+                                                                                c8(c8), c9(c9), c10(c10), c11(c11), c12(c12), c13(c13), c14(c14), c15(c15) {}
 
     __host__ __device__ __forceinline__ void split(Number &hi, Number &lo) const;
 
@@ -66,32 +98,27 @@ namespace mont256
     u32 c0, c1, c2, c3, c4, c5, c6, c7;
 
     __host__ __device__ Number() {}
+    __host__ __device__ __forceinline__ Number(
+        u32 c0, u32 c1, u32 c2, u32 c3, u32 c4, u32 c5, u32 c6, u32 c7) : c0(c0), c1(c1), c2(c2), c3(c3), c4(c4), c5(c5), c6(c6), c7(c7) {}
 
-    static __host__ __device__ __forceinline__ Number zero() {
-      Number n;
-      n.c0 = 0;
-      n.c1 = 0;
-      n.c2 = 0;
-      n.c3 = 0;
-      n.c4 = 0;
-      n.c5 = 0;
-      n.c6 = 0;
-      n.c7 = 0;
+    static __host__ __device__ __forceinline__ Number zero()
+    {
+      Number n(0, 0, 0, 0, 0, 0, 0, 0);
       return n;
     }
 
     // Load/Store a number from memory, where words are stored non-contiguously
     static __host__ __device__ __forceinline__ Number load(const u32 *p, u32 stride = 1)
     {
-      Number n;
-      n.c0 = p[0];
-      n.c1 = p[stride];
-      n.c2 = p[2 * stride];
-      n.c3 = p[3 * stride];
-      n.c4 = p[4 * stride];
-      n.c5 = p[5 * stride];
-      n.c6 = p[6 * stride];
-      n.c7 = p[7 * stride];
+      Number n(
+          p[0],
+          p[stride],
+          p[2 * stride],
+          p[3 * stride],
+          p[4 * stride],
+          p[5 * stride],
+          p[6 * stride],
+          p[7 * stride]);
       return n;
     }
 
@@ -107,7 +134,7 @@ namespace mont256
       p[7 * stride] = c7;
     }
 
-    // Big number addition/subtraction. NOT ON Fp.
+    // Big number addition. NOT ON Fp.
     __device__ __forceinline__ Number operator+(const Number &rhs) const &
     {
       Number n;
@@ -126,6 +153,24 @@ namespace mont256
       return n;
     }
 
+    // Big number addition, but on host. NOT optimized for speed.
+    __host__ Number host_add(const Number &rhs) const &
+    {
+      using namespace host_arith;
+      u32 carry = 0;
+      auto d0 = addc(c0, rhs.c0, carry);
+      auto d1 = addc(c1, rhs.c1, carry);
+      auto d2 = addc(c2, rhs.c2, carry);
+      auto d3 = addc(c3, rhs.c3, carry);
+      auto d4 = addc(c4, rhs.c4, carry);
+      auto d5 = addc(c5, rhs.c5, carry);
+      auto d6 = addc(c6, rhs.c6, carry);
+      auto d7 = addc(c7, rhs.c7, carry);
+      Number r(d0, d1, d2, d3, d4, d5, d6, d7);
+      return r;
+    }
+
+    // Big number subtraction.
     __device__ __forceinline__ Number operator-(const Number &rhs) const &
     {
       Number n;
@@ -144,24 +189,8 @@ namespace mont256
       return n;
     }
 
-    __device__ __forceinline__ Number2 operator*(const Number &rhs) const &
-    {
-      Number2 r;
-      // >>> GENERATED: mul
-      // >>> GENERATED END
-      return r;
-    }
-
-    // Big number square
-    __device__ __forceinline__ Number2 square() const & {
-      Number2 r;
-      // >>> GENERATED: square
-      // >>> GENERATED END
-      return r;
-    }
-
     // Big number subtraction.
-    // Returns `(r, borrow)`. If a borrow occurred, `borrow` would be U32::MAX
+    // If a borrow occurred, `borrow` would be U32::MAX
     __device__ __forceinline__ Number sub_borrowed(const Number &rhs, u32 &borrow) const &
     {
       Number r = *this - rhs;
@@ -170,6 +199,64 @@ namespace mont256
           : "=r"(borrow)
           : "r"(0), "r"(0));
       return r;
+    }
+
+    // Big number subtraction with borrow, but on host. NOT optimized for speed.
+    __host__ Number host_sub_borrowed(const Number &rhs, u32 &borrow_ret) const &
+    {
+      using namespace host_arith;
+      u32 borrow = 0;
+      auto d0 = subb(c0, rhs.c0, borrow);
+      auto d1 = subb(c1, rhs.c1, borrow);
+      auto d2 = subb(c2, rhs.c2, borrow);
+      auto d3 = subb(c3, rhs.c3, borrow);
+      auto d4 = subb(c4, rhs.c4, borrow);
+      auto d5 = subb(c5, rhs.c5, borrow);
+      auto d6 = subb(c6, rhs.c6, borrow);
+      auto d7 = subb(c7, rhs.c7, borrow);
+      borrow_ret = borrow;
+      Number r(d0, d1, d2, d3, d4, d5, d6, d7);
+      return r;
+    }
+
+    // Big number subtraction, but on host. NOT optimized for speed.
+    __host__ Number host_sub(const Number &rhs) const &
+    {
+      u32 useless;
+      return host_sub_borrowed(rhs, useless);
+    }
+
+    // Big number multiplication.
+    __device__ __forceinline__ Number2 operator*(const Number &rhs) const &
+    {
+      Number2 r;
+      // >>> GENERATED: mul
+      // >>> GENERATED END
+      return r;
+    }
+
+    // Big number square. Uses less registers and do less MACs then simply self-multiplying
+    __device__ __forceinline__ Number2 square() const &
+    {
+      Number2 r;
+      // >>> GENERATED: square
+      // >>> GENERATED END
+      return r;
+    }
+
+    // Big number multiplication, but on host.
+    __host__ Number2 host_mul(const Number &rhs) const &
+    {
+      using namespace host_arith;
+      // >>> GENERATED: host_mul
+      // >>> GENERATED END
+    }
+
+    __host__ Number2 host_square() const &
+    {
+      using namespace host_arith;
+      // >>> GENERATED: host_square
+      // >>> GENERATED END
     }
 
     // Word-by-word equality.
@@ -202,7 +289,8 @@ namespace mont256
     }
 
     // 1 for true, 0 for false
-    __host__ __device__ __forceinline__ u32 is_zero() const & {
+    __host__ __device__ __forceinline__ u32 is_zero() const &
+    {
       return (c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) == 0;
     }
   };
@@ -312,11 +400,35 @@ namespace mont256
       return r;
     }
 
+    __host__ Number host_add_modulo(const Number &a, const Number &b)
+    {
+      auto r = a.host_add(b);
+      r = host_sub_modulo(r, m);
+      return r;
+    }
+
+    __host__ Number host_sub_modulo(const Number &a, const Number &b)
+    {
+      u32 borrow;
+      auto r = a.host_sub_borrowed(b, borrow);
+      // TODO: Better to use mask on host to avoid branch prediction miss
+      if (borrow)
+        r = r.host_add(m);
+      return r;
+    }
+
     // Negation modulo m
     __device__ __forceinline__ Number neg_modulo(const Number &a)
     {
       if (a.is_zero()) return Number::zero();
       Number r = m - a;
+      return r;
+    }
+
+    __host__ Number host_neg_modulo(const Number &a)
+    {
+      if (a.is_zero()) return Number::zero();
+      Number r = m.host_sub(a);
       return r;
     }
 
@@ -334,11 +446,31 @@ namespace mont256
       return r;
     }
 
+    __host__ Element host_add(const Element &a, const Element &b)
+    {
+      Element r;
+      r.n = host_add_modulo(a.n, b.n);
+      return r;
+    }
+    __host__ Element host_sub(const Element &a, const Element &b)
+    {
+      Element r;
+      r.n = host_sub_modulo(a.n, b.n);
+      return r;
+    }
+
     // Negation in Fp
     __device__ __forceinline__ Element neg(const Element &a)
     {
       Element r;
       r.n = neg_modulo(a.n);
+      return r;
+    }
+
+    __host__ Element host_neg(const Element &a)
+    {
+      Element r;
+      r.n = host_neg_modulo(a.n);
       return r;
     }
 
@@ -353,6 +485,17 @@ namespace mont256
       return r;
     }
 
+    __host__ Number host_montgomery_reduction(Number2 &a)
+    {
+      using namespace host_arith;
+      // >>> GENERATED: host_montgomery_reduction
+      // >>> GENERATED END
+      Number r, useless_lo;
+      a.split(r, useless_lo);
+      r = host_sub_modulo(r, m);
+      return r;
+    }
+
     // Multiplication on Fp;
     // Essentially calculates a b R^(-1) mod m
     __device__ __forceinline__ Element mul(const Element &a, const Element &b)
@@ -360,6 +503,14 @@ namespace mont256
       Number2 prod = a.n * b.n;
       Element r;
       r.n = montgomery_reduction(prod);
+      return r;
+    }
+
+    __host__ Element host_mul(const Element &a, const Element &b)
+    {
+      Number2 prod = a.n.host_mul(b.n);
+      Element r;
+      r.n = host_montgomery_reduction(prod);
       return r;
     }
 
@@ -372,6 +523,14 @@ namespace mont256
       return r;
     }
 
+    __host__ Element host_square(const Element &a)
+    {
+      Number2 prod = a.n.host_square();
+      Element r;
+      r.n = host_montgomery_reduction(prod);
+      return r;
+    }
+
     // Convert a big number to the corresponding element on field;
     __device__ __forceinline__ Element from_number(const Number &n)
     {
@@ -381,10 +540,25 @@ namespace mont256
       return r;
     }
 
+    __host__ Element host_from_number(const Number &n)
+    {
+      Number2 prod = n.host_mul(r2_mod);
+      Element r;
+      r.n = host_montgomery_reduction(prod);
+      return r;
+    }
+
     // Convert an element on field to the corresponding big number
     __device__ __forceinline__ Number to_number(const Element &elem)
     {
-      return montgomery_reduction(elem.n);
+      Number2 n(elem.n.c0, elem.n.c1, elem.n.c2, elem.n.c3, elem.n.c4, elem.n.c5, elem.n.c6, elem.n.c7, 0, 0, 0, 0, 0, 0, 0, 0);
+      return montgomery_reduction(n);
+    }
+
+    __host__ Number host_to_number(const Element &elem)
+    {
+      Number2 n(elem.n.c0, elem.n.c1, elem.n.c2, elem.n.c3, elem.n.c4, elem.n.c5, elem.n.c6, elem.n.c7, 0, 0, 0, 0, 0, 0, 0, 0);
+      return host_montgomery_reduction(n);
     }
   };
 

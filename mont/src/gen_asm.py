@@ -172,7 +172,7 @@ def montgomery_reduction(n_words: int) -> Asm:
     )
     
 
-def mul(n_words):
+def mul(n_words: int) -> Asm:
     input_a = lambda i: f"c{i}"
     input_b = lambda i: f"rhs.c{i}"
     output_r = lambda i: f"r.c{i}"
@@ -216,6 +216,94 @@ def mul(n_words):
         outputs = [f'"=r"({output_r(i)})' for i in range(2 * n_words)],
         inputs = [f'"r"({input_a(i)})' for i in range(n_words)] + [f'"r"({input_b(i)})' for i in range(n_words)]
     )
+
+def host_mul(n_words: int) -> List[str]:
+    var_r = lambda i: f"r{i}"
+    var_carry = "carry"
+    var_lhs = lambda i: f"c{i}"
+    var_rhs = lambda i: f"rhs.c{i}"
+
+    lines = []
+
+    lines.append(f"u32 {', '.join((var_r(i) for i in range(2 * n_words)))};")
+
+    lines.append(f"u32 {var_carry} = 0;")
+    for j in range(0, n_words):
+        lines.append(f"{var_r(j)} = madc(0, {var_lhs(0)}, {var_rhs(j)}, {var_carry});")
+    lines.append(f"{var_r(n_words)} = {var_carry};")
+
+    for i in range(1, n_words):
+        lines.append(f"{var_carry} = 0;")
+        for j in range(0, n_words):
+            lines.append(f"{var_r(i + j)} = madc({var_r(i + j)}, {var_lhs(i)}, {var_rhs(j)}, {var_carry});")
+        lines.append(f"{var_r(i + n_words)} = {var_carry};")
+    
+    lines.append(f"Number2 r({', '.join((var_r(i) for i in range(2 * n_words)))});")
+    lines.append(f"return r;")
+    
+    return lines
+
+def host_square(n_words: int) -> List[str]:
+    var_r = lambda i: f"r{i}"
+    var_carry = f"carry"
+    var_c = lambda i: f"c{i}"
+
+    lines = []
+
+    lines.append(f"u32 {', '.join((var_r(i) for i in range(2 * n_words)))};")
+
+    lines.append(f"u32 {var_carry} = 0;")
+    for j in range(1, n_words):
+        lines.append(f"{var_r(j)} = madc(0, {var_c(0)}, {var_c(j)}, {var_carry});")
+    lines.append(f"{var_r(n_words)} = {var_carry};")
+
+    for i in range(1, n_words - 1):
+        lines.append(f"{var_carry} = 0;")
+        for j in range(i + 1, n_words):
+            lines.append(f"{var_r(i + j)} = madc({var_r(i + j)}, {var_c(i)}, {var_c(j)}, {var_carry});")
+        lines.append(f"{var_r(i + n_words)} = {var_carry};")
+    
+    lines.append(f"{var_r(2 * n_words - 1)} = {var_r(2 * n_words - 2)} >> 31;")
+    for i in reversed(range(2, 2 * n_words - 1)):
+        lines.append(f"{var_r(i)} = ({var_r(i)} << 1) | ({var_r(i - 1)} >> 31);")
+    lines.append(f"{var_r(1)} = {var_r(1)} << 1;")
+
+    lines.append(f"{var_carry} = 0;")
+    lines.append(f"{var_r(0)} = madc(0, {var_c(0)}, {var_c(0)}, {var_carry});")
+    lines.append(f"{var_r(1)} = addc(0, {var_r(1)}, {var_carry});")
+    for i in range(2, n_words * 2, 2):
+        lines.append(f"{var_r(i)} = madc({var_r(i)}, {var_c(int(i / 2))}, {var_c(int(i / 2))}, {var_carry});")
+        lines.append(f"{var_r(i + 1)} = addc(0, {var_r(i + 1)}, {var_carry});")
+    
+    lines.append(f"Number2 r({', '.join(var_r(i) for i in range(2 * n_words))});")
+    lines.append("return r;")
+
+    return lines
+
+def host_montgomery_reduction(n_words: int) -> List[str]:
+    var_r = lambda i: f"a.c{i}"
+    var_k = "k"
+    var_carry = "carry"
+    var_carry2 = "carry2"
+    var_m_prime = "m_prime"
+    var_m = lambda i: f"m.c{i}"
+
+    lines = []
+
+    lines.append(f"u32 {var_k}, {var_carry};")
+    lines.append(f"u32 {var_carry2} = 0;")
+
+    for i in range(n_words):
+        lines.append(f"{var_k} = {var_r(i)} * {var_m_prime};")
+        lines.append(f"{var_carry} = 0;")
+        lines.append(f"madc({var_r(i)}, {var_k}, {var_m(0)}, {var_carry});")
+        for j in range(1, n_words):
+            lines.append(f"{var_r(i + j)} = madc({var_r(i + j)}, {var_k}, {var_m(j)}, {var_carry});")
+        lines.append(f"{var_r(i + n_words)} = addc({var_r(i + n_words)}, {var_carry2}, {var_carry});")
+        lines.append(f"{var_carry2} = {var_carry};")
+
+    return lines;
+
 
 T = TypeVar("T")
 def index_of_predicate(lst: List[T], predicate: Callable[[T], bool], begin: int = 0) -> Optional[int]:
@@ -271,6 +359,21 @@ if __name__ == "__main__":
         code_lines,
         "square",
         square(8).to_lines()
+    )
+    code_lines = insert_generated(
+        code_lines,
+        "host_mul",
+        host_mul(8)
+    )
+    code_lines = insert_generated(
+        code_lines,
+        "host_square",
+        host_square(8)
+    )
+    code_lines = insert_generated(
+        code_lines,
+        "host_montgomery_reduction",
+        host_montgomery_reduction(8)
     )
 
     with open(target, "w") as wf:

@@ -165,6 +165,37 @@ void test_mont_kernel2(const u32 r[WORDS], const u32 a[WORDS],
   }
 }
 
+template <u32 WORDS>
+void test_host(const u32 r[WORDS], const u32 a[WORDS],
+               const u32 b[WORDS], const Params params, Number f(const Number &a, const Number &b, Env &env))
+{
+  const auto nr = Number::load(r);
+  const auto na = Number::load(a);
+  const auto nb = Number::load(b);
+  Env env(params);
+  const auto n_got_r = f(na, nb, env);
+  REQUIRE(nr == n_got_r);
+}
+
+template <u32 WORDS>
+void test_host2(const u32 r[WORDS * 2], const u32 a[WORDS],
+                const u32 b[WORDS], const Params params, Number2 f(const Number &a, const Number &b, Env &env))
+{
+  const auto nr = Number2::load(r);
+  const auto na = Number::load(a);
+  const auto nb = Number::load(b);
+  Env env(params);
+  const auto n_got_r = f(na, nb, env);
+
+  Number n_got_r_hi, n_got_r_lo, nr_hi, nr_lo;
+  n_got_r.split(n_got_r_hi, n_got_r_lo);
+  nr.split(nr_hi, nr_lo);
+  if (nr_lo != n_got_r_lo || nr_hi != n_got_r_hi)
+  {
+    FAIL("Expected\n  ", nr_hi, ", ", nr_lo, ", but got\n  ", n_got_r_hi, ", ", n_got_r_lo);
+  }
+}
+
 #define BIG_INTEGER_CHUNKS(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
 #define BIG_INTEGER_CHUNKS2(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
   {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15}
@@ -242,6 +273,42 @@ namespace instance1
     test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_square<<<1, 1>>>(r, a, b, p); });
   }
+
+  TEST_CASE("Big number addition 1 (host)")
+  {
+    test_host<WORDS>(sum, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { return a.host_add(b); });
+  }
+
+  TEST_CASE("Big number subtraction 1 (host)")
+  {
+    test_host<WORDS>(sub, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { return a.host_sub(b); });
+  }
+
+  TEST_CASE("Big number multiplication 1 (host)")
+  {
+    test_host2<WORDS>(prod, a, b, params, [](const Number &a, const Number &b, Env &env)
+                      { return a.host_mul(b); });
+  }
+
+  TEST_CASE("Big number square 1 (host)")
+  {
+    test_host2<WORDS>(a_square, a, b, params, [](const Number &a, const Number &b, Env &env)
+                      { return a.host_square(); });
+  }
+
+  TEST_CASE("Montgomery multiplication 1 (host)")
+  {
+    test_host<WORDS>(prod_mont, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     {
+        // Here a, b are viewd as elements. This is a break of abstraction.
+        Element ea, eb;
+        ea.n = a;
+        eb.n = b;
+        auto er = env.host_mul(ea, eb);
+        return er.n; });
+  }
 }
 
 namespace instance2
@@ -307,6 +374,42 @@ namespace instance2
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_square<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Big number addition 2 (host)")
+  {
+    test_host<WORDS>(sum, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { return a.host_add(b); });
+  }
+
+  TEST_CASE("Big number subtraction 2 (host)")
+  {
+    test_host<WORDS>(sub, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { return a.host_sub(b); });
+  }
+
+  TEST_CASE("Big number multiplication 2 (host)")
+  {
+    test_host2<WORDS>(prod, a, b, params, [](const Number &a, const Number &b, Env &env)
+                      { return a.host_mul(b); });
+  }
+
+  TEST_CASE("Big number square 2 (host)")
+  {
+    test_host2<WORDS>(a_square, a, b, params, [](const Number &a, const Number &b, Env &env)
+                      { return a.host_square(); });
+  }
+
+  TEST_CASE("Montgomery multiplication 2 (host)")
+  {
+    test_host<WORDS>(prod_mont, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     {
+        // Here a, b are viewd as elements. This is a break of abstraction.
+        Element ea, eb;
+        ea.n = a;
+        eb.n = b;
+        auto er = env.host_mul(ea, eb);
+        return er.n; });
   }
 }
 
