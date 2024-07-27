@@ -15,6 +15,9 @@ target("mont.cuh")
     set_targetdir("mont/src")
 
 target("test-mont")
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
     add_deps("mont.cuh")
     add_files("mont/tests/*.cu")
     add_packages("doctest")

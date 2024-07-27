@@ -90,6 +90,15 @@ __global__ void mont_square(u32 *r, const u32 *a, const u32 *b, const Params *p)
   elem.store(r);
 }
 
+__global__ void mont_pow(u32 *r, const u32 *a, const u32 *b, const Params *p)
+{
+  Env env(*p);
+  auto na = Number::load(a);
+  auto ea = env.from_number(na);
+  auto ea_pow = env.pow(ea, *b);
+  ea_pow.store(r);
+}
+
 template <u32 WORDS>
 void test_mont_kernel(const u32 r[WORDS], const u32 a[WORDS],
                       const u32 b[WORDS], const Params params, void kernel(u32 *, const u32 *, const u32 *, const Params *))
@@ -224,6 +233,7 @@ namespace instance1
   const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x4ef84b, 0x46fd949c, 0x99569b59, 0x5297ce7c, 0x6a5d7232, 0x5b118f8f, 0x85c70946, 0xf18e468c, 0xb95b8544,
                                                       0x68c79459, 0x84d592ba, 0x629083cc, 0x4a7dddf0, 0xd1355ef4, 0x1e01fe42, 0xa7229f84);
   const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xdf5cb5a, 0x096834f9, 0x4a6de8da, 0xc658cfdf, 0xa741c620, 0x551a3a6c, 0xbfbc374c, 0xeeb5da6e);
+  const u32 a_pow404_mont[WORDS] = BIG_INTEGER_CHUNKS(0x7d82259, 0x04fbb067, 0xd6524127, 0xfc7f80ff, 0x9fb93885, 0xb3bf1b68, 0x6d7c5344, 0xdac410b3);
 
   TEST_CASE("Big number subtraction 1")
   {
@@ -272,6 +282,14 @@ namespace instance1
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_square<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery power 1")
+  {
+    // Only use the first element in array as the power
+    const u32 p[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 404);
+    test_mont_kernel<WORDS>(a_pow404_mont, a, p, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_pow<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Big number addition 1 (host)")
@@ -327,6 +345,8 @@ namespace instance2
   const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x11a7121, 0x79f0ca8e, 0x721e7528, 0xb80c8b72, 0x3fb1eceb, 0x3825c3e1, 0x0b0c3d7d, 0x36bbf5e6,
                                                       0xc3c79c07, 0x3f169f49, 0xb48894fd, 0xe2fef33b, 0x858ed52b, 0x42c51bd4, 0x8a794cdd, 0x309daa10);
   const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xcc71e43, 0x5420feed, 0xca1a0867, 0xa0807fcd, 0x1948fd76, 0xb4ad5ad7, 0x93ad57f9, 0x6b7942d5);
+  // a^(111) R mod m
+  const u32 a_pow111_mont[WORDS] = BIG_INTEGER_CHUNKS(0x12153a5f, 0xa2c44b10, 0xcc183f61, 0x973d6f6c, 0x999dc8cb, 0x386ef676, 0x8387667f, 0xb05e2c89);
 
   TEST_CASE("Big number addition 2")
   {
@@ -374,6 +394,14 @@ namespace instance2
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_square<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery power 2")
+  {
+    // Only use the first element in array as the power
+    const u32 p[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 111);
+    test_mont_kernel<WORDS>(a_pow111_mont, a, p, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_pow<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Big number addition 2 (host)")
