@@ -95,8 +95,18 @@ __global__ void mont_pow(u32 *r, const u32 *a, const u32 *b, const Params *p)
   Env env(*p);
   auto na = Number::load(a);
   auto ea = env.from_number(na);
-  auto ea_pow = env.pow(ea, *b);
+  auto nb = Number::load(b);
+  auto ea_pow = env.pow(ea, nb);
   ea_pow.store(r);
+}
+
+__global__ void mont_inv(u32 *r, const u32 *a, const u32 *b, const Params *p)
+{
+  Env env(*p);
+  auto na = Number::load(a);
+  auto ea = env.from_number(na);
+  auto ea_inv = env.invert(ea);
+  ea_inv.store(r);
 }
 
 template <u32 WORDS>
@@ -181,7 +191,7 @@ void test_host(const u32 r[WORDS], const u32 a[WORDS],
   const auto nr = Number::load(r);
   const auto na = Number::load(a);
   const auto nb = Number::load(b);
-  Env env(params);
+  auto env = Env::host_new(params);
   const auto n_got_r = f(na, nb, env);
   REQUIRE(nr == n_got_r);
 }
@@ -193,7 +203,7 @@ void test_host2(const u32 r[WORDS * 2], const u32 a[WORDS],
   const auto nr = Number2::load(r);
   const auto na = Number::load(a);
   const auto nb = Number::load(b);
-  Env env(params);
+  auto env = Env::host_new(params);
   const auto n_got_r = f(na, nb, env);
 
   Number n_got_r_hi, n_got_r_lo, nr_hi, nr_lo;
@@ -233,7 +243,9 @@ namespace instance1
   const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x4ef84b, 0x46fd949c, 0x99569b59, 0x5297ce7c, 0x6a5d7232, 0x5b118f8f, 0x85c70946, 0xf18e468c, 0xb95b8544,
                                                       0x68c79459, 0x84d592ba, 0x629083cc, 0x4a7dddf0, 0xd1355ef4, 0x1e01fe42, 0xa7229f84);
   const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xdf5cb5a, 0x096834f9, 0x4a6de8da, 0xc658cfdf, 0xa741c620, 0x551a3a6c, 0xbfbc374c, 0xeeb5da6e);
-  const u32 a_pow404_mont[WORDS] = BIG_INTEGER_CHUNKS(0x7d82259, 0x04fbb067, 0xd6524127, 0xfc7f80ff, 0x9fb93885, 0xb3bf1b68, 0x6d7c5344, 0xdac410b3);
+  // a^b R mod m
+  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS(0xbd92e68, 0x3407ccf8, 0x5be63308, 0xb5207210, 0x907bef0a, 0xf2ac6db5, 0x37e9b8d8, 0xf87662fa);
+  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS(0x1e46804, 0x440e153b, 0xcfdcb1c1, 0x4c66dfe6, 0x6a669456, 0x0e18dec0, 0x8e8bfa6e, 0x48c9128c);
 
   TEST_CASE("Big number subtraction 1")
   {
@@ -286,10 +298,14 @@ namespace instance1
 
   TEST_CASE("Montgomery power 1")
   {
-    // Only use the first element in array as the power
-    const u32 p[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 404);
-    test_mont_kernel<WORDS>(a_pow404_mont, a, p, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+    test_mont_kernel<WORDS>(pow_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_pow<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery inversion 1")
+  {
+    test_mont_kernel<WORDS>(a_inv_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_inv<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Big number addition 1 (host)")
@@ -327,6 +343,15 @@ namespace instance1
         auto er = env.host_mul(ea, eb);
         return er.n; });
   }
+
+  TEST_CASE("Montgomery inversion 1 (host)")
+  {
+    test_host<WORDS>(pow_mont, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { 
+        auto ea = env.host_from_number(a);
+        auto er = env.host_pow(ea, b);
+        return er.n; });
+  }
 }
 
 namespace instance2
@@ -345,8 +370,9 @@ namespace instance2
   const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS2(0x11a7121, 0x79f0ca8e, 0x721e7528, 0xb80c8b72, 0x3fb1eceb, 0x3825c3e1, 0x0b0c3d7d, 0x36bbf5e6,
                                                       0xc3c79c07, 0x3f169f49, 0xb48894fd, 0xe2fef33b, 0x858ed52b, 0x42c51bd4, 0x8a794cdd, 0x309daa10);
   const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS(0xcc71e43, 0x5420feed, 0xca1a0867, 0xa0807fcd, 0x1948fd76, 0xb4ad5ad7, 0x93ad57f9, 0x6b7942d5);
-  // a^(111) R mod m
-  const u32 a_pow111_mont[WORDS] = BIG_INTEGER_CHUNKS(0x12153a5f, 0xa2c44b10, 0xcc183f61, 0x973d6f6c, 0x999dc8cb, 0x386ef676, 0x8387667f, 0xb05e2c89);
+  // a^b R mod m
+  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS(0x10c99ac6, 0xb563f419, 0x8775e73e, 0x5ce7be6f, 0xaa2bf8d0, 0x54a445fa, 0xaa6941d2, 0x614f6e74);
+  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS(0xb6ebbd1, 0xc0fd36a5, 0xad4f0ad6, 0x4c55c6f2, 0xe6eba872, 0xaf521f6e, 0x24ef45dc, 0xc51967b2);
 
   TEST_CASE("Big number addition 2")
   {
@@ -398,10 +424,14 @@ namespace instance2
 
   TEST_CASE("Montgomery power 2")
   {
-    // Only use the first element in array as the power
-    const u32 p[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 111);
-    test_mont_kernel<WORDS>(a_pow111_mont, a, p, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+    test_mont_kernel<WORDS>(pow_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { mont_pow<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Montgomery inversion 2")
+  {
+    test_mont_kernel<WORDS>(a_inv_mont, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { mont_inv<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Big number addition 2 (host)")
@@ -437,6 +467,15 @@ namespace instance2
         ea.n = a;
         eb.n = b;
         auto er = env.host_mul(ea, eb);
+        return er.n; });
+  }
+
+  TEST_CASE("Montgomery inversion 1 (host)")
+  {
+    test_host<WORDS>(pow_mont, a, b, params, [](const Number &a, const Number &b, Env &env)
+                     { 
+        auto ea = env.host_from_number(a);
+        auto er = env.host_pow(ea, b);
         return er.n; });
   }
 }

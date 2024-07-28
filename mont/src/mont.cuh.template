@@ -357,14 +357,31 @@ namespace mont256
     // r_mod = R mod m,
     // r2_mod = R^2 mod m
     Number r_mod, r2_mod;
+    // m_sub2 = m - 2, for invertion field elements
+    Number m_sub2;
 
-    __device__ __host__ __forceinline__ Env(const Params &p)
-        : m_prime(m_prime)
+    __device__ __host__ Env() {}
+
+    __device__ __forceinline__ Env(const Params &p)
     {
       m = Number::load(p.m, 1);
       r_mod = Number::load(p.r_mod, 1);
       r2_mod = Number::load(p.r2_mod, 1);
       m_prime = p.m_prime;
+      Number two(2, 0, 0, 0, 0, 0, 0, 0);
+      m_sub2 = m - two;
+    }
+
+    static __host__ Env host_new(const Params &p)
+    {
+      Env env;
+      env.m = Number::load(p.m, 1);
+      env.r_mod = Number::load(p.r_mod, 1);
+      env.r2_mod = Number::load(p.r2_mod, 1);
+      env.m_prime = p.m_prime;
+      Number two(2, 0, 0, 0, 0, 0, 0, 0);
+      env.m_sub2 = env.m.host_sub(two);
+      return env;
     }
 
     // One in Fp
@@ -532,38 +549,71 @@ namespace mont256
     }
 
     // Power on Fp
-    __device__ __forceinline__ Element pow(const Element &a, u64 p)
+    __device__ __forceinline__ Element pow(const Element &a, const Number &p)
     {
       auto res = one();
       bool found_one = false;
-      for (int i = 63; i >= 0; i--)
+      auto iter = [this, a](bool &found_one, Element &res, u32 p)
       {
-        if (found_one)
-          res = square(res);
-        if ((p >> i) & 1)
+        for (int i = 31; i >= 0; i--)
         {
-          found_one = true;
-          res = mul(res, a);
-        }
-      }
+          if (found_one)
+            res = square(res);
+          if ((p >> i) & 1)
+          {
+            found_one = true;
+            res = mul(res, a);
+          }
+        }   
+      };
+      iter(found_one, res, p.c7);
+      iter(found_one, res, p.c6);
+      iter(found_one, res, p.c5);
+      iter(found_one, res, p.c4);
+      iter(found_one, res, p.c3);
+      iter(found_one, res, p.c2);
+      iter(found_one, res, p.c1);
+      iter(found_one, res, p.c0);
       return res;
     }
 
-    __host__ Element host_pow(const Element &a, u64 p)
+    __host__ Element host_pow(const Element &a, const Number &p)
     {
       auto res = one();
       bool found_one = false;
-      for (int i = 63; i >= 0; i--)
+      auto iter = [this, a](bool &found_one, Element &res, u32 p)
       {
-        if (found_one)
-          res = host_square(res);
-        if ((p >> i) & 1)
+        for (int i = 31; i >= 0; i--)
         {
-          found_one = true;
-          res = host_mul(res, a);
-        }
-      }
+          if (found_one)
+            res = host_square(res);
+          if ((p >> i) & 1)
+          {
+            found_one = true;
+            res = host_mul(res, a);
+          }
+        }   
+      };
+      iter(found_one, res, p.c7);
+      iter(found_one, res, p.c6);
+      iter(found_one, res, p.c5);
+      iter(found_one, res, p.c4);
+      iter(found_one, res, p.c3);
+      iter(found_one, res, p.c2);
+      iter(found_one, res, p.c1);
+      iter(found_one, res, p.c0);
       return res;
+    }
+
+    // Inversion on Fp
+    __device__ __forceinline__ Element invert(const Element &a)
+    {
+      return pow(a, m_sub2);
+    }
+
+    __host__ Element host_invert(const Element &a)
+    {
+      return host_pow(a, m_sub2);
     }
 
     // Convert a big number to the corresponding element on field;

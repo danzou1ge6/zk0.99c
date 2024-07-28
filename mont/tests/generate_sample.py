@@ -34,6 +34,14 @@ def m_magic(m: int, n_words: int) -> int:
 def montgomery_reduction(x: int, bits: int, m: int) -> int:
     return (x * inv_modulo(2 ** bits, m)) % m
 
+def quick_pow(x: int, m: int, p: int) -> int:
+    r = 1
+    while p != 0:
+        if p & 1 == 1:
+            r = (r * x) % m
+        x = (x * x) % m
+        p = p >> 1
+    return r
 
 def one_sample(bits: int, m: int) -> str:
     assert m < 2 ** bits
@@ -44,6 +52,10 @@ def one_sample(bits: int, m: int) -> str:
     sum_ab_mont = (a + b) % m
     sub_ab_mont = sub_ab % m
     product = a * b
+    a_square = a * a
+    a_square_mont = (a * a * r) % m
+    pow_mont = (quick_pow(a, m, b) * r) % m
+    a_inv_mont = (quick_pow(a, m, m - 2) * r) %m
 
     n_words = math.ceil(bits / 32)
     m_prime = m_magic(m, n_words=n_words)
@@ -69,8 +81,12 @@ def one_sample(bits: int, m: int) -> str:
     s += f"const u32 sum_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(sum_ab_mont, n_words=n_words)});\n"
     s += f"const u32 sub[WORDS] = BIG_INTEGER_CHUNKS({chunks(sub_ab, n_words=n_words)});\n"
     s += f"const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(sub_ab_mont, n_words=n_words)});\n"
-    s += f"const u32 prod[WORDS] = BIG_INTEGER_CHUNKS({chunks(product, n_words=n_words)});\n"
+    s += f"const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS2({chunks(product, n_words=n_words * 2)});\n"
     s += f"const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(product_mont, n_words=n_words)});\n"
+    s += f"const u32 a_square[WORDS] = BIG_INTEGER_CHUNKS2({chunks(a_square, n_words=n_words * 2)});\n"
+    s += f"const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(a_square_mont, n_words=n_words)});\n"
+    s += f"const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(pow_mont, n_words=n_words)});\n"
+    s += f"const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS({chunks(a_inv_mont, n_words=n_words)});\n"
     return s
 
 if __name__ == "__main__":
