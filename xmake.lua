@@ -5,7 +5,7 @@ rule("mont-gen-asm")
     set_extensions(".template")
     on_buildcmd_file(function (target, batchcmds, sourcefile, opt)
         batchcmds:show_progress(opt.progress, '${color.build.object}templating from %s', sourcefile)
-        batchcmds:execv("python mont/src/gen_asm.py", {sourcefile, target:targetfile()})
+        batchcmds:execv("python3 mont/src/gen_asm.py", {sourcefile, target:targetfile()})
     end)
     on_link(function (target) end)
 
@@ -15,6 +15,9 @@ target("mont.cuh")
     set_targetdir("mont/src")
 
 target("test-mont")
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
     add_deps("mont.cuh")
     add_files("mont/tests/*.cu")
     add_packages("doctest")
