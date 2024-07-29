@@ -109,6 +109,13 @@ __global__ void mont_inv(u32 *r, const u32 *a, const u32 *b, const Params *p)
   ea_inv.store(r);
 }
 
+__global__ void bn_slr(u32 *r, const u32 *a, const u32 *b, const Params *p)
+{
+  auto na = Number::load(a);
+  auto nr = na.slr(*b);
+  nr.store(r);
+}
+
 template <u32 WORDS>
 void test_mont_kernel(const u32 r[WORDS], const u32 a[WORDS],
                       const u32 b[WORDS], const Params params, void kernel(u32 *, const u32 *, const u32 *, const Params *))
@@ -246,6 +253,8 @@ namespace instance1
   // a^b R mod m
   const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS(0xbd92e68, 0x3407ccf8, 0x5be63308, 0xb5207210, 0x907bef0a, 0xf2ac6db5, 0x37e9b8d8, 0xf87662fa);
   const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS(0x1e46804, 0x440e153b, 0xcfdcb1c1, 0x4c66dfe6, 0x6a669456, 0x0e18dec0, 0x8e8bfa6e, 0x48c9128c);
+  // a >> 125
+  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x47178dcb, 0xa6554595, 0x100fae76, 0xe8353b91);
 
   TEST_CASE("Big number subtraction 1")
   {
@@ -281,6 +290,13 @@ namespace instance1
   {
     test_mont_kernel2<WORDS>(a_square, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                              { bn_square<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Big number shift logical right 1")
+  {
+    const u32 k[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 125);
+    test_mont_kernel<WORDS>(a_slr125, a, k, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { bn_slr<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Montgomery multiplication 1")
@@ -373,6 +389,7 @@ namespace instance2
   // a^b R mod m
   const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS(0x10c99ac6, 0xb563f419, 0x8775e73e, 0x5ce7be6f, 0xaa2bf8d0, 0x54a445fa, 0xaa6941d2, 0x614f6e74);
   const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS(0xb6ebbd1, 0xc0fd36a5, 0xad4f0ad6, 0x4c55c6f2, 0xe6eba872, 0xaf521f6e, 0x24ef45dc, 0xc51967b2);
+  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x8672b483, 0x13459fe4, 0xc32ab83f, 0x949232be);
 
   TEST_CASE("Big number addition 2")
   {
@@ -408,6 +425,13 @@ namespace instance2
   {
     test_mont_kernel2<WORDS>(a_square, a, b, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                              { bn_square<<<1, 1>>>(r, a, b, p); });
+  }
+
+  TEST_CASE("Big number shift logical right 2")
+  {
+    const u32 k[WORDS] = BIG_INTEGER_CHUNKS(0, 0, 0, 0, 0, 0, 0, 125);
+    test_mont_kernel<WORDS>(a_slr125, a, k, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
+                            { bn_slr<<<1, 1>>>(r, a, b, p); });
   }
 
   TEST_CASE("Montgomery multiplication 2")

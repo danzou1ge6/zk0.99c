@@ -304,6 +304,38 @@ def host_montgomery_reduction(n_words: int) -> List[str]:
 
     return lines;
 
+def slr(n_words: int) -> List[str]:
+    var_a = lambda i: f"c{i}"
+    var_r = lambda i: f"r.c{i}"
+    var_k = "k"
+    var_k_lo = "k_lo"
+    var_k_hi = "k_hi"
+
+    lines = [
+        "u32 k_lo, k_hi;"
+    ]
+
+    lines.append(f"if ({var_k} == 0) return *this;")
+
+    for i in range(n_words):
+        if i == 0:
+            lines.append(f"if ({var_k} < {(i + 1) * 32})")
+        else:
+            lines.append(f"else if ({var_k} >= {i * 32} && {var_k} < {(i + 1) * 32})")
+        lines.append("{")
+
+        lines.append(f"  {var_k_lo} = {var_k} - {i * 32};")
+        lines.append(f"  {var_k_hi} = {(i + 1) * 32} - {var_k};")
+
+        for j in range(n_words - 1, n_words - i - 1, -1):
+            lines.append(f"  {var_r(j)} = 0;")
+        lines.append(f"  {var_r(n_words - i - 1)} = {var_a(n_words - 1)} >> {var_k_lo};")
+        for j in range(n_words - i - 2, -1, -1):
+            lines.append(f"  {var_r(j)} = ({var_a(j + i + 1)} << {var_k_hi}) | ({var_a(j + i)} >> {var_k_lo});")
+        lines.append("}")
+    
+    return lines;
+    
 
 T = TypeVar("T")
 def index_of_predicate(lst: List[T], predicate: Callable[[T], bool], begin: int = 0) -> Optional[int]:
@@ -374,6 +406,11 @@ if __name__ == "__main__":
         code_lines,
         "host_montgomery_reduction",
         host_montgomery_reduction(8)
+    )
+    code_lines = insert_generated(
+        code_lines,
+        "slr",
+        slr(8)
     )
 
     with open(target, "w") as wf:
