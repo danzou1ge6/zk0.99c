@@ -45,6 +45,8 @@ def quick_pow(x: int, m: int, p: int) -> int:
 
 def one_sample(bits: int, m: int) -> str:
     assert m < 2 ** bits
+    r = 2 ** bits
+
     a = randint(0, m - 1)
     b = randint(0, m - 1)
     sub_ab = a - b if a >= b else a + 2 ** bits - b
@@ -61,7 +63,6 @@ def one_sample(bits: int, m: int) -> str:
     m_prime = m_magic(m, n_words=n_words)
     product_mont = montgomery_reduction(product, bits, m)
 
-    r = 2 ** bits
     r_mod = r % m
     r2_mod = r * r % m
     

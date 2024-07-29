@@ -7,46 +7,53 @@ namespace NTT {
     typedef u_int32_t u32;
     
     template<u32 WORDS>
+    __global__ void rearrange(u32 * data, uint2 * reverse, u32 len) {
+        u32 index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= len) return;
+        uint2 r = reverse[index];
+        
+        #pragma unroll
+        for (u32 i = 0; i < WORDS; i++) {
+            u32 tmp = data[r.x * WORDS + i];
+            data[r.x * WORDS + i] = data[r.y * WORDS + i];
+            data[r.y * WORDS + i] = tmp;
+        }
+    }
+
+    template<u32 WORDS>
+    __global__ void naive(u32* data, u32 len, u32* roots, u32 stride, mont256::Params* param) {
+        auto env = mont256::Env(*param);
+
+        u32 id = (blockDim.x * blockIdx.x + threadIdx.x);
+        if (id << 1 >= len) return;
+
+        u32 offset = id & (stride - 1);
+        u32 pos = (id << 1) - offset;
+
+        auto a = mont256::Element::load(data + (pos * WORDS));
+        auto b = mont256::Element::load(data + ((pos + stride) * WORDS));
+        auto w = mont256::Element::load(roots + (offset * len / (stride << 1)) * WORDS);
+
+        b = env.mul(b, w);
+        
+        auto tmp = a;
+        a = env.add(a, b);
+        b = env.sub(tmp, b);
+        
+        a.store(data + (pos * WORDS));
+        b.store(data + ((pos + stride) * WORDS));
+    }
+
+
+    template<u32 WORDS>
     class naive_ntt {
         mont256::Params param;
         mont256::Element unit;
         bool timer;
-
-        __global__ void rearrange(u32 * data, uint2 * reverse, u32 len) {
-            u32 index = blockIdx.x * blockDim.x + threadIdx.x;
-            if (index >= len) return;
-            uint2 r = reverse[index];
-            
-            #pragma unroll
-            for (u32 i = 0; i < WORDS; i++) {
-                u32 tmp = data[r.x * WORDS + i];
-                data[r.x * WORDS + i] = data[r.y * WORDS + i];
-                data[r.y * WORDS + i] = tmp;
-            }
-        }
-
-        __global__ void naive(u32* data[], u32 len, u32* roots[], u32 stride, mont256::Params &param) {
-            auto env = mont256::Env(param);
-
-            u32 id = (blockDim.x * blockIdx.x + threadIdx.x);
-            if (id << 1 >= len) return;
-
-            u32 offset = id & (stride - 1);
-            u32 pos = (id << 1) - offset;
-
-            auto a = mont256::Element::load(data + (pos * WORDS));
-            auto b = mont256::Element::load(data + ((pos + stride) * WORDS));
-            auto w = mont256::Element::load(roots + (offset * len / (stride << 1)) * WORDS);
-
-            b = env.mul(b, w);
-            
-            auto tmp = a;
-            a = env.add_modulo(a, b);
-            b = env.sub_modulo(tmp, b);
-            
-            a.store(data + (pos * WORDS));
-            b.store(data + ((pos + stride) * WORDS));
-        }
+        uint2 * reverse;
+        u32 * roots;
+        const u32 log_len, len;
+        u32 r_len;
         
         u32 gen_reverse(u32 log_len, uint2* reverse_pair) {
             u32 len = 1 << log_len;
@@ -79,50 +86,56 @@ namespace NTT {
         public:
         float milliseconds = 0;
 
-        naive_ntt() {
-            // TODO : set param
+        naive_ntt(mont256::Params param, u32* omega, u32 log_len, bool timer) : param(param), log_len(log_len), len(1 << log_len), timer(timer) {
+            // TODO : set unit
+            auto env = mont256::Env(param);
+            unit.load(omega);
+            auto exponent = mont256::Number(); // TODO
+            unit = env.host_pow(unit, exponent);
+
+            roots = (u32 *) malloc(len * WORDS * sizeof(u32));
+            gen_roots(roots, len, unit);
+            reverse = (uint2 *) malloc(len * sizeof(uint2));
+            r_len = gen_reverse(log_len, reverse);
         }
 
-        void ntt(u32 * data, u32 log_len) {
+        ~naive_ntt() {
+            free(roots);
+            free(reverse);
+        }
+
+        void ntt(u32 * data) {
             cudaEvent_t start, end;
             cudaEventCreate(&start);
             cudaEventCreate(&end);
 
-            u32 len = 1 << log_len;
-            uint2 * reverse, * reverse_d;
-            reverse = (uint2 *) malloc(len * sizeof(uint2));
-            u32 r_len = gen_reverse(log_len, reverse);
+            uint2 * reverse_d;
             cudaMalloc(&reverse_d, r_len * sizeof(uint2));
             cudaMemcpy(reverse_d, reverse, r_len * sizeof(uint2), cudaMemcpyHostToDevice);
             
-            dim3 rearrange_block(768);
-            dim3 rearrange_grid((r_len + rearrange_block.x - 1) / rearrange_block.x);
-
             u32 * data_d;
             cudaMalloc(&data_d, len * WORDS * sizeof(u32));
             cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
 
-            
-
-            mont256::Element unit_cur; // TODO : set unit
-            
-            u32 * roots, * roots_d;
-            roots = (u32 *) malloc(len * WORDS * sizeof(u32));
+            u32 * roots_d;
             cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
-            gen_roots(roots, len, unit_cur);
             cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
 
+            mont256::Params *param_d;
+            cudaMalloc(&param_d, sizeof(mont256::Params));
+            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
+
+            dim3 rearrange_block(768);
+            dim3 rearrange_grid((r_len + rearrange_block.x - 1) / rearrange_block.x);
             dim3 ntt_block(768);
             dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
 
-            mont256::Params param_d;
-            cudaMemcpy(&param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
-
             if (timer) cudaEventRecord(start);
-            rearrange<<<rearrange_grid, rearrange_block>>>(data, reverse, r_len);
+
+            rearrange <WORDS> <<<rearrange_grid, rearrange_block>>> (data, reverse, r_len);
 
             for (u32 stride = 1; stride < len; stride <<= 1) {
-                naive<<<ntt_grid, ntt_block>>>(data_d, len, roots_d, stride, param_d);
+                naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);
             }
 
             if (timer) {
@@ -136,11 +149,109 @@ namespace NTT {
             cudaFree(data_d);
             cudaFree(reverse_d);
             cudaFree(roots_d);
-            free(roots);
-            free(reverse);
         }
     };
 
+    template <u32 WORDS>
+    __forceinline__ __device__ mont256::Element pow_lookup(u32 *omegas, u32 exponent, mont256::Env &env) {
+        auto res = env.one();
+        u32 i = 0;
+        while(exponent > 0) {
+            if (exponent & 1) {
+                res = env.mul(res, mont256::Element::load(omegas + i * WORDS));
+            }
+            exponent = exponent >> 1;
+            i++;
+        }
+        return res;
+    }
+
+    /*
+    * FFT algorithm is inspired from: http://www.bealto.com/gpu-fft_group-1.html
+    */
+    template <u32 WORDS>
+    __global__ void bellperson_kernel(u32 * x, // Source buffer
+                        u32 * y, // Destination buffer
+                        u32 * pq, // Precalculated twiddle factors
+                        u32 * omegas, // [omega, omega^2, omega^4, ...]
+                        u32 n, // Number of elements
+                        u32 lgp, // Log2 of `p` (Read more in the link above)
+                        u32 deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
+                        u32 max_deg, // Maximum degree supported, according to `pq` and `omegas`
+                        mont256::Params* param)
+    {
+
+        // There can only be a single dynamic shared memory item, hence cast it to the type we need.
+        extern __shared__ u32* u;
+
+        auto env = mont256::Env(*param);
+
+        u32 lid = threadIdx.x;//GET_LOCAL_ID();
+        u32 lsize = blockDim.x;//GET_LOCAL_SIZE();
+        u32 index = blockIdx.x;//GET_GROUP_ID();
+        u32 t = n >> deg;
+        u32 p = 1 << lgp;
+        u32 k = index & (p - 1);
+
+        x += index * WORDS;
+        y += (((index - k) << deg) + k) * WORDS;
+
+        u32 count = 1 << deg; // 2^deg
+        u32 counth = count >> 1; // Half of count
+
+        u32 counts = count / lsize * lid;
+        u32 counte = counts + count / lsize;
+
+        // Compute powers of twiddle
+        auto twiddle = pow_lookup<WORDS>(omegas, (n >> lgp >> deg) * k, env);
+
+        // TODO: change to u32 pow
+        auto exponent = mont256::Number::zero();
+        exponent.c0 = counts;
+        auto tmp = env.pow(twiddle, exponent);
+
+        for(u32 i = counts; i < counte; i++) {
+            auto num = mont256::Element::load(x + i * t * WORDS);
+            num = env.mul(num, tmp);
+            num.store(u + i * WORDS);
+            tmp = env.mul(tmp, twiddle);
+        }
+
+        __syncthreads();
+
+        const u32 pqshift = max_deg - deg;
+        for(u32 rnd = 0; rnd < deg; rnd++) {
+            const u32 bit = counth >> rnd;
+            for(u32 i = counts >> 1; i < counte >> 1; i++) {
+                const u32 di = i & (bit - 1);
+                const u32 i0 = (i << 1) - di;
+                const u32 i1 = i0 + bit;
+                mont256::Element a, b, tmp, w;
+                a.load(u + i0 * WORDS);
+                b.load(u + i1 * WORDS);
+                tmp = a;
+                a = env.add(a, b);
+                b = env.sub(tmp, b);
+                if (di != 0) {
+                    w.load(pq + (di << rnd << pqshift) * WORDS);
+                    b = env.mul(b, w);
+                }
+                a.store(u + i0 * WORDS);
+                b.store(u + i1 * WORDS);
+            }
+            __syncthreads();
+        }
+        
+
+        for(u32 i = counts >> 1; i < counte >> 1; i++) {
+            #pragma unroll
+            for (u32 j = 0; j < WORDS; j++) {
+                y[(i * p) * WORDS + j] = u[(__brev(i) >> (32 - deg)) * WORDS + j];
+                y[((i + counth) * p) * WORDS + j] = u[(__brev(i + counth) >> (32 - deg)) * WORDS + j];
+            }
+        }
+    }
+    
     template<u32 WORDS>
     class bellperson_ntt {
         const u32 max_deg = 8u;
@@ -151,121 +262,24 @@ namespace NTT {
         u32 *pq; // Precalculated values for radix degrees up to `max_deg`
         u32 *omegas; // Precalculated values for [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
 
-        __forceinline__ __device__ mont256::Element pow_lookup(u32 *omegas, u32 exponent, mont256::Env &env) {
-            auto res = mont256::Element::one();
-            u32 i = 0;
-            while(exponent > 0) {
-                if (exponent & 1) {
-                    res = env.mul(res, mont256::Element::load(omegas + i * WORDS));
-                }
-                exponent = exponent >> 1;
-                i++;
-            }
-            return res;
-        }
-
-        /*
-        * FFT algorithm is inspired from: http://www.bealto.com/gpu-fft_group-1.html
-        */
-        __global__ void bellperson_kernel(u32 * x, // Source buffer
-                            u32 * y, // Destination buffer
-                            u32 * pq, // Precalculated twiddle factors
-                            u32 * omegas, // [omega, omega^2, omega^4, ...]
-                            u32 n, // Number of elements
-                            u32 lgp, // Log2 of `p` (Read more in the link above)
-                            u32 deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
-                            u32 max_deg, // Maximum degree supported, according to `pq` and `omegas`
-                            mont256::Params &param)
-        {
-
-            // There can only be a single dynamic shared memory item, hence cast it to the type we need.
-            extern __shared__ u32* u[];
-
-            auto env = mont256::Env(param);
-
-            u32 lid = threadIdx.x;//GET_LOCAL_ID();
-            u32 lsize = blockDim.x;//GET_LOCAL_SIZE();
-            u32 index = blockIdx.x;//GET_GROUP_ID();
-            u32 t = n >> deg;
-            u32 p = 1 << lgp;
-            u32 k = index & (p - 1);
-
-            x += index * WORDS;
-            y += (((index - k) << deg) + k) * WORDS;
-
-            u32 count = 1 << deg; // 2^deg
-            u32 counth = count >> 1; // Half of count
-
-            u32 counts = count / lsize * lid;
-            u32 counte = counts + count / lsize;
-
-            // Compute powers of twiddle
-            auto twiddle = pow_lookup(omegas, (n >> lgp >> deg) * k, env);
-
-            // TODO: change to u32 pow
-            auto exponent = mont256::Number::zero();
-            exponent.c0 = counts;
-            auto tmp = env.pow(twiddle, exponent);
-
-            for(u32 i = counts; i < counte; i++) {
-                auto num = mont256::Element::load(x + i * t * WORDS);
-                num = env.mul(num, tmp);
-                num.store(u + i * WORDS);
-                tmp = env.mul(tmp, twiddle);
-            }
-
-            __syncthreads();
-
-            const u32 pqshift = max_deg - deg;
-            for(u32 rnd = 0; rnd < deg; rnd++) {
-                const u32 bit = counth >> rnd;
-                for(u32 i = counts >> 1; i < counte >> 1; i++) {
-                    const u32 di = i & (bit - 1);
-                    const u32 i0 = (i << 1) - di;
-                    const u32 i1 = i0 + bit;
-                    mont256::Element a, b, tmp, w;
-                    a.load(u + i0 * WORDS);
-                    b.load(u + i1 * WORDS);
-                    tmp = a;
-                    a = env.add_modulo(a, b);
-                    b = env.sub_modulo(tmp, b);
-                    if (di != 0) {
-                        w.load(pq + (di << rnd << pqshift) * WORDS);
-                        b = env.mul(b, w);
-                    }
-                    a.store(u + i0 * WORDS);
-                    b.store(u + i1 * WORDS);
-                }
-                __syncthreads();
-            }
-            
-
-            for(u32 i = counts >> 1; i < counte >> 1; i++) {
-                #pragma unroll
-                for (u32 j = 0; j < WORDS; j++) {
-                    y[(i * p) * WORDS + j] = u[(__brev(i) >> (32 - deg)) * WORDS + j];
-                    y[((i + counth) * p) * WORDS + j] = u[(__brev(i + counth) >> (32 - deg)) * WORDS + j];
-                }
-            }
-        }
 
         public:
         float milliseconds = 0;
-        bellperson_ntt(u32 log_len, bool timer) : log_len(log_len), len(1 << log_len), timer(timer) {
-            // TODO : set param and unit
-            
-
+        bellperson_ntt(mont256::Params param, u32* omega, u32 log_len, bool timer) : param(param), log_len(log_len), len(1 << log_len), timer(timer) {
             // Precalculate:
             auto env = mont256::Env(param);
 
-            // TODO: unit = qpow(omega, (P - 1ll) / n);
+            // unit = qpow(omega, (P - 1ll) / n);
+            unit.load(omega);
+            auto exponent = mont256::Number(); // TODO:
+            unit = env.host_pow(unit, exponent);
 
             // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
 
             pq = (u32 *) malloc((1 << max_deg >> 1) * sizeof(u32) * WORDS);
             memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
             pq[0] = 1;
-            auto exponent = mont256::Number::zero();
+            exponent = mont256::Number::zero();
             exponent.c0 = len >> max_deg;
             auto twiddle = env.host_pow(unit, exponent);
             if (max_deg > 1) {
@@ -312,8 +326,9 @@ namespace NTT {
             cudaMalloc(&x, len * WORDS * sizeof(u32));
             cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
 
-            mont256::Params param_d;
-            cudaMemcpy(&param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
+            mont256::Params* param_d;
+            cudaMalloc(&param_d, sizeof(mont256::Params));
+            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
 
             // Specifies log2 of `p`, (http://www.bealto.com/gpu-fft_group-1.html)
             u32 log_p = 0u;
@@ -331,7 +346,7 @@ namespace NTT {
                 dim3 block(1 << (deg - 1));
                 dim3 grid(len >> deg);
 
-                bellperson_kernel <<< grid, block, sizeof(u32) * WORDS * (1 << deg) >>>(x, y, pq_d, omegas_d, len, log_p, deg, max_deg, param_d);
+                bellperson_kernel <WORDS> <<< grid, block, sizeof(u32) * WORDS * (1 << deg) >>> (x, y, pq_d, omegas_d, len, log_p, deg, max_deg, param_d);
 
                 log_p += deg;
 
@@ -353,7 +368,6 @@ namespace NTT {
             cudaFree(y);
             cudaFree(x);
 
-            return x;
         }
     };
 }
