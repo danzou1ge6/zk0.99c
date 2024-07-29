@@ -259,6 +259,14 @@ namespace mont256
       // >>> GENERATED END
     }
 
+    __device__ __host__ __forceinline__ Number slr(u32 k) const &
+    {
+      Number r;
+      // >>> GENERATED: slr
+      // >>> GENERATED END
+      return r;
+    }
+
     // Word-by-word equality.
     __host__ __device__ __forceinline__ bool operator==(const Number &rhs) const &
     {
@@ -391,11 +399,28 @@ namespace mont256
       elem.n = r_mod;
       return elem;
     }
+
     __device__ __host__ __forceinline__ Element zero() const &
     {
       Element elem;
       elem.n = Number::zero();
       return elem;
+    }
+
+    // Equality on Fp
+    __device__ __host__ __forceinline__ bool is_zero(Element &e) const &
+    {
+      return e.n.is_zero();
+    }
+
+    __device__ __host__ __forceinline__ bool eq(Element &a, Element &b) const &
+    {
+      return a.n == b.n;
+    }
+
+    __device__ __host__ __forceinline__ bool ne(Element &a, Element &b) const &
+    {
+      return a.n != b.n;
     }
 
     // Addition/Subtraction modulo m
