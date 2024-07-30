@@ -1,7 +1,6 @@
 #include <iostream>
 #include <random>
 #include <cassert>
-#include <cuda_runtime.h>
 #include <ctime>
 #include "../src/NTT.cuh"
 
@@ -62,13 +61,12 @@ int main() {
     long long l,length = 1ll;
     int bits = 0;
 
-    l = qpow(2, 26);
+    l = qpow(2, 24);
 
     while (length < l) {
         length <<= 1ll;
         bits ++;
     }
-
 
     data = new long long[length];
     data_copy = new long long[length];
@@ -132,6 +130,27 @@ int main() {
             printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
             return 0;
         }
+    }
+
+    // self sort in place approach
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    NTT::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true);
+    SSIP.ntt(data_gpu);
+    printf("SSIP: %fms\n", SSIP.milliseconds);
+
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            return 0;
+        }
+    }
+
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Error: %s\n", cudaGetErrorString(err));
     }
 
     delete [] data;
