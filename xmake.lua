@@ -22,6 +22,14 @@ target("test-mont")
     add_files("mont/tests/*.cu")
     add_packages("doctest")
 
+target("test-bn254")
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_files("msm/tests/bn254.cu")
+    add_packages("doctest")
+
 task("sync-epcc")
     on_run(function ()
         os.runv("rsync -av --delete . epcc4090:~/zksnark --exclude-from .gitignore", {

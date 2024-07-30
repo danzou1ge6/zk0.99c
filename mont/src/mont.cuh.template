@@ -5,6 +5,10 @@
 #include <iomanip>
 #include <tuple>
 
+#define BIG_INTEGER_CHUNKS8(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
+#define BIG_INTEGER_CHUNKS16(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
+  {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15}
+
 namespace mont256
 {
   typedef u_int32_t u32;
@@ -408,17 +412,17 @@ namespace mont256
     }
 
     // Equality on Fp
-    __device__ __host__ __forceinline__ bool is_zero(Element &e) const &
+    __device__ __host__ __forceinline__ bool is_zero(const Element &e) const &
     {
       return e.n.is_zero();
     }
 
-    __device__ __host__ __forceinline__ bool eq(Element &a, Element &b) const &
+    __device__ __host__ __forceinline__ bool eq(const Element &a, const Element &b) const &
     {
       return a.n == b.n;
     }
 
-    __device__ __host__ __forceinline__ bool ne(Element &a, Element &b) const &
+    __device__ __host__ __forceinline__ bool ne(const Element &a, const Element &b) const &
     {
       return a.n != b.n;
     }
@@ -694,6 +698,13 @@ namespace mont256
        << std::setfill('0') << std::setw(8) << n.c2 << '_'
        << std::setfill('0') << std::setw(8) << n.c1 << '_'
        << std::setfill('0') << std::setw(8) << n.c0;
+    return os;
+  }
+
+  std::ostream &
+  operator<<(std::ostream &os, const Element &e)
+  {
+    os << e.n;
     return os;
   }
 
