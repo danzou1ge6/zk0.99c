@@ -28,6 +28,13 @@ target("test-bn254")
     end
     add_deps("mont.cuh")
     add_files("msm/tests/bn254.cu")
+
+target("test-ntt")
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_files("NTT/tests/*.cu")
     add_packages("doctest")
 
 task("sync-epcc")
