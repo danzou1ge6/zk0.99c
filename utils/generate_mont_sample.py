@@ -28,6 +28,8 @@ def params(bits: int, m: int) -> str:
 
 def one_sample(bits: int, m: int) -> str:
     assert m < 2 ** bits
+    r = 2 ** bits
+
     a = randint(0, m - 1)
     b = randint(0, m - 1)
     sub_ab = a - b if a >= b else a + 2 ** bits - b
