@@ -22,6 +22,13 @@ target("test-mont")
     add_files("mont/tests/*.cu")
     add_packages("doctest")
 
+target("test-bn254")
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_files("msm/tests/bn254.cu")
+
 target("test-ntt")
     if is_mode("debug") then 
         set_symbols("debug")

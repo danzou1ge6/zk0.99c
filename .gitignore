@@ -3,3 +3,4 @@
 /mont/src/mont.cuh
 /doc/book
 /.vscode
+**/__pycache__
