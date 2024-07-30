@@ -96,18 +96,17 @@ int main() {
     }
 
     uint *data_gpu;
-
     data_gpu = new uint [length * WORDS];
+
+    uint unit[WORDS];
+    memset(unit, 0, sizeof(uint) * WORDS);
+    unit[0] = root;
+
+    // naive gpu approach
     memset(data_gpu, 0, sizeof(uint) * length * WORDS);
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-    
-    uint unit[WORDS];
-    memset(unit, 0, sizeof(uint) * WORDS);
-    unit[0] = root;
-    // naive gpu approach
-    
     NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
     naive.ntt(data_gpu);
     printf("naive: %fms\n", naive.milliseconds);
@@ -119,6 +118,21 @@ int main() {
         }
     }
 
+    // bellperson approach
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    NTT::bellperson_ntt<WORDS> bellperson(params, unit, bits, true);
+    bellperson.ntt(data_gpu);
+    printf("bellperson: %fms\n", bellperson.milliseconds);
+
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            return 0;
+        }
+    }
 
     delete [] data;
     delete [] data_copy;
