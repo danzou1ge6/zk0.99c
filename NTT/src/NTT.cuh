@@ -4,31 +4,50 @@
 #include <cuda_runtime.h>
 
 namespace NTT {
-    typedef u_int32_t u32;
+    typedef uint u32;
+    typedef unsigned long long u64;
+    typedef uint u32_E;
+    typedef uint u32_N;
+
+    template<u32 WORDS>
+    __global__ void element_to_number(u32* data, u32 len, mont256::Params* param) {
+        auto env = mont256::Env(*param);
+        u64 index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= len) return;
+        env.to_number(mont256::Element::load(data + index * WORDS)).store(data + index * WORDS);
+    }
+
+    template<u32 WORDS>
+    __global__ void number_to_element(u32* data, u32 len, mont256::Params* param) {
+        auto env = mont256::Env(*param);
+        u64 index = blockIdx.x * blockDim.x + threadIdx.x;
+        if (index >= len) return;
+        env.from_number(mont256::Number::load(data + index * WORDS)).store(data + index * WORDS);
+    }
     
     template<u32 WORDS>
-    __global__ void rearrange(u32 * data, uint2 * reverse, u32 len) {
+    __global__ void rearrange(u32_E * data, uint2 * reverse, u32 len) {
         u32 index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= len) return;
         uint2 r = reverse[index];
         
         #pragma unroll
         for (u32 i = 0; i < WORDS; i++) {
-            u32 tmp = data[r.x * WORDS + i];
-            data[r.x * WORDS + i] = data[r.y * WORDS + i];
-            data[r.y * WORDS + i] = tmp;
+            u32 tmp = data[((u64)r.x) * WORDS + i];
+            data[((u64)r.x) * WORDS + i] = data[((u64)r.y) * WORDS + i];
+            data[((u64)r.y) * WORDS + i] = tmp;
         }
     }
 
     template<u32 WORDS>
-    __global__ void naive(u32* data, u32 len, u32* roots, u32 stride, mont256::Params* param) {
+    __global__ void naive(u32_E* data, u32 len, u32_E* roots, u32 stride, mont256::Params* param) {
         auto env = mont256::Env(*param);
 
         u32 id = (blockDim.x * blockIdx.x + threadIdx.x);
         if (id << 1 >= len) return;
 
-        u32 offset = id & (stride - 1);
-        u32 pos = (id << 1) - offset;
+        u64 offset = id % stride;
+        u64 pos = ((id - offset) << 1) + offset;
 
         auto a = mont256::Element::load(data + (pos * WORDS));
         auto b = mont256::Element::load(data + ((pos + stride) * WORDS));
@@ -47,11 +66,11 @@ namespace NTT {
 
     template<u32 WORDS>
     class naive_ntt {
-        mont256::Params param;
+        const mont256::Params param;
         mont256::Element unit;
-        bool timer;
+        bool debug;
         uint2 * reverse;
-        u32 * roots;
+        u32_E * roots;
         const u32 log_len, len;
         u32 r_len;
         
@@ -73,11 +92,11 @@ namespace NTT {
             return r_len;
         }
 
-        void gen_roots(u32 * roots, u32 len, mont256::Element unit) {
+        void gen_roots(u32_E * roots, u32 len) {
             auto env = mont256::Env::host_new(param);
-            roots[0] = 1;
+            env.one().store(roots);
             auto last_element = mont256::Element::load(roots);
-            for (u32 i = WORDS; i < len * WORDS; i+= WORDS) {
+            for (u64 i = WORDS; i < ((u64)len) * WORDS; i+= WORDS) {
                 last_element = env.host_mul(last_element, unit);
                 last_element.store(roots + i);
             }
@@ -86,16 +105,23 @@ namespace NTT {
         public:
         float milliseconds = 0;
 
-        naive_ntt(mont256::Params param, u32* omega, u32 log_len, bool timer) : param(param), log_len(log_len), len(1 << log_len), timer(timer) {
-            // TODO : set unit
-            auto env = mont256::Env(param);
-            unit.load(omega);
-            auto exponent = mont256::Number(); // TODO
+        naive_ntt(const mont256::Params &param, const u32_N* omega, u32 log_len, bool debug) : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
+            
+            auto env = mont256::Env::host_new(param);
+            // unit = qpow(omega, (P - 1ll) / len)
+            unit = env.host_from_number(mont256::Number::load(omega));
+            auto exponent = mont256::Number::load(param.m);
+            auto one = mont256::Number::zero();
+            one.c0 = 1;
+            exponent = exponent.host_sub(one);
+            exponent = exponent.slr(log_len);
             unit = env.host_pow(unit, exponent);
 
-            roots = (u32 *) malloc(len * WORDS * sizeof(u32));
-            gen_roots(roots, len, unit);
-            reverse = (uint2 *) malloc(len * sizeof(uint2));
+
+            roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
+            gen_roots(roots, len);
+
+            reverse = (uint2 *) malloc(((u64)len) * sizeof(uint2));
             r_len = gen_reverse(log_len, reverse);
         }
 
@@ -113,13 +139,13 @@ namespace NTT {
             cudaMalloc(&reverse_d, r_len * sizeof(uint2));
             cudaMemcpy(reverse_d, reverse, r_len * sizeof(uint2), cudaMemcpyHostToDevice);
             
-            u32 * data_d;
-            cudaMalloc(&data_d, len * WORDS * sizeof(u32));
-            cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+            u32_E * data_d;
+            cudaMalloc(&data_d, ((u64)len) * WORDS * sizeof(u32_E));
+            cudaMemcpy(data_d, data, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
 
-            u32 * roots_d;
-            cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
-            cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+            u32_E * roots_d;
+            cudaMalloc(&roots_d, ((u64)len) * WORDS * sizeof(u32_E));
+            cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
 
             mont256::Params *param_d;
             cudaMalloc(&param_d, sizeof(mont256::Params));
@@ -130,25 +156,32 @@ namespace NTT {
             dim3 ntt_block(768);
             dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
 
-            if (timer) cudaEventRecord(start);
+            if (debug) {
+                dim3 block(768);
+                dim3 grid((len - 1) / block.x + 1);
+                number_to_element <WORDS> <<< block, grid >>> (data_d, len, param_d);
+                cudaEventRecord(start);
+            }
 
-            rearrange <WORDS> <<<rearrange_grid, rearrange_block>>> (data, reverse, r_len);
-
+            rearrange <WORDS> <<<rearrange_grid, rearrange_block>>> (data_d, reverse_d, r_len);
             for (u32 stride = 1; stride < len; stride <<= 1) {
                 naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);
             }
 
-            if (timer) {
+            if (debug) {
                 cudaEventRecord(end);
                 cudaEventSynchronize(end);
                 cudaEventElapsedTime(&milliseconds, start, end);
+                dim3 block(768);
+                dim3 grid((len - 1) / block.x + 1);
+                element_to_number <WORDS> <<< block, grid >>> (data_d, len, param_d);
             }
 
-            cudaMemcpy(data, data_d, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
+            cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
 
             cudaFree(data_d);
             cudaFree(reverse_d);
-            cudaFree(roots_d);
+            cudaFree(roots_d); 
         }
     };
 
@@ -205,10 +238,7 @@ namespace NTT {
         // Compute powers of twiddle
         auto twiddle = pow_lookup<WORDS>(omegas, (n >> lgp >> deg) * k, env);
 
-        // TODO: change to u32 pow
-        auto exponent = mont256::Number::zero();
-        exponent.c0 = counts;
-        auto tmp = env.pow(twiddle, exponent);
+        auto tmp = env.pow(twiddle, counts);
 
         for(u32 i = counts; i < counte; i++) {
             auto num = mont256::Element::load(x + i * t * WORDS);
@@ -227,13 +257,13 @@ namespace NTT {
                 const u32 i0 = (i << 1) - di;
                 const u32 i1 = i0 + bit;
                 mont256::Element a, b, tmp, w;
-                a.load(u + i0 * WORDS);
-                b.load(u + i1 * WORDS);
+                a = a.load(u + i0 * WORDS);
+                b = b.load(u + i1 * WORDS);
                 tmp = a;
                 a = env.add(a, b);
                 b = env.sub(tmp, b);
                 if (di != 0) {
-                    w.load(pq + (di << rnd << pqshift) * WORDS);
+                    w = w.load(pq + (di << rnd << pqshift) * WORDS);
                     b = env.mul(b, w);
                 }
                 a.store(u + i0 * WORDS);
@@ -269,9 +299,13 @@ namespace NTT {
             // Precalculate:
             auto env = mont256::Env(param);
 
-            // unit = qpow(omega, (P - 1ll) / n);
-            unit.load(omega);
-            auto exponent = mont256::Number(); // TODO:
+            // unit = qpow(omega, (P - 1ll) / len)
+            unit = unit.load(omega);
+            auto exponent = mont256::Number::load(param.m);
+            auto one = mont256::Number::zero();
+            one.c0 = 1;
+            exponent = exponent.host_sub(one) ;
+            exponent.slr(log_len);            
             unit = env.host_pow(unit, exponent);
 
             // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
@@ -279,9 +313,7 @@ namespace NTT {
             pq = (u32 *) malloc((1 << max_deg >> 1) * sizeof(u32) * WORDS);
             memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
             pq[0] = 1;
-            exponent = mont256::Number::zero();
-            exponent.c0 = len >> max_deg;
-            auto twiddle = env.host_pow(unit, exponent);
+            auto twiddle = env.host_pow(unit, len >> max_deg);
             if (max_deg > 1) {
                 twiddle.store(pq + WORDS);
                 auto last = twiddle;

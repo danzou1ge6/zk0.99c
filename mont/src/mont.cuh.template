@@ -639,6 +639,27 @@ namespace mont256
       return res;
     }
 
+    __host__ Element host_pow(const Element &a, const u32 &p)
+    {
+      auto res = one();
+      bool found_one = false;
+      auto iter = [this, a](bool &found_one, Element &res, u32 p)
+      {
+        for (int i = 31; i >= 0; i--)
+        {
+          if (found_one)
+            res = host_square(res);
+          if ((p >> i) & 1)
+          {
+            found_one = true;
+            res = host_mul(res, a);
+          }
+        }   
+      };
+      iter(found_one, res, p);
+      return res;
+    }
+
     // Inversion on Fp
     __device__ __forceinline__ Element invert(const Element &a)
     {

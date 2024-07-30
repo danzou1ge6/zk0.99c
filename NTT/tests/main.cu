@@ -5,8 +5,15 @@
 #include <ctime>
 #include "../src/NTT.cuh"
 
-#define P (469762049 ) // 29 * 2^57 + 1ll
+#define P (469762049 )
 #define root (3)
+#define BIG_INTEGER_CHUNKS(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
+const auto params = mont256::Params {
+  .m = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1c000001),
+  .r_mod = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xea6f185),
+  .r2_mod = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x4acda38),
+  .m_prime = 469762047
+};
 
 inline long long qpow(long long x, long long y) {
     long long base = 1ll;
@@ -55,7 +62,6 @@ int main() {
     long long l,length = 1ll;
     int bits = 0;
 
-    //scanf("%lld", &l);
     l = qpow(2, 26);
 
     while (length < l) {
@@ -75,7 +81,7 @@ int main() {
     std::random_device rd;
     std::mt19937 gen(rd());
     for (long long i = 0; i < length; i++) {
-        data[i] = i; std::abs((long long)gen()) % P;
+        data[i] = i % P;std::abs((long long)gen()) % P;
         data_copy[i] = data[i];
     }
 
@@ -92,25 +98,24 @@ int main() {
     uint *data_gpu;
 
     data_gpu = new uint [length * WORDS];
-    memset(data_gpu, 0, sizeof(*data_gpu) * length);
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
     for (int i = 0; i < length; i++) {
-        data_gpu[i * WORDS] = data[i];
+        data_gpu[i * WORDS] = data_copy[i];
     }
-
-    // TODO: Params
-    auto param = mont256::Params();
+    
     uint unit[WORDS];
     memset(unit, 0, sizeof(uint) * WORDS);
     unit[0] = root;
     // naive gpu approach
     
-    NTT::naive_ntt<WORDS> naive(param, unit, bits, true);
+    NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
     naive.ntt(data_gpu);
     printf("naive: %fms\n", naive.milliseconds);
 
     for (long long i = 0; i < length; i++) {
         if (data[i] != data_gpu[i * WORDS]) {
-            printf("%lld %lld %lld\n", data[i], data_copy[i], i);
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            return 0;
         }
     }
 
