@@ -577,9 +577,9 @@ namespace mont256
       return r;
     }
 
-    __device__ __forceinline__ void pow_iter(const Element &a, bool &found_one, Element &res, u32 p)
+    __device__ __forceinline__ void pow_iter(const Element &a, bool &found_one, Element &res, u32 p, u32 deg = 31)
     {
-      for (int i = 31; i >= 0; i--)
+      for (int i = deg; i >= 0; i--)
       {
         if (found_one)
           res = square(res);
@@ -607,11 +607,11 @@ namespace mont256
       return res;
     }
 
-    __device__ __forceinline__ Element pow(const Element &a, u32 p)
+    __device__ __forceinline__ Element pow(const Element &a, u32 p, u32 deg = 31)
     {
       auto res = one();
       bool found_one = false;
-      pow_iter(a, found_one, res, p);
+      pow_iter(a, found_one, res, p, deg);
       return res;
     }
 

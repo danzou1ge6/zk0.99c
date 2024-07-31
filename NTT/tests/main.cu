@@ -61,6 +61,8 @@ int main() {
     long long l,length = 1ll;
     int bits = 0;
 
+    cudaSetDevice(0);
+
     l = qpow(2, 24);
 
     while (length < l) {
@@ -101,20 +103,20 @@ int main() {
     unit[0] = root;
 
     // naive gpu approach
-    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
-    for (int i = 0; i < length; i++) {
-        data_gpu[i * WORDS] = data_copy[i];
-    }
-    NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
-    naive.ntt(data_gpu);
-    printf("naive: %fms\n", naive.milliseconds);
+    // memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    // for (int i = 0; i < length; i++) {
+    //     data_gpu[i * WORDS] = data_copy[i];
+    // }
+    // NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
+    // naive.ntt(data_gpu);
+    // printf("naive: %fms\n", naive.milliseconds);
 
-    for (long long i = 0; i < length; i++) {
-        if (data[i] != data_gpu[i * WORDS]) {
-            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-            break;
-        }
-    }
+    // for (long long i = 0; i < length; i++) {
+    //     if (data[i] != data_gpu[i * WORDS]) {
+    //         printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+    //         break;
+    //     }
+    // }
 
     // bellperson approach
     memset(data_gpu, 0, sizeof(uint) * length * WORDS);

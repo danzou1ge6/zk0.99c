@@ -10,6 +10,8 @@ namespace NTT {
     typedef uint u32_E;
     typedef uint u32_N;
 
+    __constant__ u32_E omegas_c[32 * 8]; // need to be revised if words changed
+
     template<u32 WORDS>
     __global__ void element_to_number(u32* data, u32 len, mont256::Params* param) {
         auto env = mont256::Env(*param);
@@ -186,12 +188,12 @@ namespace NTT {
     };
 
     template <u32 WORDS>
-    __forceinline__ __device__ mont256::Element pow_lookup(u32 *omegas, u32 exponent, mont256::Env &env) {
+    __forceinline__ __device__ mont256::Element pow_lookup(u32 exponent, mont256::Env &env) {
         auto res = env.one();
         u32 i = 0;
         while(exponent > 0) {
             if (exponent & 1) {
-                res = env.mul(res, mont256::Element::load(omegas + (i * WORDS)));
+                res = env.mul(res, mont256::Element::load(omegas_c + (i * WORDS)));
             }
             exponent = exponent >> 1;
             i++;
@@ -205,8 +207,7 @@ namespace NTT {
     template <u32 WORDS>
     __global__ void bellperson_kernel(u32_E * x, // Source buffer
                         u32_E * y, // Destination buffer
-                        u32_E * pq, // Precalculated twiddle factors
-                        u32_E * omegas, // [omega, omega^2, omega^4, ...]
+                        const u32_E * pq, // Precalculated twiddle factors
                         u32 n, // Number of elements
                         u32 lgp, // Log2 of `p` (Read more in the link above)
                         u32 deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
@@ -236,9 +237,9 @@ namespace NTT {
         u32 counte = counts + count / lsize;
 
         // Compute powers of twiddle
-        auto twiddle = pow_lookup<WORDS>(omegas, (n >> lgp >> deg) * k, env);
+        auto twiddle = pow_lookup<WORDS>((n >> lgp >> deg) * k, env);
 
-        auto tmp = env.pow(twiddle, counts);
+        auto tmp = env.pow(twiddle, counts, deg);
 
         for(u64 i = counts; i < counte; i++) {
             auto num = mont256::Element::load(x + (i * t * WORDS));
@@ -346,13 +347,11 @@ namespace NTT {
             cudaEventCreate(&end);
          
             u32_E* pq_d;
-            u32_E* omegas_d;
 
             cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS);
             cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
 
-            cudaMalloc(&omegas_d, 32 * sizeof(u32_E) * WORDS);
-            cudaMemcpy(omegas_d, omegas, 32 * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
+            cudaMemcpyToSymbol(omegas_c, omegas, 32 * sizeof(u32_E) * WORDS);
 
             u32 * x, * y;
             cudaMalloc(&y, len * WORDS * sizeof(u32));
@@ -390,7 +389,7 @@ namespace NTT {
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid, block, shared_size >>> (x, y, pq_d, omegas_d, len, log_p, deg, max_deg, param_d);
+                kernel <<< grid, block, shared_size >>> (x, y, pq_d, len, log_p, deg, max_deg, param_d);
                 
                 auto err = cudaGetLastError();
                 if (err != cudaSuccess) {
@@ -415,7 +414,6 @@ namespace NTT {
             cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
 
             cudaFree(pq_d);
-            cudaFree(omegas_d);
             cudaFree(y);
             cudaFree(x);
 
@@ -423,7 +421,7 @@ namespace NTT {
     };
 
     template <u32 WORDS>
-    __global__ void SSIP_NTT_stage1 (u32_E * x, u32_E * pq, u32_E * omegas, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
+    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
         extern __shared__ u32_E u[];
         // column-major in shared memory
         // data patteren:
@@ -494,18 +492,22 @@ namespace NTT {
 
         // Twiddle factor
         u32 k = index & (end_stride - 1);
-        auto twiddle = pow_lookup <WORDS> (omegas, (len >> (log_stride - deg + 1) >> deg) * k, env);
+        auto twiddle = pow_lookup <WORDS> ((len >> (log_stride - deg + 1) >> deg) * k, env);
 
-        auto t1 = env.pow(twiddle, __brev(lid << 1) >> (32 - deg));
-        auto t2 = env.pow(twiddle, __brev((lid << 1) + 1) >> (32 - deg));
+        auto t1 = env.pow(twiddle, lid << 1, deg);
 
-        auto a = mont256::Element::load(u + (lid << 1), shared_read_stride);
+        auto pos1 = __brev(lid << 1) >> (32 - deg);
+        auto pos2 = __brev((lid << 1) + 1) >> (32 - deg);
+
+        auto a = mont256::Element::load(u + pos1, shared_read_stride);
         a = env.mul(a, t1);
-        a.store(u + (lid << 1), shared_read_stride);
+        a.store(u + pos1, shared_read_stride);
         
-        auto b = mont256::Element::load(u + (lid << 1) + 1, shared_read_stride);
+        auto t2 = env.mul(t1, twiddle);
+
+        auto b = mont256::Element::load(u + pos2, shared_read_stride);
         b = env.mul(b, t2);
-        b.store(u + (lid << 1) + 1, shared_read_stride);
+        b.store(u + pos2, shared_read_stride);
 
         __syncthreads();
 
@@ -524,7 +526,7 @@ namespace NTT {
     }
 
     template <u32 WORDS>
-    __global__ void SSIP_NTT_stage2 (u32_E * data, u32_E * pq, u32_E * omegas, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
+    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
         extern __shared__ u32_E u[];
 
         u32 lid = threadIdx.x;
@@ -618,15 +620,16 @@ namespace NTT {
         // Twiddle factor
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
-        auto twiddle = pow_lookup<WORDS>(omegas, (n >> (log_stride - deg + 1) >> deg) * k, env);
-
+        auto twiddle = pow_lookup<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        auto twiddle_gap = pow_lookup<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        
         u32 a, b, c, d;
         a = __brev(lid << 1) >> (32 - (deg << 1));
         b = __brev((lid << 1) + 1) >> (32 - (deg << 1));
         c = __brev((lid << 1) + (blockDim.x << 1)) >> (32 - (deg << 1));
         d = __brev((lid << 1) + (blockDim.x << 1) + 1) >> (32 - (deg << 1));
 
-        auto t1 = env.pow(twiddle, lid << 1 >> deg);
+        auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
 
         auto num = mont256::Element::load(u + a, shared_read_stride);
         num = env.mul(num, t1);
@@ -636,7 +639,7 @@ namespace NTT {
         num = env.mul(num, t1);
         num.store(u + b, shared_read_stride);
 
-        auto t2 = env.pow(twiddle, ((lid << 1) + (blockDim.x <<1)) >> deg);
+        auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((blockDim.x <<1) >> deg), deg);
 
         num = mont256::Element::load(u + c, shared_read_stride);
         num = env.mul(num, t2);
@@ -690,8 +693,8 @@ namespace NTT {
         float milliseconds = 0;
         self_sort_in_place_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) 
         : param(param), log_len(log_len), len(1 << log_len), debug(debug)
-        , max_deg_stage1(std::min((log_len + 1) / 2, 10u))
-        , max_deg_stage2(std::min(log_len / 2, 5u))
+        , max_deg_stage1(std::min((log_len + 1) / 2, 6u))
+        , max_deg_stage2(std::min(log_len / 2, 4u))
         , max_deg(std::max(max_deg_stage1, max_deg_stage2)) {
             // Precalculate:
             auto env = mont256::Env::host_new(param);
@@ -742,13 +745,11 @@ namespace NTT {
             cudaEventCreate(&end);
          
             u32_E* pq_d;
-            u32_E* omegas_d;
 
             cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS);
             cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
 
-            cudaMalloc(&omegas_d, 32 * sizeof(u32_E) * WORDS);
-            cudaMemcpy(omegas_d, omegas, 32 * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
+            cudaMemcpyToSymbol(omegas_c, omegas, 32 * sizeof(u32_E) * WORDS);
 
             u32 * x;
             cudaMalloc(&x, len * WORDS * sizeof(u32));
@@ -780,7 +781,7 @@ namespace NTT {
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid, block, shared_size >>>(x, pq_d, omegas_d, len, log_stride, deg, max_deg, io_group, param_d);
+                kernel <<< grid, block, shared_size >>>(x, pq_d, len, log_stride, deg, max_deg, io_group, param_d);
 
                 log_stride -= deg;
             }
@@ -799,7 +800,7 @@ namespace NTT {
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid1, block1, shared_size >>>(x, pq_d, omegas_d, log_len, log_stride, deg, max_deg, io_group, param_d);
+                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, io_group, param_d);
 
                 log_stride -= deg;
             }
@@ -816,7 +817,6 @@ namespace NTT {
             cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
 
             cudaFree(pq_d);
-            cudaFree(omegas_d);
             cudaFree(x);
 
         }
