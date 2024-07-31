@@ -384,8 +384,18 @@ namespace NTT {
                 dim3 block(1 << (deg - 1));
                 dim3 grid(len >> deg);
 
-                bellperson_kernel <WORDS> <<< grid, block, sizeof(u32) * WORDS * (1 << deg) >>> (x, y, pq_d, omegas_d, len, log_p, deg, max_deg, param_d);
+                uint shared_size = (1 << deg) * WORDS * sizeof(u32);
 
+                auto kernel = bellperson_kernel<WORDS>;
+            
+                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+
+                kernel <<< grid, block, shared_size >>> (x, y, pq_d, omegas_d, len, log_p, deg, max_deg, param_d);
+                
+                auto err = cudaGetLastError();
+                if (err != cudaSuccess) {
+                    printf("Error: %s\n", cudaGetErrorString(err));
+                }
                 log_p += deg;
 
                 u32 * tmp = x;
@@ -680,7 +690,7 @@ namespace NTT {
         float milliseconds = 0;
         self_sort_in_place_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) 
         : param(param), log_len(log_len), len(1 << log_len), debug(debug)
-        , max_deg_stage1(std::min((log_len + 1) / 2, 9u))
+        , max_deg_stage1(std::min((log_len + 1) / 2, 10u))
         , max_deg_stage2(std::min(log_len / 2, 5u))
         , max_deg(std::max(max_deg_stage1, max_deg_stage2)) {
             // Precalculate:
@@ -764,7 +774,13 @@ namespace NTT {
                 dim3 block(1 << (deg - 1));
                 dim3 grid(len >> deg);
 
-                SSIP_NTT_stage1 <WORDS> <<< grid, block, sizeof(u32) * ((1 << deg) + 1) * WORDS>>>(x, pq_d, omegas_d, len, log_stride, deg, max_deg, io_group, param_d);
+                uint shared_size = sizeof(u32) * ((1 << deg) + 1) * WORDS;
+
+                auto kernel = SSIP_NTT_stage1 <WORDS>;
+            
+                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+
+                kernel <<< grid, block, shared_size >>>(x, pq_d, omegas_d, len, log_stride, deg, max_deg, io_group, param_d);
 
                 log_stride -= deg;
             }
@@ -777,7 +793,13 @@ namespace NTT {
                 dim3 block1(1 << (deg << 1) >> 2);
                 dim3 grid1(len / 4 / block1.x);
 
-                SSIP_NTT_stage2 <WORDS> <<< grid1, block1, sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS >>>(x, pq_d, omegas_d, log_len, log_stride, deg, max_deg, io_group, param_d);
+                uint shared_size = sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS;
+
+                auto kernel = SSIP_NTT_stage2 <WORDS>;
+            
+                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+
+                kernel <<< grid1, block1, shared_size >>>(x, pq_d, omegas_d, log_len, log_stride, deg, max_deg, io_group, param_d);
 
                 log_stride -= deg;
             }

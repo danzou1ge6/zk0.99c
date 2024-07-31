@@ -112,7 +112,7 @@ int main() {
     for (long long i = 0; i < length; i++) {
         if (data[i] != data_gpu[i * WORDS]) {
             printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-            return 0;
+            break;
         }
     }
 
@@ -128,7 +128,7 @@ int main() {
     for (long long i = 0; i < length; i++) {
         if (data[i] != data_gpu[i * WORDS]) {
             printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-            return 0;
+            break;
         }
     }
 
@@ -144,7 +144,7 @@ int main() {
     for (long long i = 0; i < length; i++) {
         if (data[i] != data_gpu[i * WORDS]) {
             printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-            return 0;
+            break;
         }
     }
 
