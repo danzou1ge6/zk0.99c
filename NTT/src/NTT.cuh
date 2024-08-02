@@ -677,9 +677,11 @@ namespace NTT {
 
     template <u32 WORDS>
     class self_sort_in_place_ntt {
-        const u32 max_deg_stage1;
-        const u32 max_deg_stage2;
-        const u32 max_deg;
+        const u32 max_threads_stage1_log = 9;
+        const u32 max_threads_stage2_log = 9;
+        u32 max_deg_stage1;
+        u32 max_deg_stage2;
+        u32 max_deg;
         const u32 log_len;
         const u32 io_group = 1 << ((int)log2(WORDS - 1) + 1);
         const u64 len;
@@ -689,13 +691,25 @@ namespace NTT {
         u32_E *pq; // Precalculated values for radix degrees up to `max_deg`
         u32_E *omegas; // Precalculated values for [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
 
+        u32 get_deg (u32 deg_stage, u32 max_deg_stage) {
+            u32 deg_per_round;
+            for (u32 rounds = 1; ; rounds++) {
+                deg_per_round = rounds == 1 ? deg_stage : (deg_stage + 1) / rounds;
+                if (deg_per_round <= max_deg_stage) break;
+            }
+            return deg_per_round;
+        }
+
         public:
         float milliseconds = 0;
         self_sort_in_place_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) 
-        : param(param), log_len(log_len), len(1 << log_len), debug(debug)
-        , max_deg_stage1(std::min((log_len + 1) / 2, 6u))
-        , max_deg_stage2(std::min(log_len / 2, 4u))
-        , max_deg(std::max(max_deg_stage1, max_deg_stage2)) {
+        : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
+            u32 deg_stage1 = (log_len + 1) / 2;
+            u32 deg_stage2 = log_len / 2;
+            max_deg_stage1 = get_deg(deg_stage1, max_threads_stage1_log + 1);
+            max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 2) / 2);
+            max_deg = std::max(max_deg_stage1, max_deg_stage2);
+
             // Precalculate:
             auto env = mont256::Env::host_new(param);
 
