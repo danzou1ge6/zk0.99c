@@ -35,6 +35,7 @@ target("test-ntt")
     end
     add_deps("mont.cuh")
     add_files("NTT/tests/*.cu")
+    add_cuflags("-arch=sm_86")
     add_packages("doctest")
 
 task("sync-epcc")

@@ -421,8 +421,8 @@ namespace NTT {
     };
 
     template <u32 WORDS>
-    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
-        extern __shared__ u32_E u[];
+    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param, u32 group_sz) {
+        extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
         // a0_word0 a1_word0 a2_word0 a3_word0 ... an_word0 [empty] a0_word1 a1_word1 a2_word1 a3_word1 ...
@@ -431,8 +431,14 @@ namespace NTT {
         // then a1_word0 a1_word1 a1_word2 ... 
         // so we need the empty space is for padding to avoid bank conflict during read because n is likely to be 32k
 
-        const u32 lid = threadIdx.x;
-        const u32 index = blockIdx.x;
+        const u32 lid = threadIdx.x & (group_sz - 1);
+        const u32 lsize = group_sz;
+        const u32 group_id = threadIdx.x / group_sz;
+        const u32 group_num = blockDim.x / group_sz;
+        const u32 index = blockIdx.x * group_num + group_id;
+
+        auto u = s + group_id * ((1 << deg) + 1) * WORDS;
+
         const u32 lgp = log_stride - deg + 1;
         const u32 end_stride = 1 << lgp; //stride of the last butterfly
 
@@ -447,8 +453,8 @@ namespace NTT {
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
-        const u32 shared_read_stride = (blockDim.x << 1) + 1;
-        const u32 cur_io_group = io_group < blockDim.x ? io_group : blockDim.x;
+        const u32 shared_read_stride = (lsize << 1) + 1;
+        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
         // Read data
@@ -526,11 +532,15 @@ namespace NTT {
     }
 
     template <u32 WORDS>
-    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param) {
-        extern __shared__ u32_E u[];
+    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param, u32 group_sz) {
+        extern __shared__ u32_E s[];
 
-        u32 lid = threadIdx.x;
-        u32 index = blockIdx.x;
+        const u32 lid = threadIdx.x & (group_sz - 1);
+        const u32 lsize = group_sz;
+        const u32 group_id = threadIdx.x / group_sz;
+        const u32 group_num = blockDim.x / group_sz;
+        const u32 index = blockIdx.x * group_num + group_id;
+
         u32 log_end_stride = (log_stride - deg + 1);
         u32 end_stride = 1 << log_end_stride; //stride of the last butterfly
         u32 end_pair_stride = 1 << (log_len - log_stride - 2 + deg); // the stride between the last pair of butterfly
@@ -548,11 +558,12 @@ namespace NTT {
         u32 subblock_id = segment_id & (end_stride - 1);
 
         data += ((u64)(segment_start + subblock_offset + subblock_id)) * WORDS; // use u64 to avoid overflow
+        auto u = s + group_id * ((1 << (deg << 1)) + 1) * WORDS;
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
-        const u32 shared_read_stride = (blockDim.x << 2) + 1;
-        const u32 cur_io_group = io_group < blockDim.x ? io_group : blockDim.x;
+        const u32 shared_read_stride = (lsize << 2) + 1;
+        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
         // Read data
@@ -567,8 +578,8 @@ namespace NTT {
 
                     u[(i << 1) + offset] = data[gpos * WORDS + io];
                     u[(i << 1) + 1 + offset] = data[(gpos + end_stride) * WORDS + io];
-                    u[(i << 1) + (blockDim.x << 1) + offset] = data[(gpos + end_pair_stride) * WORDS + io];
-                    u[(i << 1) + (blockDim.x << 1) + 1 + offset] = data[(gpos + end_pair_stride + end_stride) * WORDS + io];
+                    u[(i << 1) + (lsize << 1) + offset] = data[(gpos + end_pair_stride) * WORDS + io];
+                    u[(i << 1) + (lsize << 1) + 1 + offset] = data[(gpos + end_pair_stride + end_stride) * WORDS + io];
 
                 }
             }
@@ -582,7 +593,7 @@ namespace NTT {
         for(u32 rnd = 0; rnd < deg; rnd++) {
         
             const u32 bit = subblock_sz >> rnd;
-            const u32 gap = (blockDim.x << 1) >> (deg - rnd - 1);
+            const u32 gap = (lsize << 1) >> (deg - rnd - 1);
             const u32 offset = (gap) * (lid / (gap >> 1));
 
             const u32 di = lid & (bit - 1);
@@ -626,8 +637,8 @@ namespace NTT {
         u32 a, b, c, d;
         a = __brev(lid << 1) >> (32 - (deg << 1));
         b = __brev((lid << 1) + 1) >> (32 - (deg << 1));
-        c = __brev((lid << 1) + (blockDim.x << 1)) >> (32 - (deg << 1));
-        d = __brev((lid << 1) + (blockDim.x << 1) + 1) >> (32 - (deg << 1));
+        c = __brev((lid << 1) + (lsize << 1)) >> (32 - (deg << 1));
+        d = __brev((lid << 1) + (lsize << 1) + 1) >> (32 - (deg << 1));
 
         auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
 
@@ -639,7 +650,7 @@ namespace NTT {
         num = env.mul(num, t1);
         num.store(u + b, shared_read_stride);
 
-        auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((blockDim.x <<1) >> deg), deg);
+        auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         num = mont256::Element::load(u + c, shared_read_stride);
         num = env.mul(num, t2);
@@ -662,8 +673,8 @@ namespace NTT {
                     u32 offset = io * shared_read_stride;
                     a = __brev(i << 1) >> (32 - (deg << 1));
                     b = __brev((i << 1) + 1) >> (32 - (deg << 1));
-                    c = __brev((i << 1) + (blockDim.x << 1)) >> (32 - (deg << 1));
-                    d = __brev((i << 1) + (blockDim.x << 1) + 1) >> (32 - (deg << 1));
+                    c = __brev((i << 1) + (lsize << 1)) >> (32 - (deg << 1));
+                    d = __brev((i << 1) + (lsize << 1) + 1) >> (32 - (deg << 1));
 
                     data[gpos * WORDS + io] = u[a + offset];
                     data[(gpos + end_stride) * WORDS + io] = u[b + offset];
@@ -678,7 +689,7 @@ namespace NTT {
     template <u32 WORDS>
     class self_sort_in_place_ntt {
         const u32 max_threads_stage1_log = 9;
-        const u32 max_threads_stage2_log = 9;
+        const u32 max_threads_stage2_log = 8;
         u32 max_deg_stage1;
         u32 max_deg_stage2;
         u32 max_deg;
@@ -786,16 +797,23 @@ namespace NTT {
             while (log_stride >= log_len / 2) {
                 u32 deg = std::min(max_deg_stage1, (log_stride + 1 - log_len / 2));
 
-                dim3 block(1 << (deg - 1));
-                dim3 grid(len >> deg);
+                u32 group_num = std::min((int)(len / (1 << deg)), 1 << (max_threads_stage1_log - (deg - 1)));
 
-                uint shared_size = sizeof(u32) * ((1 << deg) + 1) * WORDS;
+                u32 block_sz = (1 << (deg - 1)) * group_num;
+                assert(block_sz <= (1 << max_threads_stage1_log));
+                u32 block_num = len / 2 / block_sz;
+                assert(block_num * 2 * block_sz == len);
+
+                dim3 block(block_sz);
+                dim3 grid(block_num);
+
+                u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
 
                 auto kernel = SSIP_NTT_stage1 <WORDS>;
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid, block, shared_size >>>(x, pq_d, len, log_stride, deg, max_deg, io_group, param_d);
+                kernel <<< grid, block, shared_size >>>(x, pq_d, len, log_stride, deg, max_deg, io_group, param_d, 1 << (deg - 1));
 
                 log_stride -= deg;
             }
@@ -805,16 +823,23 @@ namespace NTT {
             while (log_stride >= 0) {
                 u32 deg = std::min((int)max_deg_stage2, log_stride + 1);
 
-                dim3 block1(1 << (deg << 1) >> 2);
-                dim3 grid1(len / 4 / block1.x);
+                u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - 2 * (deg - 1)));
 
-                uint shared_size = sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS;
+                u32 block_sz = (1 << ((deg - 1) << 1)) * group_num;
+                assert(block_sz <= (1 << max_threads_stage2_log));
+                u32 block_num = len / 4 / block_sz;
+                assert(block_num * 4 * block_sz == len);
+
+                dim3 block1(block_sz);
+                dim3 grid1(block_num);
+
+                uint shared_size = (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
 
                 auto kernel = SSIP_NTT_stage2 <WORDS>;
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, io_group, param_d);
+                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, io_group, param_d, ((1 << (deg << 1)) >> 2));
 
                 log_stride -= deg;
             }

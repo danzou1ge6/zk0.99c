@@ -61,7 +61,7 @@ int main() {
     long long l,length = 1ll;
     int bits = 0;
 
-    cudaSetDevice(0);
+    cudaSetDevice(1);
 
     l = qpow(2, 24);
 
