@@ -7,6 +7,8 @@
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/constant_iterator.h>
+#include <thrust/scatter.h>
+#include <thrust/execution_policy.h>
 
 namespace NTT {
     typedef uint u32;
@@ -16,26 +18,26 @@ namespace NTT {
 
     __constant__ u32_E omegas_c[32 * 8]; // need to be revised if words changed
 
-    template<u32 WORDS>
+    template <u32 WORDS>
+    struct element_pack {
+        u32 data[WORDS];
+    };
+
+    template <u32 WORDS>
     class gen_roots_cub {
-
         public:
-        struct element_pack {
-            u32 data[WORDS];
-        };
-
         struct get_iterator_to_range {
             __host__ __device__ __forceinline__ auto operator()(u32 index) {
                 return thrust::make_constant_iterator(input_d[index]);
             }
-            element_pack *input_d;
+            element_pack<WORDS> *input_d;
         };
 
         struct get_ptr_to_range {
             __host__ __device__ __forceinline__ auto operator()(u32 index) {
                 return output_d + offsets_d[index];
             }
-            element_pack *output_d;
+            element_pack<WORDS> *output_d;
             u32 *offsets_d;
         };
 
@@ -46,9 +48,9 @@ namespace NTT {
             uint32_t *offsets_d;
         };
         struct mont_mul {
-            __device__ __forceinline__ element_pack operator()(const element_pack &a, const element_pack &b) {
+            __device__ __forceinline__ element_pack<WORDS> operator()(const element_pack<WORDS> &a, const element_pack<WORDS> &b) {
                 auto env = mont256::Env(*param_d);
-                element_pack res;
+                element_pack<WORDS> res;
                 auto a_ = mont256::Element::load(a.data);
                 auto b_ = mont256::Element::load(b.data);
                 auto c_ = env.mul(a_, b_);
@@ -64,21 +66,21 @@ namespace NTT {
 
             const u32 num_ranges = 2;
 
-            element_pack input[num_ranges]; // {one, unit}
+            element_pack<WORDS> input[num_ranges]; // {one, unit}
             env_host.one().store(input[0].data);
             unit.store(input[1].data);
             
-            element_pack * input_d;
-            cudaMalloc(&input_d, num_ranges * sizeof(element_pack));
-            cudaMemcpy(input_d, input, num_ranges * sizeof(element_pack), cudaMemcpyHostToDevice);
+            element_pack<WORDS> * input_d;
+            cudaMalloc(&input_d, num_ranges * sizeof(element_pack<WORDS>));
+            cudaMemcpy(input_d, input, num_ranges * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
 
             u32 offset[] = {0, 1, len};
             u32 * offset_d;
             cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32));
             cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice);
 
-            element_pack * output_d;
-            cudaMalloc(&output_d, len * sizeof(element_pack));
+            element_pack<WORDS> * output_d;
+            cudaMalloc(&output_d, len * sizeof(element_pack<WORDS>));
 
             // Returns a constant iterator to the element of the i-th run
             thrust::counting_iterator<uint32_t> iota(0);
@@ -120,7 +122,7 @@ namespace NTT {
             cudaMalloc(&tmp_storage_d, temp_storage_bytes);
             cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
 
-            cudaMemcpy(roots, output_d, len * sizeof(element_pack), cudaMemcpyDeviceToHost);
+            cudaMemcpy(roots, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
         }
     };
 
@@ -256,12 +258,21 @@ namespace NTT {
             cudaMalloc(&reverse_d, r_len * sizeof(uint2));
             cudaMemcpy(reverse_d, reverse, r_len * sizeof(uint2), cudaMemcpyHostToDevice);
             
-            u32_E * data_d;
-            cudaMalloc(&data_d, ((u64)len) * WORDS * sizeof(u32_E));
-            cudaMemcpy(data_d, data, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
+            u32 * buff1, * buff2;
+            cudaMalloc(&buff1, len * WORDS * sizeof(u32));
+            cudaMalloc(&buff2, len * WORDS * sizeof(u32));
 
-            u32_E * roots_d;
-            cudaMalloc(&roots_d, ((u64)len) * WORDS * sizeof(u32_E));
+            // element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
+            // cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
+            // element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
+
+            // thrust::scatter(input_d, input_d + len, reverse_d, output_d);
+
+            // rearrange
+            u32_E * data_d = (u32_E *) buff1;
+            cudaMemcpy(data_d, data, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+
+            u32_E * roots_d = (u32_E *) buff2;
             cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
 
             mont256::Params *param_d;
@@ -280,7 +291,18 @@ namespace NTT {
                 cudaEventRecord(start);
             }
             
+            
+            cudaEvent_t start_re, end_re;
+            cudaEventCreate(&start_re);
+            cudaEventCreate(&end_re);
+            cudaEventRecord(start_re);
             rearrange <WORDS> <<<rearrange_grid, rearrange_block>>> (data_d, reverse_d, r_len);
+            cudaEventRecord(end_re);
+            cudaEventSynchronize(end_re);
+            float milliseconds_re = 0;
+            cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
+            printf("Rearrange: %f\n", milliseconds_re);
+
             for (u32 stride = 1; stride < len; stride <<= 1) {
                 naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);
             }
