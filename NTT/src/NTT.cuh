@@ -237,9 +237,11 @@ namespace NTT {
         }
 
         void ntt(u32 * data) {
-            cudaEvent_t start, end;
+            cudaEvent_t start, end, start1, end1;
             cudaEventCreate(&start);
             cudaEventCreate(&end);
+            cudaEventCreate(&start1);
+            cudaEventCreate(&end1);
 
             u32 * reverse_d;
             cudaMalloc(&reverse_d, len * sizeof(u32));
@@ -267,6 +269,10 @@ namespace NTT {
 
             thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
 
+            if (debug) {
+                cudaEventRecord(end);
+            }
+
             u32_E * data_d = (u32_E *) buff2;
             u32_E * roots_d = (u32_E *) buff1;
 
@@ -275,14 +281,21 @@ namespace NTT {
             dim3 ntt_block(768);
             dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
 
+            if (debug) {
+                cudaEventRecord(start1);
+            }
+
             for (u32 stride = 1; stride < len; stride <<= 1) {
                 naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);
             }
 
             if (debug) {
-                cudaEventRecord(end);
-                cudaEventSynchronize(end);
-                cudaEventElapsedTime(&milliseconds, start, end);
+                cudaEventRecord(end1);
+                cudaEventSynchronize(end1);
+                float t1, t2;
+                cudaEventElapsedTime(&t1, start, end);
+                cudaEventElapsedTime(&t2, start1, end1);
+                milliseconds = t1 + t2;
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
                 element_to_number <WORDS> <<< grid, block >>> (data_d, len, param_d);
