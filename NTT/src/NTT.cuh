@@ -142,19 +142,19 @@ namespace NTT {
         env.from_number(mont256::Number::load(data + index * WORDS)).store(data + index * WORDS);
     }
     
-    template<u32 WORDS>
-    __global__ void rearrange(u32_E * data, uint2 * reverse, u32 len) {
-        u32 index = blockIdx.x * blockDim.x + threadIdx.x;
-        if (index >= len) return;
-        uint2 r = reverse[index];
+    // template<u32 WORDS>
+    // __global__ void rearrange(u32_E * data, uint2 * reverse, u32 len) {
+    //     u32 index = blockIdx.x * blockDim.x + threadIdx.x;
+    //     if (index >= len) return;
+    //     uint2 r = reverse[index];
         
-        #pragma unroll
-        for (u32 i = 0; i < WORDS; i++) {
-            u32 tmp = data[((u64)r.x) * WORDS + i];
-            data[((u64)r.x) * WORDS + i] = data[((u64)r.y) * WORDS + i];
-            data[((u64)r.y) * WORDS + i] = tmp;
-        }
-    }
+    //     #pragma unroll
+    //     for (u32 i = 0; i < WORDS; i++) {
+    //         u32 tmp = data[((u64)r.x) * WORDS + i];
+    //         data[((u64)r.x) * WORDS + i] = data[((u64)r.y) * WORDS + i];
+    //         data[((u64)r.y) * WORDS + i] = tmp;
+    //     }
+    // }
 
     template<u32 WORDS>
     __global__ void naive(u32_E* data, u32 len, u32_E* roots, u32 stride, mont256::Params* param) {
@@ -186,28 +186,16 @@ namespace NTT {
         const mont256::Params param;
         mont256::Element unit;
         bool debug;
-        uint2 * reverse;
+        u32 * reverse;
         u32_E * roots;
         const u32 log_len, len;
-        u32 r_len;
         
-        u32 gen_reverse(u32 log_len, uint2* reverse_pair) {
-            u32 len = 1 << log_len;
-            u32* reverse = new u32[len];
+        void gen_reverse() {
+            reverse = new u32[len];
             reverse[0] = 0;
             for (u32 i = 0; i < len; i++) {
                 reverse[i] = (reverse[i >> 1] >> 1) | ((i & 1) << (log_len - 1) ); //reverse the bits
             }
-            int r_len = 0;
-            for (u32 i = 0; i < len; i++) {
-                if (reverse[i] < i) {
-                    reverse_pair[r_len].x = i;
-                    reverse_pair[r_len].y = reverse[i];
-                    r_len++;
-                }
-            }
-            delete[] reverse;
-            return r_len;
         }
 
         void gen_roots(u32_E * roots, u32 len) {
@@ -240,8 +228,7 @@ namespace NTT {
             gen_roots_cub<WORDS> gen;
             gen(roots, len, unit, param);
 
-            reverse = (uint2 *) malloc(((u64)len) * sizeof(uint2));
-            r_len = gen_reverse(log_len, reverse);
+            gen_reverse();
         }
 
         ~naive_ntt() {
@@ -254,54 +241,39 @@ namespace NTT {
             cudaEventCreate(&start);
             cudaEventCreate(&end);
 
-            uint2 * reverse_d;
-            cudaMalloc(&reverse_d, r_len * sizeof(uint2));
-            cudaMemcpy(reverse_d, reverse, r_len * sizeof(uint2), cudaMemcpyHostToDevice);
+            u32 * reverse_d;
+            cudaMalloc(&reverse_d, len * sizeof(u32));
+            cudaMemcpy(reverse_d, reverse, len * sizeof(u32), cudaMemcpyHostToDevice);
             
             u32 * buff1, * buff2;
             cudaMalloc(&buff1, len * WORDS * sizeof(u32));
             cudaMalloc(&buff2, len * WORDS * sizeof(u32));
-
-            // element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
-            // cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
-            // element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
-
-            // thrust::scatter(input_d, input_d + len, reverse_d, output_d);
-
-            // rearrange
-            u32_E * data_d = (u32_E *) buff1;
-            cudaMemcpy(data_d, data, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
-
-            u32_E * roots_d = (u32_E *) buff2;
-            cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
-
+            
             mont256::Params *param_d;
             cudaMalloc(&param_d, sizeof(mont256::Params));
             cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
 
-            dim3 rearrange_block(768);
-            dim3 rearrange_grid((r_len + rearrange_block.x - 1) / rearrange_block.x);
-            dim3 ntt_block(768);
-            dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
+            // rearrange
+            element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
+            cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
+            element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
 
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                number_to_element <WORDS> <<< grid, block >>> (data_d, len, param_d);
+                number_to_element <WORDS> <<< grid, block >>> ((u32_E *) buff1, len, param_d);
                 cudaEventRecord(start);
             }
-            
-            
-            cudaEvent_t start_re, end_re;
-            cudaEventCreate(&start_re);
-            cudaEventCreate(&end_re);
-            cudaEventRecord(start_re);
-            rearrange <WORDS> <<<rearrange_grid, rearrange_block>>> (data_d, reverse_d, r_len);
-            cudaEventRecord(end_re);
-            cudaEventSynchronize(end_re);
-            float milliseconds_re = 0;
-            cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
-            printf("Rearrange: %f\n", milliseconds_re);
+
+            thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
+
+            u32_E * data_d = (u32_E *) buff2;
+            u32_E * roots_d = (u32_E *) buff1;
+
+            cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
+
+            dim3 ntt_block(768);
+            dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
 
             for (u32 stride = 1; stride < len; stride <<= 1) {
                 naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);

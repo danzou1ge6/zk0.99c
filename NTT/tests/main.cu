@@ -54,46 +54,46 @@ void ntt_cpu(long long data[], long long reverse[], long long len, long long ome
     }
 }
 
-template <int WORDS>
-void tmp(uint * data, long long * reverse, uint len) {
-    using namespace NTT;
-    long long * reverse_d;
-    cudaMalloc(&reverse_d, len * sizeof(long long));
-    cudaMemcpy(reverse_d, reverse, len * sizeof(long long), cudaMemcpyHostToDevice);
+// template <int WORDS>
+// void tmp(uint * data, long long * reverse, uint len) {
+//     using namespace NTT;
+//     long long * reverse_d;
+//     cudaMalloc(&reverse_d, len * sizeof(long long));
+//     cudaMemcpy(reverse_d, reverse, len * sizeof(long long), cudaMemcpyHostToDevice);
 
-    u32 * buff1, * buff2;
-    cudaMalloc(&buff1, len * WORDS * sizeof(u32));
-    cudaMalloc(&buff2, len * WORDS * sizeof(u32));
+//     u32 * buff1, * buff2;
+//     cudaMalloc(&buff1, len * WORDS * sizeof(u32));
+//     cudaMalloc(&buff2, len * WORDS * sizeof(u32));
 
-    element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
-    cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
+//     element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
+//     cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
 
-    element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
+//     element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
 
-    cudaEvent_t start_re, end_re;
-    cudaEventCreate(&start_re);
-    cudaEventCreate(&end_re);
-    cudaEventRecord(start_re);
+//     cudaEvent_t start_re, end_re;
+//     cudaEventCreate(&start_re);
+//     cudaEventCreate(&end_re);
+//     cudaEventRecord(start_re);
             
-    thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
+//     thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
 
-    cudaEventRecord(end_re);
-    cudaEventSynchronize(end_re);
-    float milliseconds_re = 0;
-    cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
-    printf("Rearrange_thrust: %f\n", milliseconds_re);
+//     cudaEventRecord(end_re);
+//     cudaEventSynchronize(end_re);
+//     float milliseconds_re = 0;
+//     cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
+//     printf("Rearrange_thrust: %f\n", milliseconds_re);
 
-    cudaMemcpy(data, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
+//     cudaMemcpy(data, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
 
-    // for (int i = 0; i < len; i ++) {
-    //     printf("%u ", data[i * WORDS]);
-    // }
-    // printf("\n");
+//     // for (int i = 0; i < len; i ++) {
+//     //     printf("%u ", data[i * WORDS]);
+//     // }
+//     // printf("\n");
 
-    cudaFree(reverse_d);
-    cudaFree(buff1);
-    cudaFree(buff2);
-}
+//     cudaFree(reverse_d);
+//     cudaFree(buff1);
+//     cudaFree(buff2);
+// }
 
 #define WORDS 8
 
@@ -104,7 +104,7 @@ int main() {
 
     cudaSetDevice(0);
 
-    l = 16;qpow(2, 24);
+    l = qpow(2, 24);
 
     while (length < l) {
         length <<= 1ll;
@@ -149,20 +149,6 @@ int main() {
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-
-    // uint data_gpu_tmp[length * WORDS];
-
-    // NTT::element_pack<WORDS> * data_gpu_pack = (NTT::element_pack<WORDS> *) data_gpu;
-
-    // thrust::scatter(thrust::host, data_gpu_pack, data_gpu_pack + length, reverse, (NTT::element_pack<WORDS> *)data_gpu_tmp);
-    // for (int i = 0; i < length; i++) {
-    //     printf("%u ", data_gpu_tmp[i * WORDS]);
-    // }
-    // printf("\n");
-
-    tmp<WORDS>(data_gpu, reverse, length);
-    tmp<WORDS>(data_gpu, reverse, length);
-
 
     NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
     naive.ntt(data_gpu);
