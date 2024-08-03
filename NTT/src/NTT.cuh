@@ -3,6 +3,10 @@
 #include "../../mont/src/mont.cuh"
 #include <cuda_runtime.h>
 #include <cassert>
+#include <cub/cub.cuh>
+#include <thrust/iterator/transform_iterator.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/constant_iterator.h>
 
 namespace NTT {
     typedef uint u32;
@@ -11,6 +15,114 @@ namespace NTT {
     typedef uint u32_N;
 
     __constant__ u32_E omegas_c[32 * 8]; // need to be revised if words changed
+
+    template<u32 WORDS>
+    class gen_roots_cub {
+
+        public:
+        struct element_pack {
+            u32 data[WORDS];
+        };
+
+        struct get_iterator_to_range {
+            __host__ __device__ __forceinline__ auto operator()(u32 index) {
+                return thrust::make_constant_iterator(input_d[index]);
+            }
+            element_pack *input_d;
+        };
+
+        struct get_ptr_to_range {
+            __host__ __device__ __forceinline__ auto operator()(u32 index) {
+                return output_d + offsets_d[index];
+            }
+            element_pack *output_d;
+            u32 *offsets_d;
+        };
+
+        struct get_run_length {
+            __host__ __device__ __forceinline__ auto operator()(u32 index) {
+                return offsets_d[index + 1] - offsets_d[index];
+            }
+            uint32_t *offsets_d;
+        };
+        struct mont_mul {
+            __device__ __forceinline__ element_pack operator()(const element_pack &a, const element_pack &b) {
+                auto env = mont256::Env(*param_d);
+                element_pack res;
+                auto a_ = mont256::Element::load(a.data);
+                auto b_ = mont256::Element::load(b.data);
+                auto c_ = env.mul(a_, b_);
+                c_.store(res.data);
+                return res;
+            }
+            mont256::Params* param_d;
+        };
+
+
+        __host__ __forceinline__ void operator() (u32_E * roots, u32 len, mont256::Element &unit, const mont256::Params &param) {
+            auto env_host = mont256::Env::host_new(param);
+
+            const u32 num_ranges = 2;
+
+            element_pack input[num_ranges]; // {one, unit}
+            env_host.one().store(input[0].data);
+            unit.store(input[1].data);
+            
+            element_pack * input_d;
+            cudaMalloc(&input_d, num_ranges * sizeof(element_pack));
+            cudaMemcpy(input_d, input, num_ranges * sizeof(element_pack), cudaMemcpyHostToDevice);
+
+            u32 offset[] = {0, 1, len};
+            u32 * offset_d;
+            cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32));
+            cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice);
+
+            element_pack * output_d;
+            cudaMalloc(&output_d, len * sizeof(element_pack));
+
+            // Returns a constant iterator to the element of the i-th run
+            thrust::counting_iterator<uint32_t> iota(0);
+            auto iterators_in = thrust::make_transform_iterator(iota, get_iterator_to_range{input_d});
+
+            // Returns the run length of the i-th run
+            auto sizes = thrust::make_transform_iterator(iota, get_run_length{offset_d});
+
+            // Returns pointers to the output range for each run
+            auto ptrs_out = thrust::make_transform_iterator(iota, get_ptr_to_range{output_d, offset_d});
+
+            // Determine temporary device storage requirements
+            void *tmp_storage_d = nullptr;
+            size_t temp_storage_bytes = 0;
+
+            cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges);
+
+            // Allocate temporary storage
+            cudaMalloc(&tmp_storage_d, temp_storage_bytes);
+
+            // Run batched copy algorithm (used to perform runlength decoding)
+            // output_d       <-- [one, unit, unit, ... , unit]
+            cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges);
+
+            cudaFree(tmp_storage_d);
+            cudaFree(input_d);
+            cudaFree(offset_d);
+            
+            tmp_storage_d = nullptr;
+            temp_storage_bytes = 0;
+
+            mont256::Params *param_d;
+            cudaMalloc(&param_d, sizeof(mont256::Params));
+            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
+
+            auto op = mont_mul{param_d};
+
+            cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
+            cudaMalloc(&tmp_storage_d, temp_storage_bytes);
+            cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
+
+            cudaMemcpy(roots, output_d, len * sizeof(element_pack), cudaMemcpyDeviceToHost);
+        }
+    };
 
     template<u32 WORDS>
     __global__ void element_to_number(u32* data, u32 len, mont256::Params* param) {
@@ -80,6 +192,7 @@ namespace NTT {
         u32 gen_reverse(u32 log_len, uint2* reverse_pair) {
             u32 len = 1 << log_len;
             u32* reverse = new u32[len];
+            reverse[0] = 0;
             for (u32 i = 0; i < len; i++) {
                 reverse[i] = (reverse[i >> 1] >> 1) | ((i & 1) << (log_len - 1) ); //reverse the bits
             }
@@ -121,7 +234,9 @@ namespace NTT {
             unit = env.host_pow(unit, exponent);
 
             roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
-            gen_roots(roots, len);
+            // gen_roots(roots, len);
+            gen_roots_cub<WORDS> gen;
+            gen(roots, len, unit, param);
 
             reverse = (uint2 *) malloc(((u64)len) * sizeof(uint2));
             r_len = gen_reverse(log_len, reverse);
@@ -721,16 +836,6 @@ namespace NTT {
             return deg_per_round;
         }
 
-        void gen_roots(u32_E * roots, u32 len) {
-            auto env = mont256::Env::host_new(param);
-            env.one().store(roots);
-            auto last_element = mont256::Element::load(roots);
-            for (u64 i = WORDS; i < ((u64)len) * WORDS; i+= WORDS) {
-                last_element = env.host_mul(last_element, unit);
-                last_element.store(roots + i);
-            }
-        }
-
         public:
         float milliseconds = 0;
         self_sort_in_place_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) 
@@ -779,7 +884,8 @@ namespace NTT {
             }
 
             roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
-            gen_roots(roots, len);
+            gen_roots_cub<WORDS> gen;
+            gen(roots, len, unit, param);
         }
 
         ~self_sort_in_place_ntt() {

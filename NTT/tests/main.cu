@@ -40,7 +40,7 @@ void ntt_cpu(long long data[], long long reverse[], long long len, long long ome
     for (long long i = 0; i < len; i++) {
         if (i < reverse[i]) swap(data[i], data[reverse[i]]);
     }
-    
+
     for (long long stride = 1ll; stride < len; stride <<= 1ll) {
         long long gap = qpow(omega, (P - 1ll) / (stride << 1ll));
         for (long long start = 0; start < len; start += (stride << 1ll)) {
@@ -74,6 +74,7 @@ int main() {
     data_copy = new long long[length];
     reverse = new long long [length];
 
+    reverse[0] = 0;
     for (long long i = 0; i < length; i++) {
         reverse[i] = (reverse[i >> 1ll] >> 1ll) | ((i & 1ll) << (bits - 1ll) ); //reverse the bits
     }
@@ -103,20 +104,20 @@ int main() {
     unit[0] = root;
 
     // naive gpu approach
-    // memset(data_gpu, 0, sizeof(uint) * length * WORDS);
-    // for (int i = 0; i < length; i++) {
-    //     data_gpu[i * WORDS] = data_copy[i];
-    // }
-    // NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
-    // naive.ntt(data_gpu);
-    // printf("naive: %fms\n", naive.milliseconds);
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
+    naive.ntt(data_gpu);
+    printf("naive: %fms\n", naive.milliseconds);
 
-    // for (long long i = 0; i < length; i++) {
-    //     if (data[i] != data_gpu[i * WORDS]) {
-    //         printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-    //         break;
-    //     }
-    // }
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            break;
+        }
+    }
 
     // bellperson approach
     memset(data_gpu, 0, sizeof(uint) * length * WORDS);
