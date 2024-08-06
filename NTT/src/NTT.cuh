@@ -123,6 +123,9 @@ namespace NTT {
             cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
 
             cudaMemcpy(roots, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
+            cudaFree(output_d);
+            cudaFree(tmp_storage_d);
+            cudaFree(param_d);
         }
     };
 
