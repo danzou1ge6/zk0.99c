@@ -661,6 +661,121 @@ namespace NTT {
     }
 
     template <u32 WORDS>
+    __global__ void SSIP_NTT_stage1_dev (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param, u32 group_sz, u32 * roots) {
+        extern __shared__ u32_E s[];
+        // column-major in shared memory
+        // data patteren:
+        // a0_word0 a1_word0 a2_word0 a3_word0 ... an_word0 [empty] a0_word1 a1_word1 a2_word1 a3_word1 ...
+        // for coleasced read, we need to read a0_word0, a0_word1, a0_word2, ... a0_wordn in a single read
+        // so thread [0,WORDS) will read a0_word0 a0_word1 a0_word2 ... 
+        // then a1_word0 a1_word1 a1_word2 ... 
+        // so we need the empty space is for padding to avoid bank conflict during read because n is likely to be 32k
+
+        const u32 lid = threadIdx.x & (group_sz - 1);
+        const u32 lsize = group_sz;
+        const u32 group_id = threadIdx.x / group_sz;
+        const u32 group_num = blockDim.x / group_sz;
+        const u32 index = blockIdx.x * group_num + group_id;
+
+        auto u = s + group_id * ((1 << deg) + 1) * WORDS;
+
+        const u32 lgp = log_stride - deg + 1;
+        const u32 end_stride = 1 << lgp; //stride of the last butterfly
+
+        // each segment is independent
+        const u32 segment_start = (index >> lgp) << (lgp + deg);
+        const u32 segment_id = index & (end_stride - 1);
+        
+        const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
+        const u32 subblock_id = segment_id & (end_stride - 1);
+
+        x += ((u64)(segment_start + subblock_id)) * WORDS; // use u64 to avoid overflow
+
+        const u32 io_id = lid & (io_group - 1);
+        const u32 lid_start = lid - io_id;
+        // const u32 shared_read_stride = (lsize << 1) + 1;
+        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
+        const u32 io_per_thread = io_group / cur_io_group;
+
+        // Read data
+        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+            for (u32 j = 0; j < io_per_thread; j++) {
+                u32 io = io_id + j * cur_io_group;
+                if (io < WORDS) {
+                    u32 group_id = i & (subblock_sz - 1);
+                    u32 gpos = group_id << (lgp + 1);
+                    u[(i << 1) * WORDS + io]= x[gpos * WORDS + io];
+                    u[((i << 1) + 1) * WORDS + io] = x[(gpos + end_stride) * WORDS + io];
+                }
+            }
+        }
+
+        auto env = mont256::Env(*param);
+
+        __syncthreads();
+
+        const u32 pqshift = max_deg - deg;
+        for(u32 rnd = 0; rnd < deg; rnd++) {
+            const u32 bit = subblock_sz >> rnd;
+            const u32 di = lid & (bit - 1);
+            const u32 i0 = (lid << 1) - di;
+            const u32 i1 = i0 + bit;
+
+            auto a = mont256::Element::load(u + i0 * WORDS);
+            auto b = mont256::Element::load(u + i1 * WORDS);
+            auto tmp = a;
+            a = env.add(a, b);
+            b = env.sub(tmp, b);
+            if (di != 0) {
+                auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
+                b = env.mul(b, w);
+            }
+            a.store(u + i0 * WORDS);
+            b.store(u + i1 * WORDS);
+
+            __syncthreads();
+        }
+
+        // Twiddle factor
+        u32 k = index & (end_stride - 1);
+        u64 twiddle = (len >> (log_stride - deg + 1) >> deg) * k;
+
+        roots += twiddle * (lid << 1) * WORDS;
+        auto t1 = mont256::Element::load(roots);
+        auto t2 = mont256::Element::load(roots + WORDS * twiddle);
+
+        // auto twiddle = pow_lookup_constant <WORDS> ((len >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto t1 = env.pow(twiddle, lid << 1, deg);
+        // auto t2 = env.mul(t1, twiddle);
+        
+        auto pos1 = __brev(lid << 1) >> (32 - deg);
+        auto pos2 = __brev((lid << 1) + 1) >> (32 - deg);
+
+        auto a = mont256::Element::load(u + pos1 * WORDS);
+        a = env.mul(a, t1);
+        a.store(u + pos1 * WORDS);
+        
+        auto b = mont256::Element::load(u + pos2 * WORDS);
+        b = env.mul(b, t2);
+        b.store(u + pos2 * WORDS);
+
+        __syncthreads();
+
+        // Write back
+        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+            for (u32 j = 0; j < io_per_thread; j++) {
+                u32 io = io_id + j * cur_io_group;
+                if (io < WORDS) {
+                    u32 group_id = i & (subblock_sz - 1);
+                    u32 gpos = group_id << (lgp + 1);
+                    x[gpos * WORDS + io] = u[(i << 1) * WORDS + io];
+                    x[(gpos + end_stride) * WORDS + io] = u[((i << 1) + 1) * WORDS + io];
+                }
+            }
+        }
+    }
+
+    template <u32 WORDS>
     __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param, u32 group_sz, u32 * roots) {
         extern __shared__ u32_E s[];
 
@@ -952,7 +1067,7 @@ namespace NTT {
 
                 u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
 
-                auto kernel = SSIP_NTT_stage1 <WORDS>;
+                auto kernel = SSIP_NTT_stage1_dev <WORDS>;
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
