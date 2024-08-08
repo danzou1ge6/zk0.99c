@@ -677,7 +677,7 @@ namespace NTT {
         const u32 group_num = blockDim.x / group_sz;
         const u32 index = blockIdx.x * group_num + group_id;
 
-        auto u = s + group_id * ((1 << deg) + 1) * WORDS;
+        auto u = s + group_id * ((1 << deg)) * WORDS;
 
         const u32 lgp = log_stride - deg + 1;
         const u32 end_stride = 1 << lgp; //stride of the last butterfly
@@ -693,7 +693,7 @@ namespace NTT {
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
-        // const u32 shared_read_stride = (lsize << 1) + 1;
+        const u32 shared_read_stride = (lsize << 1);
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
@@ -704,8 +704,8 @@ namespace NTT {
                 if (io < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u32 gpos = group_id << (lgp + 1);
-                    u[(i << 1) * WORDS + io]= x[gpos * WORDS + io];
-                    u[((i << 1) + 1) * WORDS + io] = x[(gpos + end_stride) * WORDS + io];
+                    u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
+                    u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
                 }
             }
         }
@@ -721,8 +721,8 @@ namespace NTT {
             const u32 i0 = (lid << 1) - di;
             const u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0 * WORDS);
-            auto b = mont256::Element::load(u + i1 * WORDS);
+            auto a = mont256::Element::load(u + i0, shared_read_stride);
+            auto b = mont256::Element::load(u + i1, shared_read_stride);
             auto tmp = a;
             a = env.add(a, b);
             b = env.sub(tmp, b);
@@ -730,8 +730,8 @@ namespace NTT {
                 auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
                 b = env.mul(b, w);
             }
-            a.store(u + i0 * WORDS);
-            b.store(u + i1 * WORDS);
+            a.store(u + i0, shared_read_stride);
+            b.store(u + i1, shared_read_stride);
 
             __syncthreads();
         }
@@ -751,13 +751,13 @@ namespace NTT {
         auto pos1 = __brev(lid << 1) >> (32 - deg);
         auto pos2 = __brev((lid << 1) + 1) >> (32 - deg);
 
-        auto a = mont256::Element::load(u + pos1 * WORDS);
+        auto a = mont256::Element::load(u + pos1, shared_read_stride);
         a = env.mul(a, t1);
-        a.store(u + pos1 * WORDS);
+        a.store(u + pos1, shared_read_stride);
         
-        auto b = mont256::Element::load(u + pos2 * WORDS);
+        auto b = mont256::Element::load(u + pos2, shared_read_stride);
         b = env.mul(b, t2);
-        b.store(u + pos2 * WORDS);
+        b.store(u + pos2, shared_read_stride);
 
         __syncthreads();
 
@@ -768,8 +768,8 @@ namespace NTT {
                 if (io < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u32 gpos = group_id << (lgp + 1);
-                    x[gpos * WORDS + io] = u[(i << 1) * WORDS + io];
-                    x[(gpos + end_stride) * WORDS + io] = u[((i << 1) + 1) * WORDS + io];
+                    x[gpos * WORDS + io] = u[(i << 1) + io * shared_read_stride];
+                    x[(gpos + end_stride) * WORDS + io] = u[(i << 1) + 1 + io * shared_read_stride];
                 }
             }
         }
