@@ -660,8 +660,8 @@ namespace NTT {
         }
     }
 
-    template <u32 WORDS>
-    __global__ void SSIP_NTT_stage1_dev (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 io_group, mont256::Params* param, u32 group_sz, u32 * roots) {
+    template <u32 WORDS, u32 io_group>
+    __global__ void SSIP_NTT_stage1_dev (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, u32 space, mont256::Params* param, u32 group_sz, u32 * roots) {
         extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
@@ -671,13 +671,26 @@ namespace NTT {
         // then a1_word0 a1_word1 a1_word2 ... 
         // so we need the empty space is for padding to avoid bank conflict during read because n is likely to be 32k
 
+
+        constexpr int warp_threads = io_group;
+        constexpr int block_threads = 512;
+        constexpr int items_per_thread = io_group;
+        const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
+        u32 thread_data[io_group];
+
+        // Specialize WarpExchange for a virtual warp of a threads owning b integer items each
+        using WarpExchangeT = cub::WarpExchange<u32, items_per_thread, warp_threads>;
+
+        // Allocate shared memory for WarpExchange
+        __shared__ typename WarpExchangeT::TempStorage temp_storage[block_threads / warp_threads]; // TODO: turn into dynamic allocation
+
         const u32 lid = threadIdx.x & (group_sz - 1);
         const u32 lsize = group_sz;
         const u32 group_id = threadIdx.x / group_sz;
         const u32 group_num = blockDim.x / group_sz;
         const u32 index = blockIdx.x * group_num + group_id;
 
-        auto u = s + group_id * ((1 << deg)) * WORDS;
+        auto u = s + group_id * ((1 << deg) + 1) * WORDS;
 
         const u32 lgp = log_stride - deg + 1;
         const u32 end_stride = 1 << lgp; //stride of the last butterfly
@@ -693,7 +706,7 @@ namespace NTT {
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
-        const u32 shared_read_stride = (lsize << 1);
+        const u32 shared_read_stride = (lsize << 1) + 1;
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
@@ -726,8 +739,25 @@ namespace NTT {
             auto tmp = a;
             a = env.add(a, b);
             b = env.sub(tmp, b);
+
+            mont256::Element w;
+            // use warp exchange to broadcast the twiddle factor if we have more than a complete warp of threads
+            if (cur_io_group == io_group) {
+                for (u32 i = 0; i < cur_io_group; i++) {
+                    if (io_id < WORDS) {
+                        const u32 di_io = (i + lid_start) & (bit - 1);
+                        thread_data[i] = pq[(di_io << rnd << pqshift) * WORDS + io_id];
+                    }
+                }
+                // Collectively exchange data into a blocked arrangement across threads
+                WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+
+                w = mont256::Element::load(thread_data);
+            } else {
+                w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
+            }
+
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
                 b = env.mul(b, w);
             }
             a.store(u + i0, shared_read_stride);
@@ -1067,7 +1097,7 @@ namespace NTT {
 
                 u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
 
-                auto kernel = SSIP_NTT_stage1_dev <WORDS>;
+                auto kernel = SSIP_NTT_stage1_dev <WORDS, WORDS>;
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
