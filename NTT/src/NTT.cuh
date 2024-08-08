@@ -673,7 +673,7 @@ namespace NTT {
 
 
         constexpr int warp_threads = io_group;
-        constexpr int block_threads = 512;
+        constexpr int block_threads = 256;
         constexpr int items_per_thread = io_group;
         const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
         u32 thread_data[io_group];
@@ -770,9 +770,39 @@ namespace NTT {
         u32 k = index & (end_stride - 1);
         u64 twiddle = (len >> (log_stride - deg + 1) >> deg) * k;
 
-        roots += twiddle * (lid << 1) * WORDS;
-        auto t1 = mont256::Element::load(roots);
-        auto t2 = mont256::Element::load(roots + WORDS * twiddle);
+        mont256::Element t1, t2;
+        if (cur_io_group == io_group) {
+            for (u32 i = 0; i < cur_io_group; i++) {
+                if (io_id < WORDS) {
+                    u32 pos = twiddle * ((i + lid_start) << 1);
+                    thread_data[i] = roots[pos * WORDS + io_id];
+                }
+            }
+            // Collectively exchange data into a blocked arrangement across threads
+            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+
+            t1 = mont256::Element::load(thread_data);
+        } else {
+            t1 = mont256::Element::load(roots + (twiddle * (lid << 1)) * WORDS);
+        }
+
+        if (cur_io_group == io_group) {
+            for (u32 i = 0; i < cur_io_group; i++) {
+                if (io_id < WORDS) {
+                    u32 pos = twiddle * (1 + ((i + lid_start) << 1));
+                    thread_data[i] = roots[pos * WORDS + io_id];
+                }
+            }
+            // Collectively exchange data into a blocked arrangement across threads
+            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+
+            t2 = mont256::Element::load(thread_data);
+        } else {
+            t2 = mont256::Element::load(roots + (twiddle * ((lid << 1) + 1)) * WORDS);
+        }
+
+        // auto t1 = mont256::Element::load(roots);
+        // auto t2 = mont256::Element::load(roots + WORDS * twiddle);
 
         // auto twiddle = pow_lookup_constant <WORDS> ((len >> (log_stride - deg + 1) >> deg) * k, env);
         // auto t1 = env.pow(twiddle, lid << 1, deg);
@@ -967,7 +997,7 @@ namespace NTT {
 
     template <u32 WORDS>
     class self_sort_in_place_ntt {
-        const u32 max_threads_stage1_log = 9;
+        const u32 max_threads_stage1_log = 8;
         const u32 max_threads_stage2_log = 8;
         u32 max_deg_stage1;
         u32 max_deg_stage2;
