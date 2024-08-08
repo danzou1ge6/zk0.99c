@@ -10,11 +10,11 @@ def get_smem_time(shared_bandwidth, data_size, deg, clocks, SMs): # bytes/clock,
     return num_clock / (SMs * clocks * 10**6)
 
 def get_compute_time(TOPS, deg, mul_op, add_op, data_size):
-    num_mul = deg * data_size / 2 + (60) * data_size
+    num_mul = deg * data_size / 2# + (60) * data_size
     num_add = deg * data_size
     index_compute = data_size * 15
     num_ops = num_add * add_op + num_mul * mul_op + index_compute
-    return num_ops / 32 / (TOPS * 10**12)
+    return num_ops  / (TOPS * 10**12)
 
 
 
@@ -25,10 +25,10 @@ if __name__ == "__main__":
 
     total_time = 0
     for i in deg:
-        data_size = (2 ** max_deg) * words * 4
-        global_mem_time = get_gmem_time(696, data_size)
+        data_size = (2 ** max_deg)
+        global_mem_time = get_gmem_time(696, data_size * words * 4)
         total_time += global_mem_time
-        share_mem_time = get_smem_time(128, data_size, i, 1740, 84)
+        share_mem_time = get_smem_time(128, data_size * words * 4, i, 1740, 84)
         total_time += share_mem_time
         compute_time = get_compute_time(18.7, i, 100, 12, data_size)
         total_time += compute_time
