@@ -547,7 +547,7 @@ namespace NTT {
     };
 
     template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
         extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
@@ -640,7 +640,7 @@ namespace NTT {
         u64 twiddle = (len >> (log_stride - deg + 1) >> deg) * k;
 
         mont256::Element t1, t2;
-        if (cur_io_group == io_group) {
+        if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
                     u32 pos = twiddle * ((i + lid_start) << 1);
@@ -655,7 +655,7 @@ namespace NTT {
             t1 = mont256::Element::load(roots + (twiddle * (lid << 1)) * WORDS);
         }
 
-        if (cur_io_group == io_group) {
+        if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
                     u32 pos = twiddle * (1 + ((i + lid_start) << 1));
@@ -705,7 +705,7 @@ namespace NTT {
     }
 
     template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
         extern __shared__ u32_E s[];
 
         constexpr int warp_threads = io_group;
@@ -824,7 +824,7 @@ namespace NTT {
         u64 twiddle = (n >> (log_stride - deg + 1) >> deg) * k;
 
         mont256::Element t1, t2;
-        if (cur_io_group == io_group) {
+        if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
                     u32 pos = twiddle * ((i + lid_start) << 1 >> deg);
@@ -839,7 +839,7 @@ namespace NTT {
             t1 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg));
         }
 
-        if (cur_io_group == io_group) {
+        if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
                     u32 pos = twiddle * ((i + lid_start) << 1 >> deg) + twiddle * (1 << (deg - 1));
@@ -1049,7 +1049,7 @@ namespace NTT {
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid, block, shared_size >>>(x, pq_d, len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d);
+                kernel <<< grid, block, shared_size >>>(x, pq_d, len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, true);
 
                 log_stride -= deg;
             }
@@ -1077,7 +1077,7 @@ namespace NTT {
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d);
+                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, false);
 
                 log_stride -= deg;
             }
