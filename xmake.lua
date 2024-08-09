@@ -30,6 +30,7 @@ target("test-bn254")
     add_files("msm/tests/bn254.cu")
 
 target("test-ntt")
+    set_languages(("c++20"))
     if is_mode("debug") then 
         set_symbols("debug")
     end
