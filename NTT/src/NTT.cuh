@@ -547,7 +547,17 @@ namespace NTT {
     };
 
     template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1 (u32_E * x, const u32_E * pq, u32 len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    __global__ void SSIP_NTT_stage1 (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
+                                    const u32_E * pq, // twiddle factors for shard memory NTT
+                                    u32 len, // input data length
+                                    u32 log_stride, // the log of the stride of initial butterfly op
+                                    u32 deg, // the deg of the shared memory NTT
+                                    u32 max_deg, // max deg supported by pq
+                                    mont256::Params* param, // params for field ops
+                                    u32 group_sz, // number of threads used in a shared memory NTT
+                                    u32 * roots, // twiddle factors for global NTT
+                                    bool coalesced_roots) // whether to use cub to coalesce the read of roots
+    {
         extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
