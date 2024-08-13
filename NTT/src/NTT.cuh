@@ -605,8 +605,20 @@ namespace NTT {
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
+        const u32 io_group_id = lid / cur_io_group;
+        int io_st, io_ed, io_stride;
+
+        if ((io_group_id / 2) & 1) {
+            io_st = lid_start;
+            io_ed = lid_start + cur_io_group;
+            io_stride = 1;
+        } else {
+            io_st = lid_start + cur_io_group - 1;
+            io_ed = ((int)lid_start) - 1;
+            io_stride = -1;
+        }
         // Read data
-        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+        for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
@@ -614,6 +626,11 @@ namespace NTT {
                     u32 gpos = group_id << (lgp + 1);
                     u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
                     u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                    // if (blockIdx.x == 0 && threadIdx.x < 32) printf("%d ", ((i << 1) + io * shared_read_stride) % 32);
+                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
+                    // if (blockIdx.x == 0 && threadIdx.x < 32) printf("%d ",  ((i << 1) + 1 + io * shared_read_stride) % 32);
+                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
+                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
                 }
             }
         }
@@ -701,7 +718,7 @@ namespace NTT {
         __syncthreads();
 
         // Write back
-        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+        for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
