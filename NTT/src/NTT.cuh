@@ -840,34 +840,21 @@ namespace NTT {
                 if (i >= sub_deg) break;
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    if ((lid / lanemask) & 1) {
-                        a.n.c0 = __shfl_xor_sync(0xffffffff, a.n.c0, lanemask);
-                        a.n.c1 = __shfl_xor_sync(0xffffffff, a.n.c1, lanemask);
-                        a.n.c2 = __shfl_xor_sync(0xffffffff, a.n.c2, lanemask);
-                        a.n.c3 = __shfl_xor_sync(0xffffffff, a.n.c3, lanemask);
-                        a.n.c4 = __shfl_xor_sync(0xffffffff, a.n.c4, lanemask);
-                        a.n.c5 = __shfl_xor_sync(0xffffffff, a.n.c5, lanemask);
-                        a.n.c6 = __shfl_xor_sync(0xffffffff, a.n.c6, lanemask);
-                        a.n.c7 = __shfl_xor_sync(0xffffffff, a.n.c7, lanemask);
-                    } else {
-                        b.n.c0 = __shfl_xor_sync(0xffffffff, b.n.c0, lanemask);
-                        b.n.c1 = __shfl_xor_sync(0xffffffff, b.n.c1, lanemask);
-                        b.n.c2 = __shfl_xor_sync(0xffffffff, b.n.c2, lanemask);
-                        b.n.c3 = __shfl_xor_sync(0xffffffff, b.n.c3, lanemask);
-                        b.n.c4 = __shfl_xor_sync(0xffffffff, b.n.c4, lanemask);
-                        b.n.c5 = __shfl_xor_sync(0xffffffff, b.n.c5, lanemask);
-                        b.n.c6 = __shfl_xor_sync(0xffffffff, b.n.c6, lanemask);
-                        b.n.c7 = __shfl_xor_sync(0xffffffff, b.n.c7, lanemask);
-                    }
+                    mont256::Element tmp;
+                    if ((lid / lanemask) & 1) tmp = a;
+                    else tmp = b;
+                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
+                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
+                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
+                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
+                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
+                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
+                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
+                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                    if ((lid / lanemask) & 1) a = tmp;
+                    else b = tmp;
                 }
 
-                // if (blockIdx.x == 0 && threadIdx.x < 32) {
-                //     printf("%d ", a.n.c0);
-                //     if (threadIdx.x == 0) printf("\n");
-                //     __syncwarp();
-                //     printf("%d ", b.n.c0);
-                //     if (threadIdx.x == 0) printf("\n");
-                // }
                 auto tmp = a;
                 a = env.add(a, b);
                 b = env.sub(tmp, b);
