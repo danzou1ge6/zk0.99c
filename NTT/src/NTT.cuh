@@ -595,9 +595,8 @@ namespace NTT {
         const u32 segment_id = index & (end_stride - 1);
         
         const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
-        const u32 subblock_id = segment_id & (end_stride - 1);
 
-        x += ((u64)(segment_start + subblock_id)) * WORDS; // use u64 to avoid overflow
+        x += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
@@ -780,9 +779,8 @@ namespace NTT {
         const u32 segment_id = index & (end_stride - 1);
         
         const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
-        const u32 subblock_id = segment_id & (end_stride - 1);
 
-        x += ((u64)(segment_start + subblock_id)) * WORDS; // use u64 to avoid overflow
+        x += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
 
         const u32 io_id = lid & (io_group - 1);
         const u32 lid_start = lid - io_id;
@@ -826,18 +824,26 @@ namespace NTT {
 
         const u32 pqshift = max_deg - deg;
         for(u32 rnd = 0; rnd < deg; rnd += 6) {
+            u32 sub_deg = min(6, deg - rnd);
+            u32 warp_sz = 1 << (sub_deg - 1);
+            u32 warp_id = lid / warp_sz;
+            
+            u32 lgp = deg - rnd - sub_deg;
+            u32 end_stride = 1 << lgp;
+
+            u32 segment_start = (warp_id >> lgp) << (lgp + sub_deg);
+            u32 segment_id = warp_id & (end_stride - 1);
+            
+            u32 laneid = lid & (warp_sz - 1);
+
             u32 bit = subblock_sz >> rnd;
-            u32 di = lid & (bit - 1);
-            u32 i0 = (lid << 1) - di;
+            u32 i0 = segment_start + segment_id + laneid * end_stride;
             u32 i1 = i0 + bit;
 
             auto a = mont256::Element::load(u + i0, shared_read_stride);
             auto b = mont256::Element::load(u + i1, shared_read_stride);
 
-            u32 sub_deg = min(6, deg - rnd);
-            #pragma unroll
-            for (u32 i = 0; i < 6; i++) {
-                if (i >= sub_deg) break;
+            for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
                     mont256::Element tmp;
@@ -857,16 +863,17 @@ namespace NTT {
                 auto tmp = a;
                 a = env.add(a, b);
                 b = env.sub(tmp, b);
-                bit = subblock_sz >> (rnd + i);
-                di = lid & (bit - 1);
+                u32 bit = (1 << sub_deg) >> (i + 1);
+                u32 di = (lid & (bit - 1)) * end_stride + segment_id;
+
                 if (di != 0) {
                     auto w = mont256::Element::load(pq + (di << (rnd + i) << pqshift) * WORDS);
                     b = env.mul(b, w);
                 }
             }            
 
-            i0 = (lid << 1) - di;
-            i1 = i0 + bit;
+            i0 = segment_start + segment_id + laneid * 2 * end_stride;
+            i1 = i0 + end_stride;
             a.store(u + i0, shared_read_stride);
             b.store(u + i1, shared_read_stride);
 
