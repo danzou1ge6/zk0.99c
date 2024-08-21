@@ -1359,7 +1359,7 @@ namespace NTT {
         u32 max_deg_stage1;
         u32 max_deg_stage2;
         u32 max_deg;
-        const u32 log_len;
+        const int log_len;
         const u64 len;
         mont256::Params param;
         mont256::Element unit;
@@ -1388,7 +1388,8 @@ namespace NTT {
             u32 deg_stage1 = (log_len + 1) / 2;
             u32 deg_stage2 = log_len / 2;
             max_deg_stage1 = get_deg(deg_stage1, max_threads_stage1_log + 1);
-            max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 2) / 2);
+            // max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 2) / 2); // 4 elements per thread
+            max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 1) / 2);
             max_deg = std::max(max_deg_stage1, max_deg_stage2);
 
             // Precalculate:
@@ -1474,7 +1475,7 @@ namespace NTT {
             constexpr u32 io_group = 1 << (log2_int(WORDS - 1) + 1);
             
             while (log_stride >= log_len / 2) {
-                u32 deg = std::min(max_deg_stage1, (log_stride + 1 - log_len / 2));
+                u32 deg = std::min((int)max_deg_stage1, (log_stride + 1 - log_len / 2));
 
                 u32 group_num = std::min((int)(len / (1 << deg)), 1 << (max_threads_stage1_log - (deg - 1)));
 
@@ -1504,19 +1505,19 @@ namespace NTT {
             while (log_stride >= 0) {
                 u32 deg = std::min((int)max_deg_stage2, log_stride + 1);
 
-                // u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - (2 * deg - 1)));
+                u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - (2 * deg - 1)));
 
-                // u32 block_sz = (1 << (deg * 2 - 1)) * group_num;
-                // assert(block_sz <= (1 << max_threads_stage1_log));
-                // u32 block_num = len / 2 / block_sz;
-                // assert(block_num * 2 * block_sz == len);
+                u32 block_sz = (1 << (deg * 2 - 1)) * group_num;
+                assert(block_sz <= (1 << max_threads_stage1_log));
+                u32 block_num = len / 2 / block_sz;
+                assert(block_num * 2 * block_sz == len);
 
-                u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - 2 * (deg - 1)));
+                // u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - 2 * (deg - 1)));
 
-                u32 block_sz = (1 << ((deg - 1) << 1)) * group_num;
-                assert(block_sz <= (1 << max_threads_stage2_log));
-                u32 block_num = len / 4 / block_sz;
-                assert(block_num * 4 * block_sz == len);
+                // u32 block_sz = (1 << ((deg - 1) << 1)) * group_num;
+                // assert(block_sz <= (1 << max_threads_stage2_log));
+                // u32 block_num = len / 4 / block_sz;
+                // assert(block_num * 4 * block_sz == len);
 
                 dim3 block1(block_sz);
                 dim3 grid1(block_num);
@@ -1525,12 +1526,12 @@ namespace NTT {
 
                 u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block1.x / io_group)) + (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
 
-                auto kernel = SSIP_NTT_stage2 <WORDS, io_group>;
-            
+                auto kernel = SSIP_NTT_stage2_two_per_thread <WORDS, io_group>;
+
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
-                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, false);
-                // kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, false);
+                // kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, false);
+                kernel <<< grid1, block1, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, false);
 
                 log_stride -= deg;
             }
