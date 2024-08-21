@@ -1380,7 +1380,7 @@ namespace NTT {
     template <u32 WORDS>
     class self_sort_in_place_ntt {
         const u32 max_threads_stage1_log = 8;
-        const u32 max_threads_stage2_log = 8;
+        const u32 max_threads_stage2_log = 9;
         u32 max_deg_stage1;
         u32 max_deg_stage2;
         u32 max_deg;
@@ -1396,7 +1396,7 @@ namespace NTT {
         u32 get_deg (u32 deg_stage, u32 max_deg_stage) {
             u32 deg_per_round;
             for (u32 rounds = 1; ; rounds++) {
-                deg_per_round = rounds == 1 ? deg_stage : (deg_stage + 1) / rounds;
+                deg_per_round = rounds == 1 ? deg_stage : (deg_stage - 1) / rounds + 1;
                 if (deg_per_round <= max_deg_stage) break;
             }
             return deg_per_round;
@@ -1533,7 +1533,7 @@ namespace NTT {
                 u32 group_num = std::min((int)(len / (1 << (deg << 1))), 1 << (max_threads_stage2_log - (2 * deg - 1)));
 
                 u32 block_sz = (1 << (deg * 2 - 1)) * group_num;
-                assert(block_sz <= (1 << max_threads_stage1_log));
+                assert(block_sz <= (1 << max_threads_stage2_log));
                 u32 block_num = len / 2 / block_sz;
                 assert(block_num * 2 * block_sz == len);
 
