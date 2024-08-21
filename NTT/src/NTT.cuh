@@ -1011,8 +1011,7 @@ namespace NTT {
         // Read data
         for (int ti = io_st; ti != io_ed; ti += io_stride) {
             u32 second_half = (ti >= (lsize >> 1));
-            u32 i = ti;
-            if (second_half) i -= lsize >> 1;
+            u32 i = ti - second_half * (lsize >> 1);
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
@@ -1020,8 +1019,6 @@ namespace NTT {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_offset + (group_id << (log_end_stride + 1)); // group_offset + group_id * (end_stride << 1)
                     u32 offset = io * shared_read_stride;
-                    // if (io_id == 0)
-                    // printf("gpos: %lld spos: %d threadid %d num %d\n", gpos + second_half * end_pair_stride, threadIdx.x / group_sz * ((1 << (deg << 1)) + 1) + (i << 1)  + second_half * lsize, threadIdx.x, data[(gpos + second_half * end_pair_stride) * WORDS + io]);
 
                     u[(i << 1) + offset + second_half * lsize] = data[(gpos + second_half * end_pair_stride) * WORDS + io];
                     u[(i << 1) + 1 + offset + second_half * lsize] = data[(gpos + end_stride + second_half * end_pair_stride) * WORDS + io];
@@ -1036,20 +1033,18 @@ namespace NTT {
         const u32 pqshift = max_deg - deg;
         u32 second_half = (lid >= (lsize >> 1));
         lid -= second_half * (lsize >> 1);
-        for(u32 rnd = 0; rnd < deg; rnd++) {
-        
-            const u32 bit = subblock_sz >> rnd;
-            const u32 gap = ((lsize) >> (deg - rnd - 1));
-            const u32 offset = (gap) * (lid / (gap >> 1));
+        if (second_half) {
+            u += lsize;
+        }
 
+        for(u32 rnd = 0; rnd < deg; rnd++) {
+            const u32 bit = subblock_sz >> rnd;
             const u32 di = lid & (bit - 1);
-            const u32 i0 = (lid << 1) - di + offset + second_half * gap;
+            const u32 i0 = (lid << 1) - di;
             const u32 i1 = i0 + bit;
 
             auto a = mont256::Element::load(u + i0, shared_read_stride);
             auto b = mont256::Element::load(u + i1, shared_read_stride);
-
-            //printf("i0: %d i1: %d, thread: %d\n", a.n.c0, b.n.c0, threadIdx.x);
             auto tmp1 = a;
 
             a = env.add(a, b);
@@ -1064,6 +1059,9 @@ namespace NTT {
             b.store(u + i1, shared_read_stride);
 
             __syncthreads();
+        }
+        if (second_half) {
+            u -= lsize;
         }
         // if (threadIdx.x == 0) {
         //     auto tu = u;
@@ -1090,11 +1088,13 @@ namespace NTT {
         u64 twiddle = (n >> (log_stride - deg + 1) >> deg) * k;
 
         mont256::Element t1;
-        if (false) {
-            for (u32 i = 0; i < cur_io_group; i++) {
+        if (coalesced_roots && cur_io_group == io_group) {
+            for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
+                u32 second_half = (ti >= (lsize >> 1));
+                u32 i = second_half ? ti - (lsize >> 1) : ti;
                 if (io_id < WORDS) {
-                    u32 pos = twiddle * ((i + lid_start) << 1 >> deg);
-                    thread_data[i] = roots[pos * WORDS + io_id];
+                    u32 pos = twiddle * (i << 1 >> deg) + second_half * twiddle * (1 << (deg - 1));
+                    thread_data[ti - lid_start] = roots[pos * WORDS + io_id];
                 }
             }
             // Collectively exchange data into a blocked arrangement across threads
@@ -1142,8 +1142,7 @@ namespace NTT {
         // Write back
         for (int ti = io_st; ti != io_ed; ti += io_stride) {
             u32 second_half = (ti >= (lsize >> 1));
-            u32 i = ti;
-            if (second_half) i -= lsize >> 1;
+            u32 i = ti - second_half * (lsize >> 1);
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
