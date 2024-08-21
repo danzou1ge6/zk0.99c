@@ -995,8 +995,21 @@ namespace NTT {
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
+        const u32 io_group_id = lid / cur_io_group;
+        int io_st, io_ed, io_stride;
+
+        if ((io_group_id / 2) & 1) {
+            io_st = lid_start;
+            io_ed = lid_start + cur_io_group;
+            io_stride = 1;
+        } else {
+            io_st = lid_start + cur_io_group - 1;
+            io_ed = ((int)lid_start) - 1;
+            io_stride = -1;
+        }
+
         // Read data
-        for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
+        for (int ti = io_st; ti != io_ed; ti += io_stride) {
             u32 second_half = (ti >= (lsize >> 1));
             u32 i = ti;
             if (second_half) i -= lsize >> 1;
@@ -1127,7 +1140,7 @@ namespace NTT {
         // }
 
         // Write back
-        for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
+        for (int ti = io_st; ti != io_ed; ti += io_stride) {
             u32 second_half = (ti >= (lsize >> 1));
             u32 i = ti;
             if (second_half) i -= lsize >> 1;
@@ -1195,8 +1208,21 @@ namespace NTT {
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
+        const u32 io_group_id = lid / cur_io_group;
+        int io_st, io_ed, io_stride;
+
+        if ((io_group_id / 2) & 1) {
+            io_st = lid_start;
+            io_ed = lid_start + cur_io_group;
+            io_stride = 1;
+        } else {
+            io_st = lid_start + cur_io_group - 1;
+            io_ed = ((int)lid_start) - 1;
+            io_stride = -1;
+        }
+
         // Read data
-        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+        for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
@@ -1329,7 +1355,7 @@ namespace NTT {
         __syncthreads();
 
         // Write back
-        for (u32 i = lid_start; i < lid_start + cur_io_group; i++) {
+        for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io < WORDS) {
