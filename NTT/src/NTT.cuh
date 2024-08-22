@@ -146,19 +146,20 @@ namespace NTT {
         env.from_number(mont256::Number::load(data + index * WORDS)).store(data + index * WORDS);
     }
     
-    // template<u32 WORDS>
-    // __global__ void rearrange(u32_E * data, uint2 * reverse, u32 len) {
-    //     u32 index = blockIdx.x * blockDim.x + threadIdx.x;
-    //     if (index >= len) return;
-    //     uint2 r = reverse[index];
+    template<u64 WORDS>
+    __global__ void rearrange(u32_E * data, u32 log_len) {
+        u32 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
+        u32 word = threadIdx.x % WORDS;
+        if (index >= 1 << log_len) return;
+        u32 rindex = (__brev(index) >> (32 - log_len));
         
-    //     #pragma unroll
-    //     for (u32 i = 0; i < WORDS; i++) {
-    //         u32 tmp = data[((u64)r.x) * WORDS + i];
-    //         data[((u64)r.x) * WORDS + i] = data[((u64)r.y) * WORDS + i];
-    //         data[((u64)r.y) * WORDS + i] = tmp;
-    //     }
-    // }
+        if (rindex >= index) return;
+
+        u32 tmp = data[index * WORDS + word];
+        if (word == 0)
+        data[index * WORDS + word] = data[rindex * WORDS + word];
+        data[rindex * WORDS + word] = tmp;
+    }
 
     template<u32 WORDS>
     __global__ void naive(u32_E* data, u32 len, u32_E* roots, u32 stride, mont256::Params* param) {
@@ -271,14 +272,17 @@ namespace NTT {
                 cudaEventRecord(start);
             }
 
-            thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
+            // thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
+            dim3 block(1024);
+            dim3 grid((((u64) len) * WORDS - 1) / block.x + 1);
+            rearrange<WORDS> <<<grid, block >>> (buff1, log_len);
 
             if (debug) {
                 cudaEventRecord(end);
             }
 
-            u32_E * data_d = (u32_E *) buff2;
-            u32_E * roots_d = (u32_E *) buff1;
+            u32_E * data_d = (u32_E *) buff1;
+            u32_E * roots_d = (u32_E *) buff2;
 
             cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
 
@@ -299,6 +303,7 @@ namespace NTT {
                 float t1, t2;
                 cudaEventElapsedTime(&t1, start, end);
                 cudaEventElapsedTime(&t2, start1, end1);
+                printf("%f\n", t1);
                 milliseconds = t1 + t2;
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
