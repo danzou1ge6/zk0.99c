@@ -105,7 +105,7 @@ int main() {
 
     cudaSetDevice(0);
 
-    l = qpow(2, 24);
+    l = 1 << 24;
 
     while (length < l) {
         length <<= 1ll;
