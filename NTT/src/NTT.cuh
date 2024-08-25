@@ -149,14 +149,13 @@ namespace NTT {
     template<u64 WORDS>
     __global__ void rearrange(u32_E * data, u32 log_len) {
         u32 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
-        u32 word = threadIdx.x % WORDS;
+        u32 word = threadIdx.x & (WORDS - 1);
         if (index >= 1 << log_len) return;
         u32 rindex = (__brev(index) >> (32 - log_len));
         
         if (rindex >= index) return;
 
         u32 tmp = data[index * WORDS + word];
-        if (word == 0)
         data[index * WORDS + word] = data[rindex * WORDS + word];
         data[rindex * WORDS + word] = tmp;
     }
@@ -428,7 +427,7 @@ namespace NTT {
 
         public:
         float milliseconds = 0;
-        bellperson_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) : param(param), log_len(log_len), max_deg(std::min(8u, log_len)), len(1 << log_len), debug(debug) {
+        bellperson_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug) : param(param), log_len(log_len), max_deg(std::min(8u, log_len)), len(1 << log_len), debug(debug) {
             // Precalculate:
             auto env = mont256::Env::host_new(param);
 
@@ -2549,7 +2548,7 @@ namespace NTT {
 
         public:
         float milliseconds = 0;
-        self_sort_in_place_ntt(mont256::Params param, u32* omega, u32 log_len, bool debug) 
+        self_sort_in_place_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug) 
         : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
             u32 deg_stage1 = (log_len + 1) / 2;
             u32 deg_stage2 = log_len / 2;
