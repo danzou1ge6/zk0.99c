@@ -49,54 +49,12 @@ void ntt_cpu(long long data[], long long reverse[], long long len, long long ome
                 long long a = data[start + offset], b = w * data[start + offset + stride] % P;
                 data[start + offset] = (a + b) % P;
                 data[start + offset + stride] = (a - b + P) % P;
-                // printf("%lld %lld\n", w, offset);
             }
         }
     }
 }
 
-// template <int WORDS>
-// void tmp(uint * data, long long * reverse, uint len) {
-//     using namespace NTT;
-//     long long * reverse_d;
-//     cudaMalloc(&reverse_d, len * sizeof(long long));
-//     cudaMemcpy(reverse_d, reverse, len * sizeof(long long), cudaMemcpyHostToDevice);
-
-//     u32 * buff1, * buff2;
-//     cudaMalloc(&buff1, len * WORDS * sizeof(u32));
-//     cudaMalloc(&buff2, len * WORDS * sizeof(u32));
-
-//     element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
-//     cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
-
-//     element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
-
-//     cudaEvent_t start_re, end_re;
-//     cudaEventCreate(&start_re);
-//     cudaEventCreate(&end_re);
-//     cudaEventRecord(start_re);
-            
-//     thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
-
-//     cudaEventRecord(end_re);
-//     cudaEventSynchronize(end_re);
-//     float milliseconds_re = 0;
-//     cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
-//     printf("Rearrange_thrust: %f\n", milliseconds_re);
-
-//     cudaMemcpy(data, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
-
-//     // for (int i = 0; i < len; i ++) {
-//     //     printf("%u ", data[i * WORDS]);
-//     // }
-//     // printf("\n");
-
-//     cudaFree(reverse_d);
-//     cudaFree(buff1);
-//     cudaFree(buff2);
-// }
-
-#define WORDS 8
+#define WORDS 8ll
 
 int main() {
     long long *data, *reverse, *data_copy;

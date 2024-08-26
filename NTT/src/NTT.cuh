@@ -10,6 +10,7 @@
 #include <thrust/scatter.h>
 #include <thrust/execution_policy.h>
 #include <bit>
+#include <cuda/barrier>
 
 namespace NTT {
     typedef uint u32;
@@ -192,7 +193,8 @@ namespace NTT {
         bool debug;
         u32 * reverse;
         u32_E * roots;
-        const u32 log_len, len;
+        const u32 log_len;
+        const u64 len;
         
         void gen_reverse() {
             reverse = new u32[len];
@@ -1857,6 +1859,15 @@ namespace NTT {
 
     template <u32 WORDS, u32 io_group>
     __launch_bounds__(1024) __global__ void SSIP_NTT_stage2_two_per_thread_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        using barrier = cuda::barrier<cuda::thread_scope_block>;
+        #pragma nv_diag_suppress static_var_with_dynamic_init
+        __shared__  barrier bar;
+
+        if (threadIdx.x == 0) {
+            init(&bar, blockDim.x); // Initialize the barrier with expected arrival count
+        }
+        __syncthreads();
+
         constexpr int warp_threads = io_group;
         constexpr int items_per_thread = io_group;
         const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
@@ -1943,6 +1954,9 @@ namespace NTT {
             b = mont256::Element::load(data + (gpos + (end_stride << (deg - 1)) + second_half * end_pair_stride) * WORDS);
 
         }
+
+        barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
+
         auto env = mont256::Env(*param);
 
         const u32 pqshift = max_deg - deg;
@@ -1991,17 +2005,7 @@ namespace NTT {
 
         mont256::Element t1;
         if (coalesced_roots && cur_io_group == io_group) {
-            // for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
-            //     u32 second_half = (ti >= (lsize >> 1));
-            //     u32 i = second_half ? ti - (lsize >> 1) : ti;
-            //     if (io_id < WORDS) {
-            //         thread_data[ti - lid_start] = roots[pos * WORDS + io_id];
-            //     }
-            // }
-            // // Collectively exchange data into a blocked arrangement across threads
-            // WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            // t1 = mont256::Element::load(thread_data);
         } else {
             u32 r1 = __brev((lid << 1) + second_half * lsize) >> (32 - (deg << 1));
 
@@ -2022,6 +2026,8 @@ namespace NTT {
 
         b = env.mul(b, t1);
 
+        bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
+
         // Write back
         if (cur_io_group == io_group) {
             a.store(thread_data);
@@ -2035,7 +2041,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((i << 1) + second_half * (lsize)) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize);
@@ -2064,7 +2071,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((i << 1) + 1 + second_half * (lsize)) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize);
@@ -2088,7 +2096,8 @@ namespace NTT {
             u32 p;
             u32 second_half_l, gap;
             u32 lid_l;
-            u32 group_offset, group_id, gpos;
+            u32 group_offset, group_id;
+            u64 gpos;
 
             p = __brev((lid << 1) + second_half * (lsize)) >> (32 - (deg << 1));
             second_half_l = (p >= lsize);
@@ -2121,7 +2130,16 @@ namespace NTT {
     }
 
     template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    __global__ void SSIP_NTT_stage2_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {        
+        using barrier = cuda::barrier<cuda::thread_scope_block>;
+        #pragma nv_diag_suppress static_var_with_dynamic_init
+        __shared__  barrier bar;
+
+        if (threadIdx.x == 0) {
+            init(&bar, blockDim.x); // Initialize the barrier with expected arrival count
+        }
+        __syncthreads();
+
         constexpr int warp_threads = io_group;
         constexpr int items_per_thread = io_group;
         const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
@@ -2233,6 +2251,8 @@ namespace NTT {
         
         auto env = mont256::Env(*param);
 
+        barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
+
         const u32 pqshift = max_deg - deg;
 
         for (u32 i = 0; i < deg; i++) {
@@ -2284,17 +2304,22 @@ namespace NTT {
         // Twiddle factor
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
-
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
-        // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
-        // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
-
         u64 twiddle = (n >> (log_stride - deg + 1) >> deg) * k;
 
         mont256::Element t1;
         if (coalesced_roots && cur_io_group == io_group) {
+            // for (int i = lid_start; i < lid_start + cur_io_group; i++) {
+            //     if (io_id < WORDS) {
+            //         u32 r = __brev((i << 1)) >> (32 - (deg << 1));
+            //         u64 pos = twiddle * (r >> deg);
+            //         thread_data[i - lid_start] = roots[pos * WORDS + io_id];
+            //     }
+            // }
 
+            // // Collectively exchange data into a blocked arrangement across threads
+            // WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+            // t1 = mont256::Element::load(thread_data);
+            // __syncwarp();
         } else {
             u32 r1 = __brev((lid << 1)) >> (32 - (deg << 1));
 
@@ -2305,7 +2330,18 @@ namespace NTT {
         a = env.mul(a, t1);
 
         if (coalesced_roots && cur_io_group == io_group) {
-           
+        //    for (int i = lid_start; i < lid_start + cur_io_group; i++) {
+        //         if (io_id < WORDS) {
+        //             u32 r = __brev((i << 1) + 1) >> (32 - (deg << 1));
+        //             u64 pos = twiddle * (r >> deg);
+        //             thread_data[i - lid_start] = roots[pos * WORDS + io_id];
+        //         }
+        //     }
+
+        //     // Collectively exchange data into a blocked arrangement across threads
+        //     WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+        //     t1 = mont256::Element::load(thread_data);
+        //     __syncwarp();
         } else {
             u32 r2 = __brev((lid << 1) + 1) >> (32 - (deg << 1));
 
@@ -2316,7 +2352,18 @@ namespace NTT {
         b = env.mul(b, t1);
 
         if (coalesced_roots && cur_io_group == io_group) {
-           
+        //    for (int i = lid_start; i < lid_start + cur_io_group; i++) {
+        //         if (io_id < WORDS) {
+        //             u32 r = __brev((i << 1) + lsize * 2) >> (32 - (deg << 1));
+        //             u64 pos = twiddle * (r >> deg);
+        //             thread_data[i - lid_start] = roots[pos * WORDS + io_id];
+        //         }
+        //     }
+
+        //     // Collectively exchange data into a blocked arrangement across threads
+        //     WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+        //     t1 = mont256::Element::load(thread_data);
+        //     __syncwarp();
         } else {
             u32 r3 = __brev((lid << 1) + (lsize * 2)) >> (32 - (deg << 1));
 
@@ -2327,7 +2374,18 @@ namespace NTT {
         c = env.mul(c, t1);
 
         if (coalesced_roots && cur_io_group == io_group) {
-           
+        //    for (int i = lid_start; i < lid_start + cur_io_group; i++) {
+        //         if (io_id < WORDS) {
+        //             u32 r = __brev((i << 1) + 1 + lsize * 2) >> (32 - (deg << 1));
+        //             u64 pos = twiddle * (r >> deg);
+        //             thread_data[i - lid_start] = roots[pos * WORDS + io_id];
+        //         }
+        //     }
+
+        //     // Collectively exchange data into a blocked arrangement across threads
+        //     WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+        //     t1 = mont256::Element::load(thread_data);
+        //     __syncwarp();
         } else {
             u32 r4 = __brev((lid << 1) + 1 + (lsize * 2)) >> (32 - (deg << 1));
 
@@ -2342,6 +2400,7 @@ namespace NTT {
         // roots += twiddle * WORDS * (1 << (deg - 1));
         // auto t2 = mont256::Element::load(roots);
         
+        bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
 
         // Write back
         if (cur_io_group == io_group) {
@@ -2353,7 +2412,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((ti << 1)) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2380,7 +2440,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((ti << 1) + 1) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2407,7 +2468,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((ti << 1) + lsize * 2) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2433,7 +2495,8 @@ namespace NTT {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
-                u32 group_offset, group_id, gpos;
+                u32 group_offset, group_id;
+                u64 gpos;
 
                 p = __brev((ti << 1) + 1 + lsize * 2) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2457,7 +2520,8 @@ namespace NTT {
             u32 p;
             u32 second_half_l, gap;
             u32 lid_l;
-            u32 group_offset, group_id, gpos;
+            u32 group_offset, group_id;
+            u64 gpos;
 
             p = __brev((lid << 1)) >> (32 - (deg << 1));
             second_half_l = (p >= lsize * 2);
@@ -2530,7 +2594,6 @@ namespace NTT {
         mont256::Element unit;
         bool debug;
         u32_E *pq; // Precalculated values for radix degrees up to `max_deg`
-        u32_E *omegas; // Precalculated values for [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
         u32_E *roots;
 
         u32 get_deg (u32 deg_stage, u32 max_deg_stage) {
@@ -2584,16 +2647,6 @@ namespace NTT {
                 }
             }
 
-            // omegas: [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
-
-            omegas = (u32 *) malloc(32 * sizeof(u32) * WORDS);
-            unit.store(omegas);
-            auto last = unit;
-            for (u32 i = 1; i < 32; i++) {
-                last = env.host_square(last);
-                last.store(omegas + i * WORDS);
-            }
-
             roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
             gen_roots_cub<WORDS> gen;
             gen(roots, len, unit, param);
@@ -2601,7 +2654,6 @@ namespace NTT {
 
         ~self_sort_in_place_ntt() {
             free(pq);
-            free(omegas);
             free(roots);
         }
 
@@ -2614,8 +2666,6 @@ namespace NTT {
 
             cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS);
             cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
-
-            cudaMemcpyToSymbol(omegas_c, omegas, 32 * sizeof(u32_E) * WORDS);
 
             u32 * x;
             cudaMalloc(&x, len * WORDS * sizeof(u32));
