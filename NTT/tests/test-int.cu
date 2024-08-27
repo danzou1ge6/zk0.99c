@@ -61,9 +61,9 @@ int main() {
     unsigned long long l,length = 1ll;
     int bits = 0;
 
-    cudaSetDevice(1);
+    cudaSetDevice(0);
 
-    l = 1 << 29;
+    l = 1 << 24;
 
     while (length < l) {
         length <<= 1ll;
