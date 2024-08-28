@@ -3252,6 +3252,210 @@ namespace NTT {
         }
     }
 
+        template <u32 WORDS, u32 io_group>
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
+                                    const u32_E * pq, // twiddle factors for shard memory NTT
+                                    u32 log_len, 
+                                    u32 log_stride, // the log of the stride of initial butterfly op
+                                    u32 deg, // the deg of the shared memory NTT
+                                    u32 max_deg, // max deg supported by pq
+                                    mont256::Params* param, // params for field ops
+                                    u32 group_sz, // number of threads used in a shared memory NTT
+                                    u32 * roots, // twiddle factors for global NTT
+                                    bool coalesced_roots) // whether to use cub to coalesce the read of roots
+    {
+        extern __shared__ u32_E s[];
+        // column-major in shared memory
+        // data patteren:
+        // a0_word0 a1_word0 a2_word0 a3_word0 ... an_word0 [empty] a0_word1 a1_word1 a2_word1 a3_word1 ...
+        // for coleasced read, we need to read a0_word0, a0_word1, a0_word2, ... a0_wordn in a single read
+        // so thread [0,WORDS) will read a0_word0 a0_word1 a0_word2 ... 
+        // then a1_word0 a1_word1 a1_word2 ... 
+        // so we need the empty space is for padding to avoid bank conflict during read because n is likely to be 32k
+
+
+        constexpr int warp_threads = io_group;
+        constexpr int items_per_thread = io_group;
+        const int warp_id_exchange = static_cast<int>(threadIdx.x) / warp_threads;
+        u32 thread_data[io_group];
+
+        // Specialize WarpExchange for a virtual warp of a threads owning b integer items each
+        using WarpExchangeT = cub::WarpExchange<u32, items_per_thread, warp_threads>;
+
+        // Allocate shared memory for WarpExchange
+        typename WarpExchangeT::TempStorage *temp_storage = (typename WarpExchangeT::TempStorage*) s;
+
+        const u32 lid = threadIdx.x & (group_sz - 1);
+        const u32 lsize = group_sz;
+        const u32 group_id = threadIdx.x / group_sz;
+        const u32 group_num = blockDim.x / group_sz;
+        const u32 index = blockIdx.x * group_num + group_id;
+
+        auto u = s + (sizeof(WarpExchangeT::TempStorage) / sizeof(u32) * (blockDim.x / warp_threads)) + group_id * ((1 << deg) + 1) * WORDS;
+
+        const u32 lgp = log_stride - deg + 1;
+        const u32 end_stride = 1 << lgp; //stride of the last butterfly
+
+        // each segment is independent
+        const u32 segment_start = (index >> lgp) << (lgp + deg);
+        const u32 segment_id = index & (end_stride - 1);
+        
+        const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
+
+        x += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
+
+        const u32 io_id = lid & (io_group - 1);
+        const u32 lid_start = lid - io_id;
+        const u32 shared_read_stride = (lsize << 1) + 1;
+        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
+        const u32 io_per_thread = io_group / cur_io_group;
+
+        const u32 io_group_id = lid / cur_io_group;
+        int io_st, io_ed, io_stride;
+
+        if ((io_group_id / 2) & 1) {
+            io_st = lid_start;
+            io_ed = lid_start + cur_io_group;
+            io_stride = 1;
+        } else {
+            io_st = lid_start + cur_io_group - 1;
+            io_ed = ((int)lid_start) - 1;
+            io_stride = -1;
+        }
+        // Read data
+        for (int i = io_st; i != io_ed; i += io_stride) {
+            for (u32 j = 0; j < io_per_thread; j++) {
+                u32 io = io_id + j * cur_io_group;
+                if (io < WORDS) {
+                    u32 group_id = i & (subblock_sz - 1);
+                    u32 gpos = group_id << (lgp + 1);
+                    u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
+                    u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                }
+            }
+        }
+
+        auto env = mont256::Env(*param);
+
+        __syncthreads();
+
+        const u32 pqshift = log_len - 1 - log_stride;
+        
+        for(u32 rnd = 0; rnd < deg; rnd += 6) {
+            u32 sub_deg = min(6, deg - rnd);
+            u32 warp_sz = 1 << (sub_deg - 1);
+            u32 warp_id = lid / warp_sz;
+            
+            u32 lgp = deg - rnd - sub_deg;
+            u32 end_stride_warp = 1 << lgp;
+
+            u32 segment_start = (warp_id >> lgp) << (lgp + sub_deg);
+            u32 segment_id_warp = warp_id & (end_stride_warp - 1);
+            
+            u32 laneid = lid & (warp_sz - 1);
+
+            u32 gap = subblock_sz >> rnd;
+            u32 i0 = segment_start + segment_id_warp + laneid * end_stride_warp;
+            u32 i1 = i0 + gap;
+
+            auto a = mont256::Element::load(u + i0, shared_read_stride);
+            auto b = mont256::Element::load(u + i1, shared_read_stride);
+
+            mont256::Element w;
+
+            auto tmp = a;
+            a = env.add(a, b);
+            b = env.sub(tmp, b);
+            u32 bit = (1 << sub_deg) >> 1;
+            u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
+
+            if (io_group == cur_io_group) {
+                for (int i = lid_start; i < lid_start + io_group; i++) {
+                    if (io_id < WORDS) {
+                        u32 warp_id = i / warp_sz;
+                        u32 segment_id_warp = warp_id & (end_stride_warp - 1);
+                        u64 pos = ((i & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
+                        pos = pos << rnd << pqshift;
+                        thread_data[i - lid_start] = roots[pos * WORDS + io_id];
+                    }
+                }
+
+                WarpExchangeT(temp_storage[warp_id_exchange]).StripedToBlocked(thread_data, thread_data);
+                w = mont256::Element::load(thread_data);
+                __syncwarp();
+            } else {
+                w = mont256::Element::load(roots + (di << (rnd) << pqshift) * WORDS);
+            }
+
+            if (di != 0) {
+                b = env.mul(b, w);
+            }
+
+            for (u32 i = 1; i < sub_deg; i++) {
+                u32 lanemask = 1 << (sub_deg - i - 1);
+                mont256::Element tmp;
+                tmp = ((lid / lanemask) & 1) ? a : b;
+                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
+                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
+                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
+                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
+                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
+                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
+                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
+                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                if ((lid / lanemask) & 1) a = tmp;
+                else b = tmp;
+
+                tmp = a;
+                a = env.add(a, b);
+                b = env.sub(tmp, b);
+                u32 bit = (1 << sub_deg) >> (i + 1);
+                u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
+
+                if (io_group == cur_io_group) {
+                    for (int ti = lid_start; ti < lid_start + io_group; ti++) {
+                        if (io_id < WORDS) {
+                            u32 warp_id = ti / warp_sz;
+                            u32 segment_id_warp = warp_id & (end_stride_warp - 1);
+                            u64 pos = ((ti & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
+                            pos = pos << (rnd + i) << pqshift;
+                            thread_data[ti - lid_start] = roots[pos * WORDS + io_id];
+                        }
+                    }
+
+                    WarpExchangeT(temp_storage[warp_id_exchange]).StripedToBlocked(thread_data, thread_data);
+                    w = mont256::Element::load(thread_data);
+                    __syncwarp();
+                } else {
+                    w = mont256::Element::load(roots + (di << (rnd + i) << pqshift) * WORDS);
+                }
+                if (di != 0) {
+                    b = env.mul(b, w);
+                }
+            }            
+
+            i0 = segment_start + segment_id_warp + laneid * 2 * end_stride_warp;
+            i1 = i0 + end_stride_warp;
+            a.store(u + i0, shared_read_stride);
+            b.store(u + i1, shared_read_stride);
+
+            __syncthreads();
+        }
+
+        // Write back
+        for (int i = io_st; i != io_ed; i += io_stride) {
+            for (u32 j = 0; j < io_per_thread; j++) {
+                u32 io = io_id + j * cur_io_group;
+                if (io < WORDS) {
+                    u32 group_id = i & (subblock_sz - 1);
+                    u32 gpos = group_id << (lgp + 1);
+                    x[gpos * WORDS + io] = u[(i << 1) + io * shared_read_stride];
+                    x[(gpos + end_stride) * WORDS + io] = u[(i << 1) + 1 + io * shared_read_stride];
+                }
+            }
+        }
+    }
+
     template <u32 WORDS>
     class self_sort_in_place_ntt {
         const u32 max_threads_stage1_log = 8;
@@ -3286,8 +3490,8 @@ namespace NTT {
         : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
             u32 deg_stage1 = (log_len + 1) / 2;
             u32 deg_stage2 = log_len / 2;
-            // max_deg_stage1 = get_deg(deg_stage1, max_threads_stage1_log + 1);
-            max_deg_stage1 = get_deg(deg_stage1, std::min(max_threads_stage1_log, 6u)); // pure warp shuffle implementation
+            max_deg_stage1 = get_deg(deg_stage1, max_threads_stage1_log + 1);
+            // max_deg_stage1 = get_deg(deg_stage1, std::min(max_threads_stage1_log, 6u)); // pure warp shuffle implementation
             max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 2) / 2); // 4 elements per thread
             // max_deg_stage2 = get_deg(deg_stage2, (max_threads_stage2_log + 1) / 2);
             max_deg = std::max(max_deg_stage1, max_deg_stage2);
@@ -3376,9 +3580,9 @@ namespace NTT {
 
                 using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
 
-                u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); // +  (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+                u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)) +  (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
 
-                auto kernel = SSIP_NTT_stage1_warp_no_smem_no_twiddle <WORDS, io_group>;
+                auto kernel = SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots <WORDS, io_group>;
             
                 cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
 
