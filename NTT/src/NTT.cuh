@@ -2955,25 +2955,13 @@ namespace NTT {
         // then a1_word0 a1_word1 a1_word2 ... 
         // so we need the empty space is for padding to avoid bank conflict during read because n is likely to be 32k
 
-
-        constexpr int warp_threads = io_group;
-        constexpr int items_per_thread = io_group;
-        const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
-        u32 thread_data[io_group];
-
-        // Specialize WarpExchange for a virtual warp of a threads owning b integer items each
-        using WarpExchangeT = cub::WarpExchange<u32, items_per_thread, warp_threads>;
-
-        // Allocate shared memory for WarpExchange
-        typename WarpExchangeT::TempStorage *temp_storage = (typename WarpExchangeT::TempStorage*) s;
-
         const u32 lid = threadIdx.x & (group_sz - 1);
         const u32 lsize = group_sz;
         const u32 group_id = threadIdx.x / group_sz;
         const u32 group_num = blockDim.x / group_sz;
         const u32 index = blockIdx.x * group_num + group_id;
 
-        auto u = s + (sizeof(WarpExchangeT::TempStorage) / sizeof(u32) * (blockDim.x / warp_threads)) + group_id * ((1 << deg) + 1) * WORDS;
+        auto u = s + group_id * ((1 << deg) + 1) * WORDS;
 
         const u32 lgp = log_stride - deg + 1;
         const u32 end_stride = 1 << lgp; //stride of the last butterfly
@@ -3217,7 +3205,7 @@ namespace NTT {
 
                 using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
 
-                u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)) + (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+                u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num; // + (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)) ;
 
                 auto kernel = SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group>;
             
