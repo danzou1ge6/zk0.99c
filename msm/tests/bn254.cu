@@ -65,7 +65,7 @@ __global__ void eq_kernel(bool *r, const PointAffine *pa, const PointAffine *pb)
 __global__ void multiple_kernel(Point *r, const Point *p, u32 n)
 {
   auto cur = bn254::new_bn254();
-  *r = cur.multiple(p, n);
+  *r = cur.multiple(*p, n);
 }
 
 void to_affine(PointAffine *pr, const Point *p)
@@ -268,3 +268,23 @@ TEST_CASE("Doubling equivalent")
 
   REQUIRE(launch_kernel2(sum1, sum2, eq));
 }
+
+TEST_CASE("Reproducible")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto p1p = launch_kernel1(p1, from_affine);
+
+  auto sum1 = launch_kernel2(p1p, p2, add);
+  auto sum2 = launch_kernel2(p1p, p2, add);
+
+  std::cout << sum1;
+  std::cout << sum2;
+
+  REQUIRE(launch_kernel1(sum1, is_on_curve));
+  REQUIRE(launch_kernel1(sum2, is_on_curve));
+
+  REQUIRE(launch_kernel2(sum1, sum2, eq));
+
+}
+

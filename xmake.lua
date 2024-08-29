@@ -28,6 +28,14 @@ target("test-bn254")
     end
     add_deps("mont.cuh")
     add_files("msm/tests/bn254.cu")
+    add_packages("doctest")
+
+target("test-msm")
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_files("msm/tests/msm.cu")
 
 target("test-ntt")
     set_languages(("c++20"))
@@ -41,7 +49,7 @@ target("test-ntt")
 
 task("sync-epcc")
     on_run(function ()
-        os.runv("rsync -av --delete . epcc4090:~/zksnark --exclude-from .gitignore", {
+        os.runv("rsync -av . epcc4090:~/zksnark --exclude-from .gitignore", {
             stdout = 1
         ,   stderr = 2
         })
