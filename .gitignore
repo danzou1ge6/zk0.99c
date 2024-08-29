@@ -4,3 +4,4 @@
 /doc/book
 /.vscode
 **/__pycache__
+**/*.input

@@ -17,7 +17,19 @@ namespace curve256
 
     __host__ __device__ __forceinline__ Point() {}
     __host__ __device__ __forceinline__ Point(Element x, Element y, Element z) : x(x), y(y), z(z) {}
-
+    static __host__ __device__ __forceinline__ Point load(const u32* p, u32 stride = 1)
+    {
+      auto x = Element::load(p, stride);
+      auto y = Element::load(p + Number::N_WORDS * stride, stride);
+      auto z = Element::load(p + Number::N_WORDS * stride * 2, stride);
+      return Point(x, y, z);
+    }
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    {
+      x.store(p, stride);
+      y.store(p + Number::N_WORDS * stride, stride);
+      z.store(p + Number::N_WORDS * stride * 2, stride);
+    }
   };
 
   std::ostream &
@@ -31,14 +43,30 @@ namespace curve256
     return os;
   }
 
+  const u32 WORDS_PER_POINT_AFFINE = 16;
 
   // A point on curve. Identity marked by (0, 0).
   struct PointAffine
   {
     Element x, y;
 
+    static const u32 N_WORDS = 16;
+
     __host__ __device__ __forceinline__ PointAffine() {}
     __host__ __device__ __forceinline__ PointAffine(Element x, Element y) : x(x), y(y) {}
+    static __host__ __device__ __forceinline__ PointAffine load(const u32* p, u32 stride = 1)
+    {
+      auto x = Element::load(p, stride);
+      auto y = Element::load(p + Number::N_WORDS * stride, stride);
+      return PointAffine(x, y);
+    }
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    {
+      x.store(p, stride);
+      y.store(p + Number::N_WORDS * stride, stride);
+    }
+    friend std::ostream & operator<<(std::ostream &os, const PointAffine &p);
+    friend std::istream & operator>>(std::istream &is, PointAffine &p);
   };
 
   std::ostream &
@@ -51,6 +79,13 @@ namespace curve256
     return os;
   }
 
+  std::istream &
+  operator>>(std::istream &is, PointAffine &p)
+  {
+    is >> p.x >> p.y;
+    return is;
+  }
+
   // Y^2 = X^3 + aX + b
   struct Curve
   {
@@ -58,7 +93,7 @@ namespace curve256
     // b3 = 3 b
     Element a, b, b3;
 
-    __device__ __forceinline__ Curve(mont256::Env field, Element a, Element b, Element b3) : field(field), a(a), b(b), b3(b3)
+    __host__ __device__ __forceinline__ Curve(mont256::Env field, Element a, Element b, Element b3) : field(field), a(a), b(b), b3(b3)
     {
     }
 
@@ -190,6 +225,10 @@ namespace curve256
     // Ref. Complete Addition Formulas for Prime Order Elliptic Curves, Algorithm 1.
     __device__ __forceinline__ Point add(const Point &p1, const Point &p2)
     {
+      if (is_identity(p1))
+        return p2;
+      if (is_identity(p2))
+        return p1;
       Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
       t0 = field.mul(p1.x, p2.x);
       t1 = field.mul(p1.y, p2.y);
@@ -238,6 +277,10 @@ namespace curve256
     // Ref. Complete Addition Formulas for Prime Order Elliptic Curves, Algorithm 2.
     __device__ __forceinline__ Point add(const Point &p1, const PointAffine &p2)
     {
+      if (is_identity(p2))
+        return p1;
+      if (is_identity(p1))
+        return from_affine(p2);
       Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
       t0 = field.mul(p1.x, p2.x);
       t1 = field.mul(p1.y, p2.y);
@@ -312,6 +355,7 @@ namespace curve256
       return res;
     }
   };
-}
+};
+
 
 #endif
