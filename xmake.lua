@@ -37,15 +37,26 @@ target("test-msm")
     add_deps("mont.cuh")
     add_files("msm/tests/msm.cu")
 
-target("test-ntt")
+target("test-ntt-int")
     set_languages(("c++20"))
     if is_mode("debug") then 
         set_symbols("debug")
     end
     add_deps("mont.cuh")
-    add_files("NTT/tests/*.cu")
+    add_files("NTT/tests/test-int.cu")
+    add_cuflags("-arch=sm_86")
+
+target("test-ntt-big")
+    local project_root = os.projectdir()
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_files("NTT/tests/test-big.cu")
     add_cuflags("-arch=sm_86")
     add_packages("doctest")
+    add_defines("PROJECT_ROOT=\"" .. project_root .. "\"")
 
 task("sync-epcc")
     on_run(function ()

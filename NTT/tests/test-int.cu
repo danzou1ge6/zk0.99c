@@ -4,18 +4,19 @@
 #include <ctime>
 #include "../src/NTT.cuh"
 
-#define P (469762049 )
-#define root (3)
-#define BIG_INTEGER_CHUNKS(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
+#define P (3221225473   )
+#define root (5)
+
+// 3221225473
 const auto params = mont256::Params {
-  .m = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1c000001),
-  .r_mod = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xea6f185),
-  .r2_mod = BIG_INTEGER_CHUNKS(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x4acda38),
-  .m_prime = 469762047
+  .m = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0000001),
+  .r_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9fc05273),
+  .r2_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9c229677),
+  .m_prime = 3221225471
 };
 
-inline long long qpow(long long x, long long y) {
-    long long base = 1ll;
+inline unsigned long long qpow(unsigned long long x, unsigned long long y) {
+    unsigned long long base = 1ll;
     while(y) {
         if (y & 1ll) base = (base * x) % P;
         x = (x * x) % P;
@@ -24,96 +25,54 @@ inline long long qpow(long long x, long long y) {
     return base;
 }
 
-inline long long inv(long long x) {
+inline unsigned long long inv(unsigned long long x) {
     return qpow(x, P - 2);
 }
 
-void swap(long long &a, long long &b) {
+void swap(unsigned long long &a, unsigned long long &b) {
     long long tmp = a;
     a = b;
     b = tmp;
 }
 
-void ntt_cpu(long long data[], long long reverse[], long long len, long long omega) {
+void ntt_cpu(unsigned long long data[], unsigned long long reverse[], long long len, unsigned long long omega) {
 
     // rearrange the coefficients
-    for (long long i = 0; i < len; i++) {
+    for (unsigned long long i = 0; i < len; i++) {
         if (i < reverse[i]) swap(data[i], data[reverse[i]]);
     }
 
-    for (long long stride = 1ll; stride < len; stride <<= 1ll) {
-        long long gap = qpow(omega, (P - 1ll) / (stride << 1ll));
-        for (long long start = 0; start < len; start += (stride << 1ll)) {
-            for (long long offset = 0, w = 1ll; offset < stride; offset++, w = (gap * w) % P) {
-                long long a = data[start + offset], b = w * data[start + offset + stride] % P;
+    for (unsigned long long stride = 1ll; stride < len; stride <<= 1ll) {
+        unsigned long long gap = qpow(omega, (P - 1ll) / (stride << 1ll));
+        for (unsigned long long start = 0; start < len; start += (stride << 1ll)) {
+            for (unsigned long long offset = 0, w = 1ll; offset < stride; offset++, w = (gap * w) % P) {
+                unsigned long long a = data[start + offset], b = w * data[start + offset + stride] % P;
                 data[start + offset] = (a + b) % P;
                 data[start + offset + stride] = (a - b + P) % P;
-                // printf("%lld %lld\n", w, offset);
             }
         }
     }
 }
 
-// template <int WORDS>
-// void tmp(uint * data, long long * reverse, uint len) {
-//     using namespace NTT;
-//     long long * reverse_d;
-//     cudaMalloc(&reverse_d, len * sizeof(long long));
-//     cudaMemcpy(reverse_d, reverse, len * sizeof(long long), cudaMemcpyHostToDevice);
-
-//     u32 * buff1, * buff2;
-//     cudaMalloc(&buff1, len * WORDS * sizeof(u32));
-//     cudaMalloc(&buff2, len * WORDS * sizeof(u32));
-
-//     element_pack<WORDS> * input_d = (element_pack<WORDS> *) buff1;
-//     cudaMemcpy(input_d, data, len * sizeof(element_pack<WORDS>), cudaMemcpyHostToDevice);
-
-//     element_pack<WORDS> * output_d = (element_pack<WORDS> *) buff2;
-
-//     cudaEvent_t start_re, end_re;
-//     cudaEventCreate(&start_re);
-//     cudaEventCreate(&end_re);
-//     cudaEventRecord(start_re);
-            
-//     thrust::scatter(thrust::device, input_d, input_d + len, reverse_d, output_d);
-
-//     cudaEventRecord(end_re);
-//     cudaEventSynchronize(end_re);
-//     float milliseconds_re = 0;
-//     cudaEventElapsedTime(&milliseconds_re, start_re, end_re);
-//     printf("Rearrange_thrust: %f\n", milliseconds_re);
-
-//     cudaMemcpy(data, output_d, len * sizeof(element_pack<WORDS>), cudaMemcpyDeviceToHost);
-
-//     // for (int i = 0; i < len; i ++) {
-//     //     printf("%u ", data[i * WORDS]);
-//     // }
-//     // printf("\n");
-
-//     cudaFree(reverse_d);
-//     cudaFree(buff1);
-//     cudaFree(buff2);
-// }
-
-#define WORDS 8
+#define WORDS 8ll
 
 int main() {
-    long long *data, *reverse, *data_copy;
-    long long l,length = 1ll;
+    unsigned long long *data, *reverse, *data_copy;
+    unsigned long long l,length = 1ll;
     int bits = 0;
 
     cudaSetDevice(0);
 
-    l = qpow(2, 24);
+    l = 1 << 24;
 
     while (length < l) {
         length <<= 1ll;
         bits ++;
     }
 
-    data = new long long[length];
-    data_copy = new long long[length];
-    reverse = new long long [length];
+    data = new unsigned long long[length];
+    data_copy = new unsigned long long[length];
+    reverse = new unsigned long long [length];
 
     reverse[0] = 0;
     for (long long i = 0; i < length; i++) {
