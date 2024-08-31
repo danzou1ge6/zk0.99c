@@ -19,8 +19,12 @@ target("test-mont")
         set_symbols("debug")
     end
     add_deps("mont.cuh")
-    add_files("mont/tests/*.cu")
+    add_files("mont/tests/main.cu")
     add_packages("doctest")
+
+target("bench-mont")
+    add_deps("mont.cuh")
+    add_files("mont/tests/bench.cu")
 
 target("test-bn254")
     if is_mode("debug") then
@@ -34,6 +38,7 @@ target("test-msm")
     if is_mode("debug") then
         set_symbols("debug")
     end
+    set_optimize("fastest")
     add_deps("mont.cuh")
     add_files("msm/tests/msm.cu")
 
