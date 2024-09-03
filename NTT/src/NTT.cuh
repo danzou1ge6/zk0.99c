@@ -3605,8 +3605,8 @@ namespace NTT {
             }
 
             if (config.stage2_mode == SSIP_config::stage2_naive_2_per_thread ||
-                config.stage2_mode == SSIP_config::stage2_warp_2_per_thread ||
-                config.stage2_mode == SSIP_config::stage2_warp_2_per_thread_no_share) {
+            config.stage2_mode == SSIP_config::stage2_warp_2_per_thread ||
+            config.stage2_mode == SSIP_config::stage2_warp_2_per_thread_no_share) {
                 max_deg_stage2 = get_deg(deg_stage2, (config.max_threads_stage2_log + 1) / 2); // 2 elements per thread
             } else {            
                 max_deg_stage2 = get_deg(deg_stage2, (config.max_threads_stage2_log + 2) / 2); // 4 elements per thread
@@ -3627,8 +3627,8 @@ namespace NTT {
             unit = env.host_pow(unit, exponent);
 
             if (config.stage1_mode == SSIP_config::stage1_naive ||
-                config.stage1_mode == SSIP_config::stage1_warp ||
-                (config.stage2_mode != SSIP_config::stage2_warp_no_twiddle_no_share)) {
+            config.stage1_mode == SSIP_config::stage1_warp ||
+            (config.stage2_mode != SSIP_config::stage2_warp_no_twiddle_no_share)) {
 
                 // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
 
@@ -3646,9 +3646,18 @@ namespace NTT {
                 }
             }
 
-            roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
-            gen_roots_cub<WORDS> gen;
-            gen(roots, len, unit, param);
+            if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
+            config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
+            config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
+            (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
+                roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
+                gen_roots_cub<WORDS> gen;
+                gen(roots, len / 2, unit, param);
+            } else {
+                roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
+                gen_roots_cub<WORDS> gen;
+                gen(roots, len, unit, param);
+            }
         }
 
         ~self_sort_in_place_ntt() override {
