@@ -233,34 +233,29 @@ namespace NTT {
             exponent = exponent.slr(log_len);
             unit = env.host_pow(unit, exponent);
 
-            roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
+            roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
             // gen_roots(roots, len);
             gen_roots_cub<WORDS> gen;
-            gen(roots, len, unit, param);
+            gen(roots, len / 2, unit, param);
 
-            gen_reverse();
+            // gen_reverse();
         }
 
         ~naive_ntt() override {
             free(roots);
-            free(reverse);
         }
 
         void ntt(u32 * data) override {
             cudaEvent_t start, end;
             cudaEventCreate(&start);
             cudaEventCreate(&end);
-
-            u32 * reverse_d;
-            cudaMalloc(&reverse_d, len * sizeof(u32));
-            cudaMemcpy(reverse_d, reverse, len * sizeof(u32), cudaMemcpyHostToDevice);
             
             u32_E *data_d, *roots_d;
             cudaMalloc(&data_d, len * WORDS * sizeof(u32));
             cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
 
-            cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
-            cudaMemcpy(roots_d, roots, ((u64)len) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
+            cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32));
+            cudaMemcpy(roots_d, roots, ((u64)len / 2) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
             
             mont256::Params *param_d;
             cudaMalloc(&param_d, sizeof(mont256::Params));
@@ -296,7 +291,6 @@ namespace NTT {
             cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
 
             cudaFree(data_d);
-            cudaFree(reverse_d);
             cudaFree(roots_d); 
         }
     };
@@ -3686,8 +3680,16 @@ namespace NTT {
             cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
 
             u32 * roots_d;
-            cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
-            cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+            if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
+            config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
+            config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
+            (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
+                cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32));
+                cudaMemcpy(roots_d, roots, len / 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+            } else {
+                cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
+                cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+            }
 
             if (debug) {
                 dim3 block(768);
