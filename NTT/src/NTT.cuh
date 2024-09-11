@@ -335,8 +335,8 @@ namespace NTT {
         u32 p = 1 << lgp;
         u32 k = index & (p - 1);
 
-        x += index * WORDS;
-        y += (((index - k) << deg) + k) * WORDS;
+        x += ((u64) index) * WORDS;
+        y += ((u64) (((index - k) << deg) + k)) * WORDS;
 
         u32 count = 1 << deg; // 2^deg
         u32 counth = count >> 1; // Half of count
