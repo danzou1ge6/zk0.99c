@@ -1,4 +1,5 @@
 add_requires("doctest")
+add_rules("mode.debug", "mode.release")
 
 -- Custom rule to generate asm and populate template
 rule("mont-gen-asm")
@@ -48,8 +49,9 @@ target("test-ntt-int")
         set_symbols("debug")
     end
     add_deps("mont.cuh")
+    add_headerfiles("NTT/src/*.cuh")
     add_files("NTT/tests/test-int.cu")
-    add_cuflags("-arch=sm_86")
+    add_cugencodes("native")
 
 target("test-ntt-big")
     local project_root = os.projectdir()
@@ -59,9 +61,33 @@ target("test-ntt-big")
     end
     add_deps("mont.cuh")
     add_files("NTT/tests/test-big.cu")
-    add_cuflags("-arch=sm_86")
+    add_headerfiles("NTT/src/*.cuh")
+    add_cugencodes("native")
     add_packages("doctest")
     add_defines("PROJECT_ROOT=\"" .. project_root .. "\"")
+
+option("WORDS")
+    set_default(8)
+    set_showmenu(true)
+    set_description("Number of words in the prime field")
+
+target("cuda_ntt")
+    set_kind("static")
+    add_values("cuda.build.devlink", true)
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+
+    set_languages(("c++20"))
+    add_deps("mont.cuh")
+    
+    local word_len = get_config("WORDS") or 8    
+    add_files("wrapper/NTT/c_api/ntt_c_api.cu", {defines = "NUM_OF_UINT=" .. word_len})
+    add_headerfiles("wrapper/NTT/c_api/*.h")
+    add_headerfiles("NTT/src/*.cuh")
+    add_cugencodes("native")
+
+    set_targetdir("lib")
 
 task("sync-epcc")
     on_run(function ()
