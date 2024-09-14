@@ -224,14 +224,19 @@ namespace NTT {
         naive_ntt(const mont256::Params &param, const u32_N* omega, u32 log_len, bool debug) : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
             
             auto env = mont256::Env::host_new(param);
-            // unit = qpow(omega, (P - 1ll) / len)
-            unit = env.host_from_number(mont256::Number::load(omega));
-            auto exponent = mont256::Number::load(param.m);
-            auto one = mont256::Number::zero();
-            one.c0 = 1;
-            exponent = exponent.host_sub(one);
-            exponent = exponent.slr(log_len);
-            unit = env.host_pow(unit, exponent);
+            
+            if (debug) {
+                // unit = qpow(omega, (P - 1ll) / len)
+                unit = env.host_from_number(mont256::Number::load(omega));
+                auto exponent = mont256::Number::load(param.m);
+                auto one = mont256::Number::zero();
+                one.c0 = 1;
+                exponent = exponent.host_sub(one);
+                exponent = exponent.slr(log_len);
+                unit = env.host_pow(unit, exponent);
+            } else {
+                unit = mont256::Element::load(omega);
+            }
 
             roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
             // gen_roots(roots, len);
@@ -409,14 +414,18 @@ namespace NTT {
             // Precalculate:
             auto env = mont256::Env::host_new(param);
 
-            // unit = qpow(omega, (P - 1ll) / len)
-            unit = env.host_from_number(mont256::Number::load(omega));
-            auto exponent = mont256::Number::load(param.m);
-            auto one = mont256::Number::zero();
-            one.c0 = 1;
-            exponent = exponent.host_sub(one);
-            exponent = exponent.slr(log_len);
-            unit = env.host_pow(unit, exponent);
+            if (debug) {
+                // unit = qpow(omega, (P - 1ll) / len)
+                unit = env.host_from_number(mont256::Number::load(omega));
+                auto exponent = mont256::Number::load(param.m);
+                auto one = mont256::Number::zero();
+                one.c0 = 1;
+                exponent = exponent.host_sub(one);
+                exponent = exponent.slr(log_len);
+                unit = env.host_pow(unit, exponent);
+            } else {
+                unit = mont256::Element::load(omega);
+            }
 
             // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
 
@@ -3611,14 +3620,18 @@ namespace NTT {
             // Precalculate:
             auto env = mont256::Env::host_new(param);
 
-            // unit = qpow(omega, (P - 1ll) / len)
-            unit = env.host_from_number(mont256::Number::load(omega));
-            auto exponent = mont256::Number::load(param.m);
-            auto one = mont256::Number::zero();
-            one.c0 = 1;
-            exponent = exponent.host_sub(one);
-            exponent = exponent.slr(log_len);
-            unit = env.host_pow(unit, exponent);
+            if (debug) {
+                // unit = qpow(omega, (P - 1ll) / len)
+                unit = env.host_from_number(mont256::Number::load(omega));
+                auto exponent = mont256::Number::load(param.m);
+                auto one = mont256::Number::zero();
+                one.c0 = 1;
+                exponent = exponent.host_sub(one);
+                exponent = exponent.slr(log_len);
+                unit = env.host_pow(unit, exponent);
+            } else {
+                unit = mont256::Element::load(omega);
+            }
 
             if (config.stage1_mode == SSIP_config::stage1_naive ||
             config.stage1_mode == SSIP_config::stage1_warp ||

@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+ff = "0.13"
+group = "0.13"
+halo2curves = { version = "0.6.0", default-features = false }
+halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git ", tag = "v0.3.0", features =  ["circuit-params", "derive_serde"] }
+rand_core = { version = "0.6", default-features = false }
 
 [build-dependencies]
 bindgen = "0.70"

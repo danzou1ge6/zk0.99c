@@ -4,7 +4,7 @@
 
 ## Halo2版本
 
--  halo2版本 halo2_proofs = { git = "https://github.com/privacyscaling-explorations/halo2.git ", tag = "v0.3.0", features =  ["circuit-params", "derive_serde"] }
+-  halo2版本 halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git ", tag = "v0.3.0", features =  ["circuit-params", "derive_serde"] }
 
 -  实际部署运行的上位机zkevm版本： 在chainweaver开源平台上： https://git.chainweaver.org.cn/zkp/zkevm-circuits。（默认分支） 
 

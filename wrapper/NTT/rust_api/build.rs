@@ -28,6 +28,7 @@ fn main() {
 
     // Tell cargo to look for shared libraries in the specified directory
     println!("cargo:rerun-if-changed={}", "../c_api");
+    println!("cargo:rerun-if-changed={}", "../../../NTT/src");
 
     println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());
     println!("cargo:rustc-link-search=/usr/local/cuda/lib64");
