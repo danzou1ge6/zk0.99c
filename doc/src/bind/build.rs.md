@@ -1,8 +1,11 @@
-use std::env;
-use std::path::PathBuf;
+# 编写build.rs
 
-fn main() {
-    // This is the directory where the `c` library is located.
+此处参考的是bindgen的实例代码。
+
+实现确定路径
+
+```rust
+// This is the directory where the `c` library is located.
     let libdir_path = PathBuf::from("../../../lib")
         // Canonicalize the path as `rustc-link-search` requires an absolute
         // path.
@@ -12,8 +15,12 @@ fn main() {
     // This is the path to the `c` headers file.
     let headers_path = PathBuf::from("../c_api/ntt_c_api.h");
     let headers_path_str = headers_path.to_str().expect("Path is not a valid string");
+```
 
-    if !std::process::Command::new("xmake")
+然后调用xmake
+
+```rust
+if !std::process::Command::new("xmake")
         .arg("build")
         .arg("cuda_ntt")
         .current_dir("../../..")
@@ -25,10 +32,18 @@ fn main() {
         // Panic if the command was not successful.
         panic!("could not build the library");
     }
+```
 
-    println!("cargo:rerun-if-changed={}", "../c_api");
-    println!("cargo:rerun-if-changed={}", "../../../NTT/src");
+接着控制重新编译的条件
 
+```rust
+println!("cargo:rerun-if-changed={}", "../c_api");
+println!("cargo:rerun-if-changed={}", "../../../NTT/src");
+```
+
+引入需要链接的库，需要注意被依赖的动态库需要在依赖的库后引入
+
+```rust
     // Tell cargo to look for libraries in the specified directory
     println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());
     println!("cargo:rustc-link-search=/usr/local/cuda/lib64");
@@ -40,7 +55,11 @@ fn main() {
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64/stub");
     println!("cargo:rustc-link-lib=dylib=cuda");
     println!("cargo:rustc-link-lib=dylib=stdc++");
-    
+```
+
+最后调用`bindgen`
+
+```rust
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
     // the resulting bindings.
@@ -63,4 +82,5 @@ fn main() {
     bindings
         .write_to_file(out_path)
         .expect("Couldn't write bindings!");
-}
+```
+

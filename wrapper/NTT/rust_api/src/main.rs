@@ -4,9 +4,7 @@ use halo2_proofs::*;
 use halo2curves::pasta::Fp;
 use rand_core::OsRng;
 
-extern "C" {
-    fn cuda_ntt(data: *mut ::std::os::raw::c_uint, omega: *const ::std::os::raw::c_uint, log_n: ::std::os::raw::c_int);
-}
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 #[test]
 fn compare_with_halo2() {
