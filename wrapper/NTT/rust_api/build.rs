@@ -3,11 +3,12 @@ use std::path::PathBuf;
 
 fn main() {
     // This is the directory where the `c` library is located.
-    let libdir_path = PathBuf::from("../../../lib")
+    let libdir_path = PathBuf::from("../../..")
         // Canonicalize the path as `rustc-link-search` requires an absolute
         // path.
         .canonicalize()
-        .expect("cannot canonicalize path");
+        .expect("cannot canonicalize path")
+        .join("lib/");
 
     // This is the path to the `c` headers file.
     let headers_path = PathBuf::from("../c_api/ntt_c_api.h");
@@ -28,6 +29,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", "../c_api");
     println!("cargo:rerun-if-changed={}", "../../../NTT/src");
+    println!("cargo:rerun-if-changed={}", libdir_path.to_str().unwrap());
 
     // Tell cargo to look for libraries in the specified directory
     println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());

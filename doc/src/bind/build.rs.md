@@ -5,12 +5,13 @@
 实现确定路径
 
 ```rust
-// This is the directory where the `c` library is located.
-    let libdir_path = PathBuf::from("../../../lib")
+    // This is the directory where the `c` library is located.
+    let libdir_path = PathBuf::from("../../..")
         // Canonicalize the path as `rustc-link-search` requires an absolute
         // path.
         .canonicalize()
-        .expect("cannot canonicalize path");
+        .expect("cannot canonicalize path")
+        .join("lib/");
 
     // This is the path to the `c` headers file.
     let headers_path = PathBuf::from("../c_api/ntt_c_api.h");
@@ -39,6 +40,7 @@ if !std::process::Command::new("xmake")
 ```rust
 println!("cargo:rerun-if-changed={}", "../c_api");
 println!("cargo:rerun-if-changed={}", "../../../NTT/src");
+println!("cargo:rerun-if-changed={}", libdir_path.to_str().unwrap());
 ```
 
 引入需要链接的库，需要注意被依赖的动态库需要在依赖的库后引入
