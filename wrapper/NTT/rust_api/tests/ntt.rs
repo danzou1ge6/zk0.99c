@@ -15,7 +15,7 @@ fn compare_with_halo2() {
             .into_par_iter()
             .map(|_| Fp::random(OsRng))
             .collect();
-        let mut data_cuda: Vec<Fp> = data_rust.par_iter().map(|x| x.clone()).collect();
+        let mut data_cuda = data_rust.clone();
 
         let omega: Fp = Fp::random(OsRng); // would be weird if this mattered
 
