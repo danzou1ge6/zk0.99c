@@ -567,6 +567,7 @@ dependencies = [
  "halo2_proofs",
  "halo2curves",
  "rand_core",
+ "rayon",
 ]
 
 [[package]]
