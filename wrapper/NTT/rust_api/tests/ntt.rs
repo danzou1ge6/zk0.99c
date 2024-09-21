@@ -1,5 +1,3 @@
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
 use std::time::Instant;
 use group::ff::Field;
 use halo2_proofs::*;
@@ -8,6 +6,8 @@ use rand_core::OsRng;
 use rayon::prelude::*;
 use rust_api::gpu_ntt;
 use halo2curves::bn256::Fr;
+use rand_xorshift::XorShiftRng;
+use rand_core::SeedableRng;
 
 #[test]
 fn compare_with_halo2() {
@@ -17,11 +17,11 @@ fn compare_with_halo2() {
         println!("generating data for k = {k}...");
         let mut data_rust: Vec<Fp> = (0..(1 << k))
             .into_par_iter()
-            .map(|_| Fp::random(OsRng))
+            .map(|_| Fp::random(XorShiftRng::from_rng(OsRng).unwrap()))
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let omega = Fp::random(OsRng); // would be weird if this mattered
+        let omega = Fp::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
 
         println!("testing for k = {k}:");
         let start1 = Instant::now();
@@ -49,11 +49,11 @@ fn compare_with_halo2() {
         println!("generating data for k = {k}...");
         let mut data_rust: Vec<Fr> = (0..(1 << k))
             .into_par_iter()
-            .map(|_| Fr::random(OsRng))
+            .map(|_| Fr::random(XorShiftRng::from_rng(OsRng).unwrap()))
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let omega = Fr::random(OsRng); // would be weird if this mattered
+        let omega = Fr::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
 
         println!("testing for k = {k}:");
         let start1 = Instant::now();
