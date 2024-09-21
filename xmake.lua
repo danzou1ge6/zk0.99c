@@ -66,11 +66,6 @@ target("test-ntt-big")
     add_packages("doctest")
     add_defines("PROJECT_ROOT=\"" .. project_root .. "\"")
 
-option("WORDS")
-    set_default(8)
-    set_showmenu(true)
-    set_description("Number of words in the prime field")
-
 target("cuda_ntt")
     set_kind("static")
     add_values("cuda.build.devlink", true)
@@ -81,8 +76,7 @@ target("cuda_ntt")
     set_languages(("c++20"))
     add_deps("mont.cuh")
     
-    local word_len = get_config("WORDS") or 8    
-    add_files("wrapper/NTT/c_api/ntt_c_api.cu", {defines = "NUM_OF_UINT=" .. word_len})
+    add_files("wrapper/NTT/c_api/ntt_c_api.cu")
     add_headerfiles("wrapper/NTT/c_api/*.h")
     add_headerfiles("NTT/src/*.cuh")
     add_cugencodes("native")

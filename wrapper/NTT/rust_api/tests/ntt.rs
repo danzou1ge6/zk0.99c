@@ -6,10 +6,14 @@ use halo2_proofs::*;
 use halo2curves::pasta::Fp;
 use rand_core::OsRng;
 use rayon::prelude::*;
+use rust_api::gpu_ntt;
+use halo2curves::bn256::Fr;
 
 #[test]
 fn compare_with_halo2() {
-    for k in 1..=20 {
+    let max_k = 20;
+    println!("testing with pasta Fp...");
+    for k in 1..=max_k {
         println!("generating data for k = {k}...");
         let mut data_rust: Vec<Fp> = (0..(1 << k))
             .into_par_iter()
@@ -17,7 +21,7 @@ fn compare_with_halo2() {
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let omega: Fp = Fp::random(OsRng); // would be weird if this mattered
+        let omega = Fp::random(OsRng); // would be weird if this mattered
 
         println!("testing for k = {k}:");
         let start1 = Instant::now();
@@ -26,9 +30,44 @@ fn compare_with_halo2() {
         println!("cpu time: {time1}");
         
         let start2 = Instant::now();
-        unsafe {
-            cuda_ntt(data_cuda.as_mut_ptr() as *mut u32, (&omega) as *const Fp as *const u32 , k);
-        }
+
+        match gpu_ntt(&mut data_cuda, omega, k as u32) {
+            Ok(_) => {},
+            Err(e) => panic!("{e}"),  
+        };
+
+        let time2 = start2.elapsed().as_micros();
+        println!("gpu time: {time2}, {}x faster", time1 as f32 / time2 as f32);
+
+        data_cuda.par_iter().zip(data_rust.par_iter()).for_each(|(a, b)| {
+            assert_eq!(a, b);
+        });
+
+    }
+    println!("testing with pasta Fr...");
+    for k in 1..=max_k {
+        println!("generating data for k = {k}...");
+        let mut data_rust: Vec<Fr> = (0..(1 << k))
+            .into_par_iter()
+            .map(|_| Fr::random(OsRng))
+            .collect();
+        let mut data_cuda = data_rust.clone();
+
+        let omega = Fr::random(OsRng); // would be weird if this mattered
+
+        println!("testing for k = {k}:");
+        let start1 = Instant::now();
+        arithmetic::best_fft(&mut data_rust, omega, k as u32);
+        let time1 = start1.elapsed().as_micros();
+        println!("cpu time: {time1}");
+        
+        let start2 = Instant::now();
+
+        match gpu_ntt(&mut data_cuda, omega, k as u32) {
+            Ok(_) => {},
+            Err(e) => panic!("{e}"),  
+        };
+
         let time2 = start2.elapsed().as_micros();
         println!("gpu time: {time2}, {}x faster", time1 as f32 / time2 as f32);
 
