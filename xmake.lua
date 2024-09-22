@@ -19,13 +19,17 @@ target("test-mont")
     if is_mode("debug") then
         set_symbols("debug")
     end
-    add_deps("mont.cuh")
     add_files("mont/tests/main.cu")
     add_packages("doctest")
 
 target("bench-mont")
-    add_deps("mont.cuh")
+    add_options("-lineinfo")
     add_files("mont/tests/bench.cu")
+
+target("bench-mont0")
+    add_deps("mont.cuh")
+    add_options("-lineinfo")
+    add_files("mont/tests/bench0.cu")
 
 target("test-bn254")
     if is_mode("debug") then
@@ -91,7 +95,7 @@ target("cuda_ntt")
 
 task("sync-epcc")
     on_run(function ()
-        os.runv("rsync -av . epcc4090:~/zksnark --exclude-from .gitignore", {
+        os.runv("rsync -av . epcc-ada6000:~/zksnark --exclude-from .gitignore", {
             stdout = 1
         ,   stderr = 2
         })

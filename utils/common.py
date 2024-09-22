@@ -1,3 +1,5 @@
+from typing import Tuple
+
 def chunks(x: int, n_words: int) -> str:
     s = hex(x)[2:]
     c = []
@@ -28,7 +30,7 @@ def chunked_hex(x: int, n_words: int) -> str:
         c.insert(0, "00000000")
     return '0x' + '_'.join(c)
 
-def ext_gcd(a: int, b: int) -> tuple[int, int, int]:
+def ext_gcd(a: int, b: int) -> Tuple[int, int, int]:
     if b == 0:          
         return 1, 0, a     
     else:         

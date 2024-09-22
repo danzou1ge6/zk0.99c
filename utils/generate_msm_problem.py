@@ -3,9 +3,9 @@ from random import randint
 from sys import argv
 
 if __name__ == "__main__":
-    msm_len = 2 ** argv[1]
+    msm_len = 2 ** int(argv[1])
 
-    wf = open(f'msm/tests/msm{msm_len}.input', 'w')
+    wf = open(f'msm/tests/msm{argv[1]}.input', 'w')
 
     wf.write(f"{msm_len}\n")
 

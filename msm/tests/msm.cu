@@ -4,6 +4,7 @@
 #include "../../mont/src/mont.cuh"
 
 #include <iostream>
+#include <fstream>
 
 using namespace mont256;
 using namespace curve256;
@@ -45,10 +46,25 @@ operator<<(std::ostream &os, const MsmProblem &msm)
   return os;
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+  if (argc != 2)
+  {
+    std::cout << "usage: <prog> input_file" << std::endl;
+    return 2;
+  }
+
+  std::ifstream rf(argv[1]);
+  if (!rf.is_open())
+  {
+    std::cout << "open file " << argv[1] << " failed" << std::endl;
+    return 3;
+  }
+
   MsmProblem msm;
-  std:: cin >> msm;
+
+  rf >> msm;
+  // std::cout << msm;
   Point r;
   msm::run<msm::MsmConfig>(msm.scalers, msm.points, msm.len, r);
   std::cout << r;

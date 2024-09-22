@@ -1,14 +1,8 @@
-#include "../src/field.cuh"
+#include "../src/mont.cuh"
 
 #include <iostream>
 
-using Number = mont::Number<8>;
-using Number2 = mont::Number<16>;
-using Element = mont::Element<8>;
-using Env = mont::Env<8>;
-using Params = mont::Params<8>;
-using mont::u32;
-using mont::u64;
+using namespace mont256;
 
 __device__ const auto params = Params{
     // 8749054268878081845992735117657085490803352298049958388812839746200388362933
@@ -20,7 +14,7 @@ __device__ const auto params = Params{
 __device__ const u32 a[8] = BIG_INTEGER_CHUNKS8(0x8e2f1b9, 0x74caa8b2, 0xa201f5ce, 0xdd06a772, 0x33525f1a, 0xc8794b1e, 0x460dd0e8, 0x3abe291e);
 
 const u32 BATCH = 128;
-const u32 THREADS = 768;
+const u32 THREADS = 256;
 const u32 ITERS = 2;
 
 __global__ void bench(u32 *r)

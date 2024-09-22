@@ -2,9 +2,15 @@
 #include <doctest/doctest.h>
 #include <iostream>
 
-#include "../src/mont.cuh"
+#include "../src/field.cuh"
 
-using namespace mont256;
+using Number = mont::Number<8>;
+using Number2 = mont::Number<16>;
+using Element = mont::Element<8>;
+using Env = mont::Env<8>;
+using Params = mont::Params<8>;
+using mont::u32;
+using mont::u64;
 
 __global__ void bn_add(u32 *r, const u32 *a, const u32 *b,
                        const Params *p)
@@ -27,18 +33,18 @@ __global__ void bn_sub(u32 *r, const u32 *a, const u32 *b,
 __global__ void mont_add(u32 *r, const u32 *a, const u32 *b, const Params *p)
 {
   Env env(*p);
-  auto na = Number::load(a);
-  auto nb = Number::load(b);
-  auto nr = env.add_modulo(na, nb);
+  auto na = Element::load(a);
+  auto nb = Element::load(b);
+  auto nr = env.add(na, nb);
   nr.store(r);
 }
 
 __global__ void mont_sub(u32 *r, const u32 *a, const u32 *b, const Params *p)
 {
   Env env(*p);
-  auto na = Number::load(a);
-  auto nb = Number::load(b);
-  auto nr = env.sub_modulo(na, nb);
+  auto na = Element::load(a);
+  auto nb = Element::load(b);
+  auto nr = env.sub(na, nb);
   nr.store(r);
 }
 
@@ -181,13 +187,10 @@ void test_mont_kernel2(const u32 r[WORDS], const u32 a[WORDS],
 
   const auto n_got_r = Number2::load(got_r);
   const auto nr = Number2::load(r);
-  Number n_got_r_hi, n_got_r_lo, nr_hi, nr_lo;
-  n_got_r.split(n_got_r_hi, n_got_r_lo);
-  nr.split(nr_hi, nr_lo);
 
-  if (nr_lo != n_got_r_lo || nr_hi != n_got_r_hi)
+  if (n_got_r != nr)
   {
-    FAIL("Expected\n  ", nr_hi, ", ", nr_lo, ", but got\n  ", n_got_r_hi, ", ", n_got_r_lo);
+    FAIL("Expected\n  ", nr, ", but got\n  ", n_got_r);
   }
 }
 
@@ -213,12 +216,9 @@ void test_host2(const u32 r[WORDS * 2], const u32 a[WORDS],
   auto env = Env::host_new(params);
   const auto n_got_r = f(na, nb, env);
 
-  Number n_got_r_hi, n_got_r_lo, nr_hi, nr_lo;
-  n_got_r.split(n_got_r_hi, n_got_r_lo);
-  nr.split(nr_hi, nr_lo);
-  if (nr_lo != n_got_r_lo || nr_hi != n_got_r_hi)
+  if (nr != n_got_r)
   {
-    FAIL("Expected\n  ", nr_hi, ", ", nr_lo, ", but got\n  ", n_got_r_hi, ", ", n_got_r_lo);
+    FAIL("Expected\n  ", nr, ", but got\n  ", n_got_r);
   }
 }
 
@@ -250,7 +250,7 @@ namespace instance1
   const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8(0xbd92e68, 0x3407ccf8, 0x5be63308, 0xb5207210, 0x907bef0a, 0xf2ac6db5, 0x37e9b8d8, 0xf87662fa);
   const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x1e46804, 0x440e153b, 0xcfdcb1c1, 0x4c66dfe6, 0x6a669456, 0x0e18dec0, 0x8e8bfa6e, 0x48c9128c);
   // a >> 125
-  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x47178dcb, 0xa6554595, 0x100fae76, 0xe8353b91);
+  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8( 0x0, 0x0, 0x0, 0x0, 0x47178dcb, 0xa6554595, 0x100fae76, 0xe8353b91 );
 
   TEST_CASE("Big number subtraction 1")
   {
@@ -290,7 +290,7 @@ namespace instance1
 
   TEST_CASE("Big number shift logical right 1")
   {
-    const u32 k[WORDS] = BIG_INTEGER_CHUNKS8(0, 0, 0, 0, 0, 0, 0, 125);
+    const u32 k[WORDS] = { 125 };
     test_mont_kernel<WORDS>(a_slr125, a, k, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                             { bn_slr<<<1, 1>>>(r, a, b, p); });
   }
@@ -511,7 +511,7 @@ TEST_CASE("Convert to Montgomery")
 
 TEST_CASE("Fp negation")
 {
-  const u32 x[WORDS] = BIG_INTEGER_CHUNKS8(0, 0, 0, 0, 0, 0, 0, 0);
+  const u32 x[WORDS] = { 0, 0, 0, 0, 0, 0, 0, 0 };
   test_mont_kernel<WORDS>(x, x, x, params, [](u32 *r, const u32 *a, const u32 *b, const Params *p)
                           { mont_neg<<<1, 1>>>(r, a, b, p); });
 }

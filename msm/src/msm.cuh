@@ -417,6 +417,12 @@ namespace msm
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+
     // Count items in buckets
     u32 *scalers;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::N_WORDS * len));
@@ -497,15 +503,23 @@ namespace msm
     PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
 
     // Do bucket sum
-    block_size = 2 * THREADS_PER_WARP;
-    grid_size = deviceProp.multiProcessorCount;
-    bucket_sum<Config, 2><<<grid_size, block_size>>>(
+    block_size = 8 * THREADS_PER_WARP;
+    grid_size = Config::n_windows * Config::n_buckets / 8;
+
+    cudaEvent_t bucket_sum_start, bucket_sum_stop;
+    cudaEventCreate(&bucket_sum_start);
+    cudaEventCreate(&bucket_sum_stop);
+    cudaEventRecord(bucket_sum_start);
+
+    bucket_sum<Config, 8><<<grid_size, block_size>>>(
         buckets_buffer,
         Array2D<u32, Config::n_windows, Config::n_buckets>(buckets_offset),
         Array2D<u32, Config::n_windows, Config::n_buckets>(counts),
         curve,
         points,
         buckets_sum);
+
+    cudaEventRecord(bucket_sum_stop);
 
     if (Config::debug)
     {
@@ -524,6 +538,18 @@ namespace msm
         reduced);
 
     PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    if (Config::debug)
+    {
+      float elapsed_time;
+      cudaEventElapsedTime(&elapsed_time, bucket_sum_start, bucket_sum_stop);
+      std::cout << "MSM::bucket_sum cost " << elapsed_time << " ms" << std::endl;
+      cudaEventElapsedTime(&elapsed_time, start, stop);
+      std::cout << "MSM cost " << elapsed_time << " ms" << std::endl;
+    }
 
     return cudaSuccess;
   }
