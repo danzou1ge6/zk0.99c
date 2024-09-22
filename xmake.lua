@@ -53,8 +53,8 @@ target("test-ntt-int")
         set_symbols("debug")
     end
     add_deps("mont.cuh")
-    add_headerfiles("NTT/src/*.cuh")
-    add_files("NTT/tests/test-int.cu")
+    add_headerfiles("ntt/src/*.cuh")
+    add_files("ntt/tests/test-int.cu")
     add_cugencodes("native")
 
 target("test-ntt-big")
@@ -64,16 +64,11 @@ target("test-ntt-big")
         set_symbols("debug")
     end
     add_deps("mont.cuh")
-    add_files("NTT/tests/test-big.cu")
-    add_headerfiles("NTT/src/*.cuh")
+    add_files("ntt/tests/test-big.cu")
+    add_headerfiles("ntt/src/*.cuh")
     add_cugencodes("native")
     add_packages("doctest")
     add_defines("PROJECT_ROOT=\"" .. project_root .. "\"")
-
-option("WORDS")
-    set_default(8)
-    set_showmenu(true)
-    set_description("Number of words in the prime field")
 
 target("cuda_ntt")
     set_kind("static")
@@ -85,10 +80,9 @@ target("cuda_ntt")
     set_languages(("c++20"))
     add_deps("mont.cuh")
     
-    local word_len = get_config("WORDS") or 8    
-    add_files("wrapper/NTT/c_api/ntt_c_api.cu", {defines = "NUM_OF_UINT=" .. word_len})
-    add_headerfiles("wrapper/NTT/c_api/*.h")
-    add_headerfiles("NTT/src/*.cuh")
+    add_files("wrapper/ntt/c_api/ntt_c_api.cu")
+    add_headerfiles("wrapper/ntt/c_api/*.h")
+    add_headerfiles("ntt/src/*.cuh")
     add_cugencodes("native")
 
     set_targetdir("lib")

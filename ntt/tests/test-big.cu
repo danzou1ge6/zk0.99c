@@ -1,7 +1,9 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include <iostream>
-#include "../src/NTT.cuh"
+#include "../src/bellperson_ntt.cuh"
+#include "../src/naive_ntt.cuh"
+#include "../src/self_sort_in_place_ntt.cuh"
 
 #include <iostream>
 #include <cstdio>
@@ -79,7 +81,7 @@ TEST_CASE("testing the naive GPU NTT implementation") {
 
         std::stringstream script;
 
-        script << "python3 " << PROJECT_ROOT << "/NTT/tests/generate_ntt_sample.py --log_len " << logn;
+        script << "python3 " << PROJECT_ROOT << "/ntt/tests/generate_ntt_sample.py --log_len " << logn;
 
         uint *input, *answer;
 
@@ -88,7 +90,7 @@ TEST_CASE("testing the naive GPU NTT implementation") {
 
         exec(script.str().c_str(), input, answer, n);
 
-        NTT::naive_ntt<WORDS> naive(params, unit, logn, true);
+        ntt::naive_ntt<WORDS> naive(params, unit, logn, true);
         naive.ntt(input);
         std::cout << "naive: " << naive.milliseconds << "ms" << std::endl;
 
@@ -120,7 +122,7 @@ TEST_CASE("testing the Bellperson NTT implementation") {
 
         std::stringstream script;
 
-        script << "python3 " << PROJECT_ROOT << "/NTT/tests/generate_ntt_sample.py --log_len " << logn;
+        script << "python3 " << PROJECT_ROOT << "/ntt/tests/generate_ntt_sample.py --log_len " << logn;
 
         uint *input, *answer;
 
@@ -129,7 +131,7 @@ TEST_CASE("testing the Bellperson NTT implementation") {
 
         exec(script.str().c_str(), input, answer, n);
 
-        NTT::bellperson_ntt<WORDS> bellperson(params, unit, logn, true);
+        ntt::bellperson_ntt<WORDS> bellperson(params, unit, logn, true);
         bellperson.ntt(input);
         std::cout << "bellperson: " << bellperson.milliseconds << "ms" << std::endl;
 
@@ -161,7 +163,7 @@ TEST_CASE("testing the SSIP NTT implementation") {
 
         std::stringstream script;
 
-        script << "python3 " << PROJECT_ROOT << "/NTT/tests/generate_ntt_sample.py --log_len " << logn;
+        script << "python3 " << PROJECT_ROOT << "/ntt/tests/generate_ntt_sample.py --log_len " << logn;
 
         uint *input, *answer;
 
@@ -170,7 +172,7 @@ TEST_CASE("testing the SSIP NTT implementation") {
 
         exec(script.str().c_str(), input, answer, n);
 
-        NTT::self_sort_in_place_ntt<WORDS> SSIP(params, unit, logn, true);
+        ntt::self_sort_in_place_ntt<WORDS> SSIP(params, unit, logn, true);
         SSIP.ntt(input);
         std::cout << "SSIP: " << SSIP.milliseconds << "ms" << std::endl;
 
