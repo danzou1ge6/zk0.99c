@@ -1,3 +1,5 @@
+#pragma once
+
 #include "ntt.cuh"
 
 namespace ntt {
@@ -86,7 +88,7 @@ namespace ntt {
     }
     
     template<u32 WORDS>
-    class bellperson_ntt : public best_ntt<WORDS> {
+    class bellperson_ntt : public best_ntt {
         const u32 max_deg;
         const u32 log_len;
         const u64 len;
@@ -148,7 +150,7 @@ namespace ntt {
             free(omegas);
         }
 
-        cudaError_t to_gpu(cudaStream_t = 0) override {
+        cudaError_t to_gpu() override {
             if (this->on_gpu) return cudaSuccess;
 
             bool success = true;
@@ -172,7 +174,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t clean_gpu(cudaStream_t stream = 0) override {
+        cudaError_t clean_gpu() override {
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
             cudaError_t first_err = cudaSuccess;

@@ -1,5 +1,6 @@
-#include "ntt.cuh"
+#pragma once
 
+#include "ntt.cuh"
 namespace ntt {
     template <u32 WORDS, u32 io_group>
     __global__ void SSIP_NTT_stage1 (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
@@ -3008,7 +3009,7 @@ namespace ntt {
     }
 
     template <u32 WORDS>
-    class self_sort_in_place_ntt : public best_ntt<WORDS> {
+    class self_sort_in_place_ntt : public best_ntt {
         u32 max_deg_stage1;
         u32 max_deg_stage2;
         u32 max_deg;
@@ -3143,7 +3144,7 @@ namespace ntt {
             free(roots);
         }
 
-        cudaError_t to_gpu(cudaStream_t stream = 0) override {
+        cudaError_t to_gpu() override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3175,7 +3176,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t clean_gpu(cudaStream_t stream = 0) override {
+        cudaError_t clean_gpu() override {
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
             cudaError_t first_err = cudaSuccess;

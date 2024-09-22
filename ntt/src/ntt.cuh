@@ -27,7 +27,6 @@ namespace ntt {
     typedef uint u32_E;
     typedef uint u32_N;
 
-    template <u32 WORDS>
     class best_ntt {
         public:
         bool on_gpu = false;
@@ -35,8 +34,8 @@ namespace ntt {
         virtual ~best_ntt() {
             if (on_gpu) clean_gpu();
         }
-        virtual cudaError_t to_gpu(cudaStream_t stream = 0) {return cudaSuccess;}
-        virtual cudaError_t clean_gpu(cudaStream_t stream = 0) {return cudaSuccess;}
+        virtual cudaError_t to_gpu() {return cudaSuccess;}
+        virtual cudaError_t clean_gpu() {return cudaSuccess;}
     };
 
     template <u32 WORDS>

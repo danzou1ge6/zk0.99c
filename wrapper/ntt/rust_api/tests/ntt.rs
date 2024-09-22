@@ -4,7 +4,7 @@ use halo2_proofs::*;
 use halo2curves::pasta::Fp;
 use rand_core::OsRng;
 use rayon::prelude::*;
-use rust_api::gpu_ntt;
+use zk0d99c_ntt::gpu_ntt;
 use halo2curves::bn256::Fr;
 use rand_xorshift::XorShiftRng;
 use rand_core::SeedableRng;
@@ -28,6 +28,8 @@ fn compare_with_halo2() {
         arithmetic::best_fft(&mut data_rust, omega, k as u32);
         let time1 = start1.elapsed().as_micros();
         println!("cpu time: {time1}");
+
+        gpu_ntt(&mut data_cuda.clone(), omega, k as u32).unwrap();
         
         let start2 = Instant::now();
 
