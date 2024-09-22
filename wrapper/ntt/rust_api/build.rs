@@ -28,7 +28,7 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed={}", "../c_api");
-    println!("cargo:rerun-if-changed={}", "../../../NTT/src");
+    println!("cargo:rerun-if-changed={}", "../../../ntt/src");
     println!("cargo:rerun-if-changed={}", libdir_path.to_str().unwrap());
 
     // Tell cargo to look for libraries in the specified directory

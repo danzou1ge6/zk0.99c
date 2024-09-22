@@ -2,7 +2,9 @@
 #include <random>
 #include <cassert>
 #include <ctime>
-#include "../src/NTT.cuh"
+#include "../src/naive_ntt.cuh"
+#include "../src/bellperson_ntt.cuh"
+#include "../src/self_sort_in_place_ntt.cuh"
 
 #define P (3221225473   )
 #define root (5)
@@ -109,7 +111,7 @@ int main() {
         data_gpu[i * WORDS] = data_copy[i];
     }
 
-    NTT::naive_ntt<WORDS> naive(params, unit, bits, true);
+    ntt::naive_ntt<WORDS> naive(params, unit, bits, true);
     naive.ntt(data_gpu);
     printf("naive: %fms\n", naive.milliseconds);
 
@@ -125,7 +127,7 @@ int main() {
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-    NTT::bellperson_ntt<WORDS> bellperson(params, unit, bits, true);
+    ntt::bellperson_ntt<WORDS> bellperson(params, unit, bits, true);
     bellperson.ntt(data_gpu);
     printf("bellperson: %fms\n", bellperson.milliseconds);
 
@@ -141,7 +143,7 @@ int main() {
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-    NTT::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true);
+    ntt::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true);
     SSIP.ntt(data_gpu);
     printf("SSIP: %fms\n", SSIP.milliseconds);
 

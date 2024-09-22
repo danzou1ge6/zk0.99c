@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "wrapper/NTT/rust_api"  # 子项目路径
+    "wrapper/ntt/rust_api"  # 子项目路径
 ]
 
 [workspace.package]

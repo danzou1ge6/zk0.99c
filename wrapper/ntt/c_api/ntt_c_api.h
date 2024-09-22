@@ -8,7 +8,7 @@ enum FIELD {
     HALO2CURVES_BN256_FR
 };
 
-void cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD field);
+bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD field);
 
 #ifdef __cplusplus
 }

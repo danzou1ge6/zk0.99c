@@ -1,8 +1,6 @@
-#include "../../../NTT/src/NTT.cuh"
+#include "../../../ntt/src/self_sort_in_place_ntt.cuh"
 #include "./ntt_c_api.h"
-#include <map>
-
-
+#include <cuda_runtime.h>
 
 // pasta_fp
 // 28948022309329048855892746252171976963363056481941560715954676764349967630337
@@ -26,14 +24,18 @@ const auto params_bn256_fr = mont256::Params {
 extern "C" {
 #endif
 
-void cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD FIELD) {
+bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD FIELD) {
+    cudaError_t err;
     if (FIELD == FIELD::PASTA_CURVES_FIELDS_FP) {
-      NTT::self_sort_in_place_ntt<8> SSIP(params_pasta_fp, omega, log_n, false);
-      SSIP.ntt(data);
+      ntt::self_sort_in_place_ntt<8> SSIP(params_pasta_fp, omega, log_n, false);
+      err = SSIP.ntt(data);
     } else if (FIELD == FIELD::HALO2CURVES_BN256_FR) {
-      NTT::self_sort_in_place_ntt<8> SSIP(params_bn256_fr, omega, log_n, false);
-      SSIP.ntt(data);
+      ntt::self_sort_in_place_ntt<8> SSIP(params_bn256_fr, omega, log_n, false);
+      err = SSIP.ntt(data);
+    } else {
+      return false;
     }
+    return err == cudaSuccess;
 }
 
 #ifdef __cplusplus

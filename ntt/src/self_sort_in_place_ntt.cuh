@@ -1,542 +1,6 @@
-#pragma once
+#include "ntt.cuh"
 
-#include "../../mont/src/mont.cuh"
-#include <cuda_runtime.h>
-#include <cassert>
-#include <cub/cub.cuh>
-#include <thrust/iterator/transform_iterator.h>
-#include <thrust/iterator/counting_iterator.h>
-#include <thrust/iterator/constant_iterator.h>
-#include <bit>
-#include <cuda/barrier>
-#include <iostream>
-
-namespace NTT {
-    typedef uint u32;
-    typedef unsigned long long u64;
-    typedef uint u32_E;
-    typedef uint u32_N;
-
-    __constant__ u32_E omegas_c[32 * 8]; // need to be revised if words changed
-
-    template <u32 WORDS>
-    class best_ntt {
-        public:
-        virtual void ntt(u32 * data) = 0;
-        virtual ~best_ntt() {}
-    };
-
-    template <u32 WORDS>
-    class gen_roots_cub {
-        public:
-        struct element_pack {
-            u32 data[WORDS];
-        };
-        struct get_iterator_to_range {
-            __host__ __device__ __forceinline__ auto operator()(u32 index) {
-                return thrust::make_constant_iterator(input_d[index]);
-            }
-            element_pack *input_d;
-        };
-
-        struct get_ptr_to_range {
-            __host__ __device__ __forceinline__ auto operator()(u32 index) {
-                return output_d + offsets_d[index];
-            }
-            element_pack *output_d;
-            u32 *offsets_d;
-        };
-
-        struct get_run_length {
-            __host__ __device__ __forceinline__ auto operator()(u32 index) {
-                return offsets_d[index + 1] - offsets_d[index];
-            }
-            uint32_t *offsets_d;
-        };
-        struct mont_mul {
-            __device__ __forceinline__ element_pack operator()(const element_pack &a, const element_pack &b) {
-                auto env = mont256::Env(*param_d);
-                element_pack res;
-                auto a_ = mont256::Element::load(a.data);
-                auto b_ = mont256::Element::load(b.data);
-                auto c_ = env.mul(a_, b_);
-                c_.store(res.data);
-                return res;
-            }
-            mont256::Params* param_d;
-        };
-
-
-        __host__ __forceinline__ void operator() (u32_E * roots, u32 len, mont256::Element &unit, const mont256::Params &param) {
-            auto env_host = mont256::Env::host_new(param);
-
-            const u32 num_ranges = 2;
-
-            element_pack input[num_ranges]; // {one, unit}
-            env_host.one().store(input[0].data);
-            unit.store(input[1].data);
-            
-            element_pack * input_d;
-            cudaMalloc(&input_d, num_ranges * sizeof(element_pack));
-            cudaMemcpy(input_d, input, num_ranges * sizeof(element_pack), cudaMemcpyHostToDevice);
-
-            u32 offset[] = {0, 1, len};
-            u32 * offset_d;
-            cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32));
-            cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice);
-
-            element_pack * output_d;
-            cudaMalloc(&output_d, len * sizeof(element_pack));
-
-            // Returns a constant iterator to the element of the i-th run
-            thrust::counting_iterator<uint32_t> iota(0);
-            auto iterators_in = thrust::make_transform_iterator(iota, get_iterator_to_range{input_d});
-
-            // Returns the run length of the i-th run
-            auto sizes = thrust::make_transform_iterator(iota, get_run_length{offset_d});
-
-            // Returns pointers to the output range for each run
-            auto ptrs_out = thrust::make_transform_iterator(iota, get_ptr_to_range{output_d, offset_d});
-
-            // Determine temporary device storage requirements
-            void *tmp_storage_d = nullptr;
-            size_t temp_storage_bytes = 0;
-
-            cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges);
-
-            // Allocate temporary storage
-            cudaMalloc(&tmp_storage_d, temp_storage_bytes);
-
-            // Run batched copy algorithm (used to perform runlength decoding)
-            // output_d       <-- [one, unit, unit, ... , unit]
-            cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges);
-
-            cudaFree(tmp_storage_d);
-            cudaFree(input_d);
-            cudaFree(offset_d);
-            
-            tmp_storage_d = nullptr;
-            temp_storage_bytes = 0;
-
-            mont256::Params *param_d;
-            cudaMalloc(&param_d, sizeof(mont256::Params));
-            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
-
-            auto op = mont_mul{param_d};
-
-            cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
-            cudaMalloc(&tmp_storage_d, temp_storage_bytes);
-            cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len);
-
-            cudaMemcpy(roots, output_d, len * sizeof(element_pack), cudaMemcpyDeviceToHost);
-            cudaFree(output_d);
-            cudaFree(tmp_storage_d);
-            cudaFree(param_d);
-        }
-    };
-
-    template<u32 WORDS>
-    __global__ void element_to_number(u32* data, u32 len, mont256::Params* param) {
-        auto env = mont256::Env(*param);
-        u64 index = blockIdx.x * blockDim.x + threadIdx.x;
-        if (index >= len) return;
-        env.to_number(mont256::Element::load(data + index * WORDS)).store(data + index * WORDS);
-    }
-
-    template<u32 WORDS>
-    __global__ void number_to_element(u32* data, u32 len, mont256::Params* param) {
-        auto env = mont256::Env(*param);
-        u64 index = blockIdx.x * blockDim.x + threadIdx.x;
-        if (index >= len) return;
-        env.from_number(mont256::Number::load(data + index * WORDS)).store(data + index * WORDS);
-    }
-    
-    template<u64 WORDS>
-    __global__ void rearrange(u32_E * data, u32 log_len) {
-        u32 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
-        u32 word = threadIdx.x & (WORDS - 1);
-        if (index >= 1 << log_len) return;
-        u32 rindex = (__brev(index) >> (32 - log_len));
-        
-        if (rindex >= index) return;
-
-        u32 tmp = data[index * WORDS + word];
-        data[index * WORDS + word] = data[rindex * WORDS + word];
-        data[rindex * WORDS + word] = tmp;
-    }
-
-    template<u32 WORDS>
-    __global__ void naive(u32_E* data, u32 len, u32_E* roots, u32 stride, mont256::Params* param) {
-        auto env = mont256::Env(*param);
-
-        u32 id = (blockDim.x * blockIdx.x + threadIdx.x);
-        if (id << 1 >= len) return;
-
-        u64 offset = id % stride;
-        u64 pos = ((id - offset) << 1) + offset;
-
-        auto a = mont256::Element::load(data + (pos * WORDS));
-        auto b = mont256::Element::load(data + ((pos + stride) * WORDS));
-        auto w = mont256::Element::load(roots + (offset * len / (stride << 1)) * WORDS);
-
-        b = env.mul(b, w);
-        
-        auto tmp = a;
-        a = env.add(a, b);
-        b = env.sub(tmp, b);
-        
-        a.store(data + (pos * WORDS));
-        b.store(data + ((pos + stride) * WORDS));
-    }
-
-
-    template<u32 WORDS>
-    class naive_ntt : public best_ntt<WORDS> {
-        const mont256::Params param;
-        mont256::Element unit;
-        bool debug;
-        u32 * reverse;
-        u32_E * roots;
-        const u32 log_len;
-        const u64 len;
-        
-        void gen_reverse() {
-            reverse = new u32[len];
-            reverse[0] = 0;
-            for (u32 i = 0; i < len; i++) {
-                reverse[i] = (reverse[i >> 1] >> 1) | ((i & 1) << (log_len - 1) ); //reverse the bits
-            }
-        }
-
-        void gen_roots(u32_E * roots, u32 len) {
-            auto env = mont256::Env::host_new(param);
-            env.one().store(roots);
-            auto last_element = mont256::Element::load(roots);
-            for (u64 i = WORDS; i < ((u64)len) * WORDS; i+= WORDS) {
-                last_element = env.host_mul(last_element, unit);
-                last_element.store(roots + i);
-            }
-        }
-
-        public:
-        float milliseconds = 0;
-
-        naive_ntt(const mont256::Params &param, const u32_N* omega, u32 log_len, bool debug) : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
-            
-            auto env = mont256::Env::host_new(param);
-            
-            if (debug) {
-                // unit = qpow(omega, (P - 1ll) / len)
-                unit = env.host_from_number(mont256::Number::load(omega));
-                auto exponent = mont256::Number::load(param.m);
-                auto one = mont256::Number::zero();
-                one.c0 = 1;
-                exponent = exponent.host_sub(one);
-                exponent = exponent.slr(log_len);
-                unit = env.host_pow(unit, exponent);
-            } else {
-                unit = mont256::Element::load(omega);
-            }
-
-            roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
-            // gen_roots(roots, len);
-            gen_roots_cub<WORDS> gen;
-            gen(roots, len / 2, unit, param);
-
-            // gen_reverse();
-        }
-
-        ~naive_ntt() override {
-            free(roots);
-        }
-
-        void ntt(u32 * data) override {
-            cudaEvent_t start, end;
-            cudaEventCreate(&start);
-            cudaEventCreate(&end);
-            
-            u32_E *data_d, *roots_d;
-            cudaMalloc(&data_d, len * WORDS * sizeof(u32));
-            cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
-
-            cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32));
-            cudaMemcpy(roots_d, roots, ((u64)len / 2) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice);
-            
-            mont256::Params *param_d;
-            cudaMalloc(&param_d, sizeof(mont256::Params));
-            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
-
-            if (debug) {
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                number_to_element <WORDS> <<< grid, block >>> (data_d, len, param_d);
-                cudaEventRecord(start);
-            }
-
-            dim3 block(1024);
-            dim3 grid((((u64) len) * WORDS - 1) / block.x + 1);
-            rearrange<WORDS> <<<grid, block >>> (data_d, log_len);
-
-            dim3 ntt_block(768);
-            dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
-
-            for (u32 stride = 1; stride < len; stride <<= 1) {
-                naive <WORDS> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride, param_d);
-            }
-
-            if (debug) {
-                cudaEventRecord(end);
-                cudaEventSynchronize(end);
-                cudaEventElapsedTime(&milliseconds, start, end);
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                element_to_number <WORDS> <<< grid, block >>> (data_d, len, param_d);
-            }
-
-            cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
-
-            cudaFree(data_d);
-            cudaFree(roots_d); 
-        }
-    };
-
-    template <u32 WORDS>
-    __forceinline__ __device__ mont256::Element pow_lookup_constant(u32 exponent, mont256::Env &env) {
-        auto res = env.one();
-        u32 i = 0;
-        while(exponent > 0) {
-            if (exponent & 1) {
-                res = env.mul(res, mont256::Element::load(omegas_c + (i * WORDS)));
-            }
-            exponent = exponent >> 1;
-            i++;
-        }
-        return res;
-    }
-
-    /*
-    * FFT algorithm is inspired from: http://www.bealto.com/gpu-fft_group-1.html
-    */
-    template <u32 WORDS>
-    __global__ void bellperson_kernel(u32_E * x, // Source buffer
-                        u32_E * y, // Destination buffer
-                        const u32_E * pq, // Precalculated twiddle factors
-                        u32 n, // Number of elements
-                        u32 lgp, // Log2 of `p` (Read more in the link above)
-                        u32 deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
-                        u32 max_deg, // Maximum degree supported, according to `pq` and `omegas`
-                        mont256::Params* param)
-    {
-
-        // There can only be a single dynamic shared memory item, hence cast it to the type we need.
-        extern __shared__ u32 u[];
-
-        auto env = mont256::Env(*param);
-
-        u32 lid = threadIdx.x;//GET_LOCAL_ID();
-        u32 lsize = blockDim.x;//GET_LOCAL_SIZE();
-        u32 index = blockIdx.x;//GET_GROUP_ID();
-        u32 t = n >> deg;
-        u32 p = 1 << lgp;
-        u32 k = index & (p - 1);
-
-        x += ((u64) index) * WORDS;
-        y += ((u64) (((index - k) << deg) + k)) * WORDS;
-
-        u32 count = 1 << deg; // 2^deg
-        u32 counth = count >> 1; // Half of count
-
-        u32 counts = count / lsize * lid;
-        u32 counte = counts + count / lsize;
-
-        // Compute powers of twiddle
-        auto twiddle = pow_lookup_constant<WORDS>((n >> lgp >> deg) * k, env);
-
-        auto tmp = env.pow(twiddle, counts, deg);
-
-        for(u64 i = counts; i < counte; i++) {
-            auto num = mont256::Element::load(x + (i * t * WORDS));
-            num = env.mul(num, tmp);
-            num.store(u + (i * WORDS));
-            tmp = env.mul(tmp, twiddle);
-        }
-
-        __syncthreads();
-
-        const u32 pqshift = max_deg - deg;
-        for(u32 rnd = 0; rnd < deg; rnd++) {
-            const u32 bit = counth >> rnd;
-            for(u32 i = counts >> 1; i < counte >> 1; i++) {
-                const u32 di = i & (bit - 1);
-                const u32 i0 = (i << 1) - di;
-                const u32 i1 = i0 + bit;
-                mont256::Element a, b, tmp, w;
-                a = mont256::Element::load(u + (i0 * WORDS));
-                b = mont256::Element::load(u + (i1 * WORDS));
-                tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
-                if (di != 0) {
-                    w = mont256::Element::load(pq + ((di << rnd << pqshift) * WORDS));
-                    b = env.mul(b, w);
-                }
-                a.store(u + (i0 * WORDS));
-                b.store(u + (i1 * WORDS));
-            }
-            __syncthreads();
-        }
-        
-
-        for(u32 i = counts >> 1; i < counte >> 1; i++) {
-            #pragma unroll
-            for (u32 j = 0; j < WORDS; j++) {
-                y[(((u64)i) * p) * WORDS + j] = u[(__brev(i) >> (32 - deg)) * WORDS + j];
-                y[(((u64)(i + counth)) * p) * WORDS + j] = u[(__brev(i + counth) >> (32 - deg)) * WORDS + j];
-            }
-        }
-    }
-    
-    template<u32 WORDS>
-    class bellperson_ntt : public best_ntt<WORDS> {
-        const u32 max_deg;
-        const u32 log_len;
-        const u64 len;
-        mont256::Params param;
-        mont256::Element unit;
-        bool debug;
-        u32_E *pq; // Precalculated values for radix degrees up to `max_deg`
-        u32_E *omegas; // Precalculated values for [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
-
-
-        public:
-        float milliseconds = 0;
-        bellperson_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug) : param(param), log_len(log_len), max_deg(std::min(8u, log_len)), len(1 << log_len), debug(debug) {
-            // Precalculate:
-            auto env = mont256::Env::host_new(param);
-
-            if (debug) {
-                // unit = qpow(omega, (P - 1ll) / len)
-                unit = env.host_from_number(mont256::Number::load(omega));
-                auto exponent = mont256::Number::load(param.m);
-                auto one = mont256::Number::zero();
-                one.c0 = 1;
-                exponent = exponent.host_sub(one);
-                exponent = exponent.slr(log_len);
-                unit = env.host_pow(unit, exponent);
-            } else {
-                unit = mont256::Element::load(omega);
-            }
-
-            // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
-
-            pq = (u32 *) malloc((1 << max_deg >> 1) * sizeof(u32) * WORDS);
-            memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
-            env.one().store(pq);
-            auto twiddle = env.host_pow(unit, len >> max_deg);
-            if (max_deg > 1) {
-                twiddle.store(pq + WORDS);
-                auto last = twiddle;
-                for (u32 i = 2; i < (1 << max_deg >> 1); i++) {
-                    last = env.host_mul(last, twiddle);
-                    last.store(pq + i * WORDS);
-                }
-            }
-
-            // omegas: [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
-
-            omegas = (u32 *) malloc(32 * sizeof(u32) * WORDS);
-            unit.store(omegas);
-            auto last = unit;
-            for (u32 i = 1; i < 32; i++) {
-                last = env.host_square(last);
-                last.store(omegas + i * WORDS);
-            }
-        }
-
-        ~bellperson_ntt() override {
-            free(pq);
-            free(omegas);
-        }
-
-        void ntt(u32 * data) override {
-            cudaEvent_t start, end;
-            cudaEventCreate(&start);
-            cudaEventCreate(&end);
-         
-            u32_E* pq_d;
-
-            cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS);
-            cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
-
-            cudaMemcpyToSymbol(omegas_c, omegas, 32 * sizeof(u32_E) * WORDS);
-
-            u32 * x, * y;
-            cudaMalloc(&y, len * WORDS * sizeof(u32));
-            cudaMalloc(&x, len * WORDS * sizeof(u32));
-            cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
-
-            mont256::Params* param_d;
-            cudaMalloc(&param_d, sizeof(mont256::Params));
-            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
-
-            // Specifies log2 of `p`, (http://www.bealto.com/gpu-fft_group-1.html)
-            u32 log_p = 0u;
-            
-            if (debug) {
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                number_to_element <WORDS> <<< grid, block >>> (x, len, param_d);
-                cudaEventRecord(start);
-            }
-
-            // Each iteration performs a FFT round
-            while (log_p < log_len) {
-
-                // 1=>radix2, 2=>radix4, 3=>radix8, ...
-                u32 deg = std::min(max_deg, log_len - log_p);
-
-                assert(deg - 1 <= 10);
-
-                dim3 block(1 << (deg - 1));
-                dim3 grid(len >> deg);
-
-                uint shared_size = (1 << deg) * WORDS * sizeof(u32);
-
-                auto kernel = bellperson_kernel<WORDS>;
-            
-                cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
-
-                kernel <<< grid, block, shared_size >>> (x, y, pq_d, len, log_p, deg, max_deg, param_d);
-                
-                auto err = cudaGetLastError();
-                if (err != cudaSuccess) {
-                    printf("Error: %s\n", cudaGetErrorString(err));
-                }
-                log_p += deg;
-
-                u32 * tmp = x;
-                x = y;
-                y = tmp;
-            }
-
-            if (debug) {
-                cudaEventRecord(end);
-                cudaEventSynchronize(end);
-                cudaEventElapsedTime(&milliseconds, start, end);
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
-            }
-
-            cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
-
-            cudaFree(pq_d);
-            cudaFree(y);
-            cudaFree(x);
-
-        }
-    };
-
+namespace ntt {
     template <u32 WORDS, u32 io_group>
     __global__ void SSIP_NTT_stage1 (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
                                     const u32_E * pq, // twiddle factors for shard memory NTT
@@ -3550,11 +3014,11 @@ namespace NTT {
         u32 max_deg;
         const int log_len;
         const u64 len;
-        mont256::Params param;
+        mont256::Params param, *param_d;
         mont256::Element unit;
         bool debug;
-        u32_E *pq = nullptr; // Precalculated values for radix degrees up to `max_deg`
-        u32_E *roots;
+        u32_E *pq = nullptr, *pq_d; // Precalculated values for radix degrees up to `max_deg`
+        u32_E *roots, *roots_d;
 
         u32 get_deg (u32 deg_stage, u32 max_deg_stage) {
             u32 deg_per_round;
@@ -3598,6 +3062,9 @@ namespace NTT {
 
         self_sort_in_place_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug, SSIP_config config = SSIP_config()) 
         : param(param), log_len(log_len), len(1 << log_len), debug(debug), config(config) {
+            bool success = true;
+            cudaError_t first_err = cudaSuccess;
+
             u32 deg_stage1 = (log_len + 1) / 2;
             u32 deg_stage2 = log_len / 2;
 
@@ -3659,11 +3126,15 @@ namespace NTT {
             (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
                 roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
                 gen_roots_cub<WORDS> gen;
-                gen(roots, len / 2, unit, param);
+                CUDA_CHECK(gen(roots, len / 2, unit, param));
             } else {
                 roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
                 gen_roots_cub<WORDS> gen;
-                gen(roots, len, unit, param);
+                CUDA_CHECK(gen(roots, len, unit, param));
+            }
+            if (!success) {
+                std::cerr << "error occurred during gen_roots" << std::endl;
+                throw cudaGetErrorString(first_err);
             }
         }
 
@@ -3672,43 +3143,71 @@ namespace NTT {
             free(roots);
         }
 
-        void ntt(u32 * data) override {
-            cudaEvent_t start, end;
-            cudaEventCreate(&start);
-            cudaEventCreate(&end);
-         
-            u32_E* pq_d;
+        cudaError_t to_gpu(cudaStream_t stream = 0) override {
+            bool success = true;
+            cudaError_t first_err = cudaSuccess;
 
             if (pq != nullptr) {
-                cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS);
-                cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice);
+                CUDA_CHECK(cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS));
+                CUDA_CHECK(cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice));
             }
-
-            u32 * x;
-            cudaMalloc(&x, len * WORDS * sizeof(u32));
-            cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
-
-            mont256::Params* param_d;
             cudaMalloc(&param_d, sizeof(mont256::Params));
             cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
 
-            u32 * roots_d;
             if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
             (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
-                cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32));
-                cudaMemcpy(roots_d, roots, len / 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+                CUDA_CHECK(cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32)));
+                CUDA_CHECK(cudaMemcpy(roots_d, roots, len / 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
             } else {
-                cudaMalloc(&roots_d, len * WORDS * sizeof(u32));
-                cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice);
+                CUDA_CHECK(cudaMalloc(&roots_d, len * WORDS * sizeof(u32)));
+                CUDA_CHECK(cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
             }
+
+            if (!success) {
+                if (pq != nullptr) CUDA_CHECK(cudaFree(pq_d));
+                CUDA_CHECK(cudaFree(roots_d));
+                CUDA_CHECK(cudaFree(param_d));
+            } else {
+                this->on_gpu = true;
+            }
+            return first_err;
+        }
+
+        cudaError_t clean_gpu(cudaStream_t stream = 0) override {
+            if (!this->on_gpu) return cudaSuccess;
+            bool success = true;
+            cudaError_t first_err = cudaSuccess;
+
+            if (pq != nullptr) CUDA_CHECK(cudaFree(pq_d));
+            CUDA_CHECK(cudaFree(roots_d));
+            CUDA_CHECK(cudaFree(param_d));
+
+            this->on_gpu = false;
+            return first_err;
+        }
+
+        cudaError_t ntt(u32 * data) override {
+            bool success = true;
+            cudaError_t first_err = cudaSuccess;
+
+            cudaEvent_t start, end;
+            if (success) CUDA_CHECK(cudaEventCreate(&start));
+            if (success) CUDA_CHECK(cudaEventCreate(&end));
+
+            if (!this->on_gpu) if (success) CUDA_CHECK(to_gpu());
+
+            u32 * x;
+            if (success) CUDA_CHECK(cudaMalloc(&x, len * WORDS * sizeof(u32)));
+            if (success) CUDA_CHECK(cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
 
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                number_to_element <WORDS> <<< grid, block >>> (x, len, param_d);
-                cudaEventRecord(start);
+                if (success) number_to_element <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) CUDA_CHECK(cudaGetLastError());
+                if (success) CUDA_CHECK(cudaEventRecord(start));
             }
 
             int log_stride = log_len - 1;
@@ -3737,9 +3236,10 @@ namespace NTT {
                     u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     if (config.stage1_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp: {
@@ -3748,9 +3248,10 @@ namespace NTT {
                     u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     if (config.stage1_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp_no_twiddle: {
@@ -3759,17 +3260,19 @@ namespace NTT {
 
                         u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)) +  (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
-                        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                        if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) CUDA_CHECK(cudaGetLastError());
                     } else {
                         auto kernel = SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
-                        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                        if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) CUDA_CHECK(cudaGetLastError());
                     }
                     break;
                 }
@@ -3778,9 +3281,10 @@ namespace NTT {
 
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
                     
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp_no_twiddle_opt_smem: {
@@ -3788,9 +3292,10 @@ namespace NTT {
 
                     u32 shared_size = CONVERT_SADDR(sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 default: {
@@ -3828,9 +3333,10 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2 <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_naive_2_per_thread: {
@@ -3849,8 +3355,9 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_two_per_thread <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_warp: {
@@ -3869,9 +3376,10 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_warp <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_warp_2_per_thread: {
@@ -3890,8 +3398,9 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_two_per_thread_warp <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_warp_no_share: {
@@ -3909,9 +3418,10 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_warp_no_share <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_warp_2_per_thread_no_share: {
@@ -3929,8 +3439,9 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_two_per_thread_warp_no_share <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
-                    kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
+                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage2_warp_no_twiddle_no_share: {
@@ -3948,9 +3459,10 @@ namespace NTT {
 
                     auto kernel = SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group>;
 
-                    cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size);
+                    if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d);
+                    if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 default: {
@@ -3964,20 +3476,22 @@ namespace NTT {
             }
 
             if (debug) {
-                cudaEventRecord(end);
-                cudaEventSynchronize(end);
-                cudaEventElapsedTime(&milliseconds, start, end);
+                if (success) CUDA_CHECK(cudaEventRecord(end));
+                if (success) CUDA_CHECK(cudaEventSynchronize(end));
+                if (success) CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) CUDA_CHECK(cudaGetLastError());
             }
 
-            cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost);
+            if (success) CUDA_CHECK(cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
 
-            if (pq != nullptr) cudaFree(pq_d);
-            cudaFree(x);
-            cudaFree(roots_d);
+            CUDA_CHECK(cudaFree(x));
 
+            if (debug) CUDA_CHECK(clean_gpu());
+
+            return first_err;
         }
     };
 }
