@@ -5,10 +5,9 @@ edition = "2021"
 
 [dependencies]
 group = "0.13"
-halo2_proofs = { git = "https://github.com/privacy-scaling-explorations/halo2.git ", tag = "v0.3.0", features =  ["circuit-params", "derive_serde"] }
 
 [build-dependencies]
-bindgen = "0.70"
+bindgen = "0.69.4"
 
 [dev-dependencies]
 ff = "0.13"

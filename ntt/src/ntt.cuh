@@ -10,6 +10,7 @@
 #include <bit>
 #include <cuda/barrier>
 #include <iostream>
+#include <shared_mutex>
 
 #define CUDA_CHECK(call)                                                                                             \
 {                                                                                                                    \
@@ -29,6 +30,7 @@ namespace ntt {
 
     class best_ntt {
         public:
+        std::shared_mutex mtx; // lock for on_gpu data
         bool on_gpu = false;
         virtual cudaError_t ntt(u32 * data) = 0;
         virtual ~best_ntt() {

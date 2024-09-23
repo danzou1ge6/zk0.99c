@@ -3015,7 +3015,7 @@ namespace ntt {
         u32 max_deg;
         const int log_len;
         const u64 len;
-        mont256::Params param, *param_d;
+        mont256::Params *param, *param_d;
         mont256::Element unit;
         bool debug;
         u32_E *pq = nullptr, *pq_d; // Precalculated values for radix degrees up to `max_deg`
@@ -3042,7 +3042,7 @@ namespace ntt {
                 stage1_warp_no_twiddle,
                 stage1_warp_no_twiddle_no_smem,
                 stage1_warp_no_twiddle_opt_smem,
-            } stage1_mode = stage1_warp_no_twiddle_no_smem;
+            } stage1_mode = stage1_warp_no_twiddle;
             bool stage1_coalesced_roots = false, stage2_coalesced_roots = false;
             enum stage2_mode {
                 stage2_naive,
@@ -3062,7 +3062,7 @@ namespace ntt {
         float milliseconds = 0;
 
         self_sort_in_place_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug, SSIP_config config = SSIP_config()) 
-        : param(param), log_len(log_len), len(1 << log_len), debug(debug), config(config) {
+        : log_len(log_len), len(1 << log_len), debug(debug), config(config) {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3107,7 +3107,7 @@ namespace ntt {
 
                 // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
 
-                pq = (u32 *) malloc((1 << max_deg >> 1) * sizeof(u32) * WORDS);
+                CUDA_CHECK(cudaHostAlloc(&pq, (1 << max_deg >> 1) * sizeof(u32) * WORDS, cudaHostAllocDefault));
                 memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
                 env.one().store(pq);
                 auto twiddle = env.host_pow(unit, len >> max_deg);
@@ -3125,14 +3125,18 @@ namespace ntt {
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
             (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
-                roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
+                CUDA_CHECK(cudaHostAlloc(&roots, (u64)len / 2 * WORDS * sizeof(u32_E), cudaHostAllocDefault));
                 gen_roots_cub<WORDS> gen;
                 CUDA_CHECK(gen(roots, len / 2, unit, param));
             } else {
-                roots = (u32_E *) malloc(((u64)len) * WORDS * sizeof(u32_E));
+                CUDA_CHECK(cudaHostAlloc(&roots, (u64)len * WORDS * sizeof(u32_E), cudaHostAllocDefault));
                 gen_roots_cub<WORDS> gen;
                 CUDA_CHECK(gen(roots, len, unit, param));
             }
+
+            CUDA_CHECK(cudaHostAlloc(&this->param, sizeof(mont256::Params), cudaHostAllocDefault));
+            CUDA_CHECK(cudaMemcpy(this->param, &param, sizeof(mont256::Params), cudaMemcpyHostToHost));
+
             if (!success) {
                 std::cerr << "error occurred during gen_roots" << std::endl;
                 throw cudaGetErrorString(first_err);
@@ -3140,11 +3144,14 @@ namespace ntt {
         }
 
         ~self_sort_in_place_ntt() override {
-            if (pq != nullptr) free(pq);
-            free(roots);
+            if (pq != nullptr) cudaFreeHost(pq);
+            cudaFreeHost(roots);
+            cudaFreeHost(param);
+            if (on_gpu) clean_gpu();
         }
 
         cudaError_t to_gpu() override {
+            std::unique_lock<std::shared_mutex> wlock(this->mtx);
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3152,8 +3159,8 @@ namespace ntt {
                 CUDA_CHECK(cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS));
                 CUDA_CHECK(cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice));
             }
-            cudaMalloc(&param_d, sizeof(mont256::Params));
-            cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice);
+            CUDA_CHECK(cudaMalloc(&param_d, sizeof(mont256::Params)));
+            CUDA_CHECK(cudaMemcpy(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
 
             if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
@@ -3177,6 +3184,7 @@ namespace ntt {
         }
 
         cudaError_t clean_gpu() override {
+            std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
             cudaError_t first_err = cudaSuccess;
@@ -3197,7 +3205,14 @@ namespace ntt {
             if (success) CUDA_CHECK(cudaEventCreate(&start));
             if (success) CUDA_CHECK(cudaEventCreate(&end));
 
-            if (!this->on_gpu) if (success) CUDA_CHECK(to_gpu());
+            std::shared_lock<std::shared_mutex> rlock(this->mtx);
+            if (success) {
+                while(!this->on_gpu) {
+                    rlock.unlock();
+                    CUDA_CHECK(to_gpu());
+                    rlock.lock();
+                }
+            }
 
             u32 * x;
             if (success) CUDA_CHECK(cudaMalloc(&x, len * WORDS * sizeof(u32)));
@@ -3485,6 +3500,8 @@ namespace ntt {
                 if (success) element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
+            
+            rlock.unlock();
 
             if (success) CUDA_CHECK(cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
 
