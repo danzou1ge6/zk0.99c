@@ -877,7 +877,7 @@ namespace mont
     __host__ __device__ __forceinline__ Element invert() const &
     {
 #ifdef __CUDA_ARCH__
-      return this->pow(Params::m_sub2);
+      return this->pow(Params::m_sub2());
 #else
       return this->pow(HostParams::m_sub2);
 #endif
