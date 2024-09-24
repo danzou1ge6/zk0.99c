@@ -16,6 +16,7 @@ target("mont.cuh")
     set_targetdir("mont/src")
 
 target("test-mont")
+    set_languages(("c++17"))
     if is_mode("debug") then
         set_symbols("debug")
     end
@@ -23,7 +24,10 @@ target("test-mont")
     add_packages("doctest")
 
 target("bench-mont")
+    set_languages(("c++17"))
+    add_cugencodes("native")
     add_options("-lineinfo")
+    add_options("--expt-relaxed-constexpr")
     add_files("mont/tests/bench.cu")
 
 target("bench-mont0")
@@ -89,7 +93,9 @@ target("cuda_ntt")
 
 task("sync-epcc")
     on_run(function ()
-        os.runv("rsync -av . epcc-ada6000:~/zksnark --exclude-from .gitignore", {
+        import ("core.base.option")
+
+        os.runv("rsync -av . ".. option.get('target') ..":~/zksnark --exclude-from .gitignore", {
             stdout = 1
         ,   stderr = 2
         })
@@ -97,4 +103,8 @@ task("sync-epcc")
     set_menu {
         usage = "xmake sync-epcc"
     ,   description = "Synchronize the source code to EPCC node"
+    ,   options =
+        {
+            {'t', 'target', 'kv', nil, 'Name of target node in SSH config'}
+        }
     }
