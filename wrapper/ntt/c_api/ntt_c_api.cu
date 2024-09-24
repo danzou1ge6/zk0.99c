@@ -1,14 +1,15 @@
-#include "../../../ntt/src/self_sort_in_place_ntt.cuh"
 #include "./ntt_c_api.h"
-#include "../../../ntt/src/scheduler.cuh"
+#include "../../../ntt/src/runtime.cuh"
 #include <cuda_runtime.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+runtime::ntt_runtime<runtime::fifo> temp_runtime(2);
+
 bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD field) {
-    scheduler::ntt_id id;
+    runtime::ntt_id id;
     id.field = field;
     id.log_len = log_n;
 
@@ -24,10 +25,14 @@ bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n,
         return false;
     }
     
-    auto ntt_kernel = scheduler::get_ntt_kernel(id);
-    CUDA_CHECK(ntt_kernel->ntt(data));
+    if (first_err == cudaSuccess) try {
+        auto ntt_kernel = temp_runtime.get_ntt_kernel(id);    
+        CUDA_CHECK(ntt_kernel->ntt(data));
+    } catch(const char *msg) {
+        std::cerr << msg << std::endl;
+        success = false;
+    }
     CUDA_CHECK(cudaHostUnregister((void *)data));
-    CUDA_CHECK(ntt_kernel->clean_gpu());
 
     return success;
 }  

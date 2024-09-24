@@ -1,6 +1,4 @@
-#include <iostream>
 #include <random>
-#include <cassert>
 #include <ctime>
 #include "../src/naive_ntt.cuh"
 #include "../src/bellperson_ntt.cuh"
@@ -84,7 +82,7 @@ int main() {
     std::random_device rd;
     std::mt19937 gen(rd());
     for (long long i = 0; i < length; i++) {
-        data[i] = i % P;std::abs((long long)gen()) % P;
+        data[i] = i % P;
         data_copy[i] = data[i];
     }
 

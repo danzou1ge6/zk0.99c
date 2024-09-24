@@ -2,12 +2,10 @@
 
 #include "../../mont/src/mont.cuh"
 #include <cuda_runtime.h>
-#include <cassert>
 #include <cub/cub.cuh>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/constant_iterator.h>
-#include <bit>
 #include <cuda/barrier>
 #include <iostream>
 #include <shared_mutex>
