@@ -1,6 +1,9 @@
 #pragma once
 
+#include <bit>
 #include "ntt.cuh"
+#include <cassert>
+
 namespace ntt {
     template <u32 WORDS, u32 io_group>
     __global__ void SSIP_NTT_stage1 (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
