@@ -54,15 +54,21 @@ namespace scheduler {
         }
     };
     std::map<ntt_id, std::shared_ptr<ntt::best_ntt> > ntt_kernels;
+    std::shared_mutex mtx_ntt_kernels; // lock for map
 
     std::shared_ptr<ntt::best_ntt> get_ntt_kernel(ntt_id id) {
-        static auto last_id = ntt_id();
-        if (last_id != id && last_id.omega.size() != 0) {
-            ntt_kernels[last_id]->clean_gpu();
-        }
-        last_id = id;
+        // static auto last_id = ntt_id();
+        // if (last_id != id && last_id.omega.size() != 0) {
+        //     ntt_kernels[last_id]->clean_gpu();
+        // }
+        // last_id = id;
 
-        if (ntt_kernels.find(id) == ntt_kernels.end()) {
+        std::shared_lock<std::shared_mutex> rlock(mtx_ntt_kernels);
+        auto iter = ntt_kernels.find(id);
+
+        if (iter == ntt_kernels.end()) {
+            rlock.unlock();
+            std::unique_lock<std::shared_mutex> wlock(mtx_ntt_kernels);
             std::shared_ptr<ntt::best_ntt> ntt_kernel;
             if (id.field == FIELD::PASTA_CURVES_FIELDS_FP) {
                 uint omega[8];
@@ -73,9 +79,10 @@ namespace scheduler {
                 for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
                 ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false);
             }
-            ntt_kernels[id] = ntt_kernel;
+            ntt_kernels.insert(std::make_pair(id, ntt_kernel));
+            return ntt_kernel;
         }
         
-        return ntt_kernels[id];
+        return iter->second;
     }
 }

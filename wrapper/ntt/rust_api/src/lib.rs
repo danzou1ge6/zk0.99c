@@ -1,9 +1,25 @@
 use std::any::type_name;
-use group::ff::Field;
-use halo2_proofs::arithmetic::FftGroup;
-
+use group::{
+    ff::Field,
+    GroupOpsOwned, ScalarMulOwned,
+};
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+/// Copyed from halo2_proof
+/// This represents an element of a group with basic operations that can be
+/// performed. This allows an FFT implementation (for example) to operate
+/// generically over either a field or elliptic curve group.
+pub trait FftGroup<Scalar: Field>:
+    Copy + Send + Sync + 'static + GroupOpsOwned + ScalarMulOwned<Scalar>
+{
+}
+
+impl<T, Scalar> FftGroup<Scalar> for T
+where
+    Scalar: Field,
+    T: Copy + Send + Sync + 'static + GroupOpsOwned + ScalarMulOwned<Scalar>,
+{
+}
 
 pub fn gpu_ntt<Scalar: Field, G: FftGroup<Scalar>>(a: &mut [G], omega: Scalar, log_n: u32) -> Result<(), String> {
     match type_name::<G>() {

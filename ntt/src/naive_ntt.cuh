@@ -30,8 +30,7 @@ namespace ntt {
 
     template<u32 WORDS>
     class naive_ntt : public best_ntt {
-        const mont256::Params param;
-        mont256::Params *param_d;
+        mont256::Params *param_d, *param;
         mont256::Element unit;
         bool debug;
         u32_E *roots, *roots_d;
@@ -39,7 +38,7 @@ namespace ntt {
         const u64 len;
 
         void gen_roots(u32_E * roots, u32 len) {
-            auto env = mont256::Env::host_new(param);
+            auto env = mont256::Env::host_new(*param);
             env.one().store(roots);
             auto last_element = mont256::Element::load(roots);
             for (u64 i = WORDS; i < ((u64)len) * WORDS; i+= WORDS) {
@@ -51,7 +50,7 @@ namespace ntt {
         public:
         float milliseconds = 0;
 
-        naive_ntt(const mont256::Params &param, const u32_N* omega, u32 log_len, bool debug) : param(param), log_len(log_len), len(1 << log_len), debug(debug) {
+        naive_ntt(const mont256::Params &param, const u32_N* omega, u32 log_len, bool debug) : log_len(log_len), len(1 << log_len), debug(debug) {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -70,10 +69,13 @@ namespace ntt {
                 unit = mont256::Element::load(omega);
             }
 
-            roots = (u32_E *) malloc(((u64)len / 2) * WORDS * sizeof(u32_E));
+            CUDA_CHECK(cudaHostAlloc(&roots, ((u64)len / 2) * WORDS * sizeof(u32_E), cudaHostAllocDefault));
+            CUDA_CHECK(cudaHostAlloc(&this->param, sizeof(mont256::Params), cudaHostAllocDefault));
+            CUDA_CHECK(cudaMemcpy(this->param, &param, sizeof(mont256::Params), cudaMemcpyHostToHost));
+
             // gen_roots(roots, len);
             gen_roots_cub<WORDS> gen;
-            CUDA_CHECK(gen(roots, len / 2, unit, param));
+            CUDA_CHECK(gen(roots, len / 2, unit, *this->param));
             if (!success) {
                 std::cerr << "error occurred during gen_roots" << std::endl;
                 throw cudaGetErrorString(first_err);
@@ -81,7 +83,8 @@ namespace ntt {
         }
 
         ~naive_ntt() override {
-            free(roots);
+            cudaFreeHost(roots);
+            cudaFreeHost(param);
             if (this->on_gpu) {
                 cudaFree(roots_d);
                 cudaFree(param_d);
@@ -89,6 +92,7 @@ namespace ntt {
         }
 
         cudaError_t to_gpu() override {
+            std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (this->on_gpu) return cudaSuccess;
 
             bool success = true;
@@ -97,7 +101,7 @@ namespace ntt {
             CUDA_CHECK(cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32)));
             CUDA_CHECK(cudaMalloc(&param_d, sizeof(mont256::Params)));
             CUDA_CHECK(cudaMemcpy(roots_d, roots, ((u64)len / 2) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice));
-            CUDA_CHECK(cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMemcpy(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
 
             if (!success) {
                 CUDA_CHECK(cudaFree(roots_d));
@@ -109,6 +113,7 @@ namespace ntt {
         }
 
         cudaError_t clean_gpu() override {
+            std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
             cudaError_t first_err = cudaSuccess;
@@ -126,8 +131,14 @@ namespace ntt {
             if (success) CUDA_CHECK(cudaEventCreate(&start));
             if (success) CUDA_CHECK(cudaEventCreate(&end));
 
-            
-            if (!this->on_gpu) if (success) CUDA_CHECK(to_gpu());
+            std::shared_lock<std::shared_mutex> rlock(this->mtx);
+            if (success) {
+                while(!this->on_gpu) {
+                    rlock.unlock();
+                    CUDA_CHECK(to_gpu());
+                    rlock.lock();
+                }
+            }
 
             u32_E *data_d;
             if (success) CUDA_CHECK(cudaMalloc(&data_d, len * WORDS * sizeof(u32)));
@@ -163,6 +174,8 @@ namespace ntt {
                 if (success) element_to_number <WORDS> <<< grid, block >>> (data_d, len, param_d);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
+
+            rlock.unlock();
 
             if (success) CUDA_CHECK(cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
 
