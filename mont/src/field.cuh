@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <tuple>
+#include <random>
 
 #define BIG_INTEGER_CHUNKS8(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
 #define BIG_INTEGER_CHUNKS16(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
@@ -18,6 +19,7 @@ namespace mont
   using u64 = u_int64_t;
   using usize = size_t;
 
+  // Arithmatics on host, in raw pointer form
   namespace host_arith
   {
     __host__ u32 addc(u32 a, u32 b, u32 &carry)
@@ -73,7 +75,7 @@ namespace mont
     __host__ void add_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
     {
       add<N>(r, a, b);
-      sub_modulo<N>(r, r, m);
+      sub_modulo<N>(r, r, m, m);
     }
 
     template <usize N>
@@ -126,8 +128,29 @@ namespace mont
       memcpy(r, product + N, N * sizeof(u32));
       sub_modulo<N>(r, r, m, m);
     }
+
+    template <usize N>
+    __host__ void random(u32 *r, const u32 *m)
+    {
+      if constexpr (N == 0)
+        return;
+      else
+      {
+
+        u32 x = (u32)std::rand() % m[N - 1];
+        r[N - 1] = x;
+        if (x == m[0])
+        {
+          return random<N - 1>(r, m);
+        }
+        for (int i = (int)N - 2; i >= 0; i--)
+          r[i] = std::rand() % INT32_MAX;
+      }
+    }
+
   }
 
+  // Arithmatics on device, in raw pointer form
   namespace device_arith
   {
     // Multiply even limbs of a big number `a` with u32 `b`, writing result to `r`.
@@ -479,6 +502,7 @@ namespace mont
     }
   }
 
+  // A big integer
   template <usize LIMBS>
   struct
       __align__(16)
@@ -486,34 +510,19 @@ namespace mont
   {
     u32 limbs[LIMBS];
 
-    // Host-Device methods
-
     __device__ __host__
     Number<LIMBS>() {}
 
-    static __device__ __host__ __forceinline__
-        Number<LIMBS>
-        two()
+    // Constructor: `Number x = {0, 1, 2, 3, 4, 5, 6, 7}` in little endian
+    constexpr Number<LIMBS>(const std::initializer_list<uint32_t> &values) : limbs{}
     {
-      Number<LIMBS> r;
-      for (usize i = 1; i < LIMBS; i++)
-        r.limbs[i] = 0;
-      r.limbs[0] = 2;
-      return r;
-    }
-
-    // Contract: `limbs.size() <= LIMBS`
-    __device__ __host__
-    Number<LIMBS>(std::initializer_list<u32> limbs)
-    {
-      auto iter = limbs.begin();
-      for (int i = limbs.size() - 1; i >= 0; i--)
+      size_t i = 0;
+      for (auto value : values)
       {
-        this->limbs[i] = *iter;
-        iter++;
+        if (i >= LIMBS)
+          break;
+        limbs[i++] = value;
       }
-      for (int i = limbs.size(); i < LIMBS; i++)
-        this->limbs[i] = 0;
     }
 
     static __device__ __host__ __forceinline__
@@ -543,6 +552,7 @@ namespace mont
       return r;
     }
 
+    // Shift logical right by `k` bits
     __host__ __device__ __forceinline__
         Number<LIMBS>
         slr(u32 k) const &
@@ -552,6 +562,8 @@ namespace mont
       return r;
     }
 
+    // Return the [`lo`, `lo + n_bits`) bits in big number.
+    // `n_bits` must be smaller than 32.
     __host__ __device__ __forceinline__
         u32
         bit_slice(u32 lo, u32 n_bits)
@@ -560,6 +572,7 @@ namespace mont
       return t.limbs & ~((u32)0 - (1 << n_bits));
     }
 
+    // Word-by-word equality
     __host__ __device__ __forceinline__ bool
     operator==(const Number<LIMBS> &rhs) const &
     {
@@ -590,109 +603,96 @@ namespace mont
       return r;
     }
 
-    // Device methods
+    // Return the [`i`, `i + N`) words in big number.
+    template <usize N>
+    __host__ __device__ __forceinline__
+        Number<N>
+        limbs_slice(u32 i)
+    {
+      Number<N> r;
+      for (usize j = i; j < N; j++)
+        r.limbs[j - i] = limbs[j];
+      return r;
+    }
 
-    __device__ __forceinline__
+    // Big number multiplication.
+    // Result takes twice the number of bits of operands.
+    __host__ __device__ __forceinline__
         Number<LIMBS * 2>
         operator*(const Number &rhs) const &
     {
       Number<LIMBS * 2> r;
+#ifdef __CUDA_ARCH__
       device_arith::multiply_naive<LIMBS>(r.limbs, limbs, rhs.limbs);
+#else
+      host_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
+    // Big number addition
+    __host__ __device__ __forceinline__
         Number<LIMBS>
         operator+(const Number &rhs) const &
     {
       Number<LIMBS> r;
+#ifdef __CUDA_ARCH__
       device_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
+#else
+      host_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
+    // Big number subtraction
+    __host__ __device__ __forceinline__
         Number<LIMBS>
         operator-(const Number &rhs) const &
     {
-      Number<LIMBS> r;
-      device_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
+      u32 useless;
+      auto r = sub_borrowed(rhs, useless);
       return r;
     }
 
-    __device__ __forceinline__
+    // Big number subtraction.
+    // Carry of subtraction is written to `borrow_ret`: `UINT32_MAX` if borrow occurred, otherwise 0.
+    __host__ __device__ __forceinline__
         Number<LIMBS>
         sub_borrowed(const Number &rhs, u32 &borrow_ret) const &
     {
       Number<LIMBS> r;
+#ifdef __CUDA_ARCH__
       borrow_ret = device_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
+#else
+      borrow_ret = host_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
+    // Big number square
+    __host__ __device__ __forceinline__
         Number<LIMBS * 2>
         square() const &
     {
       return *this * *this;
     }
-
-    // Host methods
-
-    __host__
-        Number<LIMBS>
-        host_add(const Number<LIMBS> &rhs) const &
-    {
-      Number<LIMBS> r;
-      host_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
-      return r;
-    }
-
-    __host__
-        Number<LIMBS>
-        host_sub_borrowed(const Number<LIMBS> &rhs, u32 &borrow_ret) const &
-    {
-      borrow_ret = 0;
-      Number<LIMBS> r;
-      borrow_ret = host_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
-      return r;
-    }
-
-    __host__
-        Number<LIMBS>
-        host_sub(const Number<LIMBS> &rhs) const &
-    {
-      u32 useless;
-      return host_sub_borrowed(rhs, useless);
-    }
-
-    __host__
-        Number<LIMBS * 2>
-        host_mul(const Number<LIMBS> &rhs) const &
-    {
-      Number<LIMBS * 2> r;
-      host_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
-      return r;
-    }
-
-    __host__
-        Number<LIMBS * 2>
-        host_square() const &
-    {
-      return host_mul(*this);
-    }
   };
 
-  template <usize LIMBS>
+  // An element on field defined by `Params` (and `HostParams`)
+  template <class Params, class HostParams>
   struct Element
   {
+    static const usize LIMBS = Params::LIMBS;
+
     Number<LIMBS> n;
 
     __host__ __device__ Element() {}
 
     static __host__ __device__ __forceinline__
-        Element<LIMBS>
+        Element
         load(const u32 *p)
     {
-      Element<LIMBS> r;
+      Element r;
       r.n = Number<LIMBS>::load(p);
       return r;
     }
@@ -702,282 +702,195 @@ namespace mont
       n.store(p);
     }
 
+    // Addition identity on field
     static __host__ __device__
-        Element<LIMBS>
+        Element
         zero()
     {
-      Element<LIMBS> r;
+      Element r;
       r.n = Number<LIMBS>::zero();
       return r;
     }
 
-    __host__ __device__ __forceinline__ bool operator==(const Element<LIMBS> &rhs) const &
+    // Word-by-word equality
+    __host__ __device__ __forceinline__ bool operator==(const Element &rhs) const &
     {
       return n == rhs.n;
     }
 
-    __host__ __device__ __forceinline__ bool operator!=(const Element<LIMBS> &rhs) const &
+    __host__ __device__ __forceinline__ bool operator!=(const Element &rhs) const &
     {
       return n != rhs.n;
     }
-  };
 
-  template <usize LIMBS>
-  struct Params
-  {
-    u32 m[LIMBS], r_mod[LIMBS], r2_mod[LIMBS];
-    u32 m_prime;
-  };
-
-  template <usize LIMBS>
-  struct Env
-  {
-    Number<LIMBS> m;
-    // m' = -m^(-1) mod b where b = 2^32
-    u32 m_prime;
-    // r_mod = R mod m,
-    // r2_mod = R^2 mod m
-    Number<LIMBS> r_mod, r2_mod;
-    // m_sub2 = m - 2, for invertion field elements
-    Number<LIMBS> m_sub2;
-
-    // Device-Host methods
-
-    __device__ __host__ Env<LIMBS>() {}
-
-    __device__ __host__ __forceinline__
-        Element<LIMBS>
-        one() const &
+    // Multiplication identity on field
+    static __device__ __host__ __forceinline__
+        Element
+        one()
     {
-      Element<LIMBS> elem;
-      elem.n = r_mod;
+      Element elem;
+#ifdef __CUDA_ARCH__
+      elem.n = Params::r_mod();
+#else
+      elem.n = HostParams::r_mod;
+#endif
       return elem;
     }
 
-    // Device methods
-
-    __device__ __forceinline__ Env<LIMBS>(Params<LIMBS> p)
+    // Field multiplication
+    __host__ __device__ __forceinline__
+        Element
+        operator*(const Element &rhs) const &
     {
-      m = Number<LIMBS>::load(p.m);
-      r_mod = Number<LIMBS>::load(p.r_mod);
-      r2_mod = Number<LIMBS>::load(p.r2_mod);
-      m_prime = p.m_prime;
-      auto two = Number<LIMBS>::two();
-      m_sub2 = m - two;
-    }
-
-    __device__ __forceinline__
-        Element<LIMBS>
-        mul(const Element<LIMBS> &a, const Element<LIMBS> &b) const &
-    {
-      Element<LIMBS> r;
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs, m_prime);
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+#else
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs, HostParams::m_prime);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        square(const Element<LIMBS> &a) const &
+    __host__ __device__ __forceinline__
+        Element
+        square() const &
     {
-      return mul(a, a);
+      return *this * *this;
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        add(const Element<LIMBS> &a, const Element<LIMBS> &b) const &
+    // Field addition
+    __host__ __device__ __forceinline__
+        Element
+        operator+(const Element &rhs) const &
     {
-      Element<LIMBS> r;
-      device_arith::add_modulo<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs);
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+#else
+      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        sub(const Element<LIMBS> &a, const Element<LIMBS> &b) const &
+    // Field subtraction
+    __host__ __device__ __forceinline__
+        Element
+        operator-(const Element &rhs) const &
     {
-      Element<LIMBS> r;
-      device_arith::sub_modulo<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs);
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        neg(const Element<LIMBS> &a) const &
+    __host__ __device__ __forceinline__
+        Element
+        neg() const &
     {
-      if (a.n.is_zero())
-        return Element<LIMBS>::zero();
-      Element<LIMBS> r;
-      device_arith::sub<LIMBS>(r.n.limbs, m.limbs, a.n.limbs);
+      if (n.is_zero())
+        return Element::zero();
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
+#else
+      host_arith::sub<LIMBS>(r.n.limbs, HostParams::m.limbs, n.limbs);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        from_number(const Number<LIMBS> &n) const &
+    // Convert a big number to its representation in field.
+    static __host__ __device__ __forceinline__
+        Element
+        from_number(const Number<LIMBS> &n)
     {
-      Element<LIMBS> r;
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, r2_mod.limbs, m.limbs, m_prime);
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
+#else
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, HostParams::r2_mod.limbs, HostParams::m.limbs, HostParams::m_prime);
+#endif
       return r;
     }
 
-    __device__ __forceinline__
+    // Reverse of `from_number`
+    __host__ __device__ __forceinline__
         Number<LIMBS>
-        to_number(const Element<LIMBS> &e) const &
+        to_number() const &
     {
       Number<2 * LIMBS> n;
-      memcpy(n.limbs, e.n.limbs, LIMBS * sizeof(u32));
-      memset(n.limbs + LIMBS * sizeof(u32), 0, LIMBS * sizeof(u32));
+      memcpy(n.limbs, this->n.limbs, LIMBS * sizeof(u32));
+      memset(n.limbs + LIMBS, 0, LIMBS * sizeof(u32));
+
       Number<LIMBS> r;
-      device_arith::montgomery_reduction<LIMBS>(n, m.limbs, m_prime);
-      memcpy(r.limbs, n.limbs, LIMBS * sizeof(u32));
+#ifdef __CUDA_ARCH__
+      device_arith::montgomery_reduction<LIMBS>(n.limbs, Params::m().limbs, Params::m_prime);
+#else
+      host_arith::montgomery_reduction<LIMBS>(n.limbs, HostParams::m.limbs, HostParams::m_prime);
+#endif
+
+      memcpy(r.limbs, n.limbs + LIMBS, LIMBS * sizeof(u32));
+      return r;
     }
 
-    __device__ __forceinline__ void
-    pow_iter(const Element<LIMBS> &a, bool &found_one, Element<LIMBS> &res, u32 p, u32 deg = 31) const &
+    // Helper function for `pow`
+    static __host__ __device__ __forceinline__ void
+    pow_iter(const Element &a, bool &found_one, Element &res, u32 p, u32 deg = 31)
     {
 #pragma unroll
       for (int i = deg; i >= 0; i--)
       {
         if (found_one)
-          res = square(res);
+          res = res.square();
         if ((p >> i) & 1)
         {
           found_one = true;
-          res = mul(res, a);
+          res = res * a;
         }
       }
     }
 
-    __device__ __forceinline__
-        Element<LIMBS>
-        pow(const Element<LIMBS> &a, const Number<LIMBS> &p) const &
+    // Field power
+    __host__ __device__ __forceinline__
+        Element
+        pow(const Number<LIMBS> &p) const &
     {
       auto res = one();
       bool found_one = false;
 #pragma unroll
       for (int i = LIMBS - 1; i >= 0; i--)
-        pow_iter(a, found_one, res, p.limbs[i]);
+        pow_iter(*this, found_one, res, p.limbs[i]);
       return res;
     }
 
-    __device__ __forceinline__ Element<LIMBS> pow(const Element<LIMBS> &a, u32 p, u32 deg = 31) const &
+    __host__ __device__ __forceinline__ Element pow(u32 p, u32 deg = 31) const &
     {
       auto res = one();
       bool found_one = false;
-      pow_iter(a, found_one, res, p, deg);
+      pow_iter(*this, found_one, res, p, deg);
       return res;
     }
 
-    __device__ __forceinline__ Element<LIMBS> invert(const Element<LIMBS> &a) const &
+    // Field inversion
+    __host__ __device__ __forceinline__ Element invert() const &
     {
-      return pow(a, m_sub2);
+#ifdef __CUDA_ARCH__
+      return this->pow(Params::m_sub2);
+#else
+      return this->pow(HostParams::m_sub2);
+#endif
     }
 
-    // Host methods
-
+    // Generate a random field element
     static __host__
-        Env<LIMBS>
-        host_new(Params<LIMBS> p)
+        Element
+        host_random()
     {
-      Env<LIMBS> env;
-      env.m = Number<LIMBS>::load(p.m);
-      env.r_mod = Number<LIMBS>::load(p.r_mod);
-      env.r2_mod = Number<LIMBS>::load(p.r2_mod);
-      env.m_prime = p.m_prime;
-      auto two = Number<LIMBS>::two();
-      env.m_sub2 = env.m.host_sub(two);
-      return env;
-    }
-
-    __host__ Element<LIMBS> host_sub(const Element<LIMBS> &a, const Element<LIMBS> &b)
-    {
-      Element<LIMBS> r;
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs);
+      Element r;
+      host_arith::random<LIMBS>(r.n.limbs, HostParams::m.limbs);
       return r;
-    }
-    __host__ Element<LIMBS> host_add(const Element<LIMBS> &a, const Element<LIMBS> &b)
-    {
-      Element<LIMBS> r;
-      host_arith::add_modulo<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs);
-      return r;
-    }
-
-    __host__ Element<LIMBS> host_neg(const Element<LIMBS> &a) const &
-    {
-      if (a.n.is_zero())
-        return Number<LIMBS>::zero();
-      Element<LIMBS> r;
-      r.n = m.host_sub(a.n);
-      return r;
-    }
-
-    __host__
-        Element<LIMBS>
-        host_mul(const Element<LIMBS> &a, const Element<LIMBS> &b) const &
-    {
-      Element<LIMBS> r;
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, a.n.limbs, b.n.limbs, m.limbs, m_prime);
-      return r;
-    }
-
-    __host__
-        Element<LIMBS>
-        host_from_number(const Number<LIMBS> &n) const &
-    {
-      Element<LIMBS> r;
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, r2_mod.limbs, m.limbs, m_prime);
-      return r;
-    }
-
-    __host__
-        Number<LIMBS>
-        host_to_number(const Element<LIMBS> &e) const &
-    {
-      Number<2 * LIMBS> n;
-      memcpy(n.limbs, e.n.limbs, LIMBS * sizeof(u32));
-      memset(n.limbs + LIMBS * sizeof(u32), 0, LIMBS * sizeof(u32));
-      Number<LIMBS> r;
-      host_arith::montgomery_reduction(n, m.limbs, m_prime);
-      memcpy(r.limbs, n.limbs, LIMBS * sizeof(u32));
-    }
-
-    __host__
-        Element<LIMBS>
-        host_square(const Element<LIMBS> &a) const &
-    {
-      return host_mul(a, a);
-    }
-
-    __host__ void host_pow_iter(const Element<LIMBS> &a, bool &found_one, Element<LIMBS> &res, u32 p, u32 deg = 31) const &
-    {
-      for (int i = 31; i >= 0; i--)
-      {
-        if (found_one)
-          res = host_square(res);
-        if ((p >> i) & 1)
-        {
-          found_one = true;
-          res = host_mul(res, a);
-        }
-      }
-    }
-
-    __host__ Element<LIMBS> host_pow(const Element<LIMBS> &a, const Number<LIMBS> &power) const &
-    {
-      auto res = one();
-      bool found_one = false;
-#pragma unroll
-      for (int i = LIMBS - 1; i >= 0; i--)
-        host_pow_iter(a, found_one, res, power.limbs[i]);
-      return res;
-    }
-
-    __host__ Element<LIMBS> host_pow(const Element<LIMBS> &a, const u32 &power)
-    {
-      auto res = one();
-      bool found_one = false;
-      host_pow_iter(found_one, res, power);
-      return res;
     }
   };
 
@@ -1003,6 +916,14 @@ namespace mont
     return os;
   }
 
+  template <class Params, class HostParams>
+  std::ostream &
+  operator<<(std::ostream &os, const Element<Params, HostParams> &e)
+  {
+    auto n = e.to_number();
+    os << n;
+    return os;
+  }
 }
 
 #endif

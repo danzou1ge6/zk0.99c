@@ -35,7 +35,7 @@ def one_sample(bits: int, m: int) -> str:
     sub_ab = a - b if a >= b else a + 2 ** bits - b
     sum_ab = a + b
     sum_ab_mont = (a + b) % m
-    sub_ab_mont = sub_ab % m
+    sub_ab_mont = a - b if a >= b else a + m - b
     product = a * b
     a_square = a * a
     a_square_mont = (a * a * r) % m
@@ -57,13 +57,14 @@ def one_sample(bits: int, m: int) -> str:
     s += f"const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS8({chunks(sub_ab_mont, n_words=n_words)});\n"
     s += f"const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS16({chunks(product, n_words=n_words * 2)});\n"
     s += f"const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS8({chunks(product_mont, n_words=n_words)});\n"
-    s += f"const u32 a_square[WORDS] = BIG_INTEGER_CHUNKS16({chunks(a_square, n_words=n_words * 2)});\n"
+    s += f"const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS16({chunks(a_square, n_words=n_words * 2)});\n"
     s += f"const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS8({chunks(a_square_mont, n_words=n_words)});\n"
     s += f"const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8({chunks(pow_mont, n_words=n_words)});\n"
     s += f"const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8({chunks(a_inv_mont, n_words=n_words)});\n"
+    s += f"const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8({chunks(a >> 125, n_words=8)});\n"
     return s
 
 if __name__ == "__main__":
-    p = 8749054268878081845992735117657085490803352298049958388812839746200388362933
+    p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
     print(one_sample(256, p))
 
