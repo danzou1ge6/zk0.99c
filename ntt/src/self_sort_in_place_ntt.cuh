@@ -3,6 +3,7 @@
 #include <bit>
 #include "ntt.cuh"
 #include <cassert>
+#include <cstdio>
 
 namespace ntt {
     template <u32 WORDS, u32 io_group>
@@ -2038,8 +2039,8 @@ namespace ntt {
         }
     }    
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_warp_no_share_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots) {        
+    template <u32 WORDS, u32 io_group, bool inverse, bool process>
+    __global__ void SSIP_NTT_stage2_warp_no_share_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * inv_n, const u32 * zeta) {
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -2207,6 +2208,82 @@ namespace ntt {
                 auto w = mont256::Element::load(roots + (di << i << pqshift) * WORDS);
                 b = env.mul(b, w);
                 d = env.mul(d, w);
+            }
+        }
+
+        if (inverse) {
+            auto inv = mont256::Element::load(inv_n);
+            a = env.mul(a, inv);
+            b = env.mul(b, inv);
+            c = env.mul(c, inv);
+            d = env.mul(d, inv);
+            if (process) {
+                u32 p;
+                u32 second_half_l, gap;
+                u32 lid_l;
+                u32 group_offset, group_id;
+                u64 gpos;
+                mont256::Element z;
+
+                p = __brev((lid << 1)) >> (32 - (deg << 1));
+                second_half_l = (p >= lsize * 2);
+
+                lid_l = (p - second_half_l * lsize * 2);
+                gap = lid_l & 1;
+                lid_l = lid_l >> 1;
+                
+
+                group_offset = (lid_l >> (deg - 1)) << (log_len - log_stride - 1);
+                group_id = lid_l & (subblock_sz - 1);
+                gpos = group_offset + (group_id << (log_end_stride + 1));
+                
+                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
+                a = env.mul(a, z);
+
+                p = __brev((lid << 1) + 1) >> (32 - (deg << 1));
+                second_half_l = (p >= lsize * 2);
+
+                lid_l = (p - second_half_l * lsize * 2);
+                gap = lid_l & 1;
+                lid_l = lid_l >> 1;
+                
+
+                group_offset = (lid_l >> (deg - 1)) << (log_len - log_stride - 1);
+                group_id = lid_l & (subblock_sz - 1);
+                gpos = group_offset + (group_id << (log_end_stride + 1));
+                
+                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
+                b = env.mul(b, z);
+
+                p = __brev((lid << 1) + lsize * 2) >> (32 - (deg << 1));
+                second_half_l = (p >= lsize * 2);
+
+                lid_l = (p - second_half_l * lsize * 2);
+                gap = lid_l & 1;
+                lid_l = lid_l >> 1;
+                
+
+                group_offset = (lid_l >> (deg - 1)) << (log_len - log_stride - 1);
+                group_id = lid_l & (subblock_sz - 1);
+                gpos = group_offset + (group_id << (log_end_stride + 1));
+                
+                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
+                c = env.mul(c, z);
+
+                p = __brev((lid << 1) + lsize * 2 + 1) >> (32 - (deg << 1));
+                second_half_l = (p >= lsize * 2);
+
+                lid_l = (p - second_half_l * lsize * 2);
+                gap = lid_l & 1;
+                lid_l = lid_l >> 1;
+                
+
+                group_offset = (lid_l >> (deg - 1)) << (log_len - log_stride - 1);
+                group_id = lid_l & (subblock_sz - 1);
+                gpos = group_offset + (group_id << (log_end_stride + 1));
+                
+                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
+                d = env.mul(d, z);
             }
         }
         
@@ -2391,8 +2468,8 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    template <u32 WORDS, u32 io_group, bool process>
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * zeta) {
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -2459,17 +2536,30 @@ namespace ntt {
             u32 lgp = deg - rnd - sub_deg;
             u32 end_stride_warp = 1 << lgp;
 
-            u32 segment_start = (warp_id >> lgp) << (lgp + sub_deg);
+            u32 segment_start_warp = (warp_id >> lgp) << (lgp + sub_deg);
             u32 segment_id_warp = warp_id & (end_stride_warp - 1);
             
             u32 laneid = lid & (warp_sz - 1);
 
             u32 bit = subblock_sz >> rnd;
-            u32 i0 = segment_start + segment_id_warp + laneid * end_stride_warp;
+            u32 i0 = segment_start_warp + segment_id_warp + laneid * end_stride_warp;
             u32 i1 = i0 + bit;
 
             auto a = mont256::Element::load(u + i0, shared_read_stride);
             auto b = mont256::Element::load(u + i1, shared_read_stride);
+
+            if (process) if(rnd == 0) {
+                auto ida = ((segment_start + segment_id) + i0 * end_stride) % 3;
+                auto idb = (ida + (1 << (log_len - 1))) % 3;
+                if (ida != 0) {
+                    auto z = mont256::Element::load(zeta + (ida - 1) * WORDS);
+                    a = env.mul(a, z);
+                }
+                if (idb != 0) {
+                    auto z = mont256::Element::load(zeta + (idb - 1) * WORDS);
+                    b = env.mul(b, z);
+                }
+            }
 
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
@@ -2500,7 +2590,7 @@ namespace ntt {
                 }
             }            
 
-            i0 = segment_start + segment_id_warp + laneid * 2 * end_stride_warp;
+            i0 = segment_start_warp + segment_id_warp + laneid * 2 * end_stride_warp;
             i1 = i0 + end_stride_warp;
             a.store(u + i0, shared_read_stride);
             b.store(u + i1, shared_read_stride);
@@ -3039,15 +3129,16 @@ namespace ntt {
 
         public:
         struct SSIP_config{
-            enum stage1_mode {
+            enum stage1_config {
                 stage1_naive,
                 stage1_warp,
                 stage1_warp_no_twiddle,
                 stage1_warp_no_twiddle_no_smem,
                 stage1_warp_no_twiddle_opt_smem,
-            } stage1_mode = stage1_warp_no_twiddle;
+            };
+            stage1_config stage1_mode = stage1_warp_no_twiddle;
             bool stage1_coalesced_roots = false, stage2_coalesced_roots = false;
-            enum stage2_mode {
+            enum stage2_config {
                 stage2_naive,
                 stage2_naive_2_per_thread,
                 stage2_warp,
@@ -3055,7 +3146,8 @@ namespace ntt {
                 stage2_warp_no_share,
                 stage2_warp_2_per_thread_no_share,
                 stage2_warp_no_twiddle_no_share,
-            } stage2_mode = stage2_warp_no_twiddle_no_share;
+            };
+            stage2_config stage2_mode = stage2_warp_no_twiddle_no_share;
 
             u32 max_threads_stage1_log = 8;
             u32 max_threads_stage2_log = 8;
@@ -3200,9 +3292,11 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data) override {
+        cudaError_t ntt(u32 * data, bool inverse = false, bool process = false, const u32 * inv_n = nullptr, const u32 * zeta = nullptr) override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
+
+            if (log_len == 0) return first_err;
 
             cudaEvent_t start, end;
             if (success) CUDA_CHECK(cudaEventCreate(&start));
@@ -3220,6 +3314,24 @@ namespace ntt {
             u32 * x;
             if (success) CUDA_CHECK(cudaMalloc(&x, len * WORDS * sizeof(u32)));
             if (success) CUDA_CHECK(cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+                
+            u32 * inv_n_d;
+            if (inverse) {
+                assert(inv_n != nullptr);
+                assert(config.stage2_mode == SSIP_config::stage2_config::stage2_warp_no_twiddle_no_share);
+                if (success) CUDA_CHECK(cudaMalloc(&inv_n_d, sizeof(u32) * WORDS));
+                if (success) CUDA_CHECK(cudaMemcpy(inv_n_d, inv_n, sizeof(u32) * WORDS, cudaMemcpyHostToDevice));
+            }
+            
+            u32 * zeta_d;
+            if (process) {
+                assert(zeta != nullptr);
+                if (!inverse) {
+                    assert(config.stage1_mode == SSIP_config::stage1_warp_no_twiddle);
+                }
+                if (success) CUDA_CHECK(cudaMalloc(&zeta_d, 2 * WORDS * sizeof(u32)));
+                if (success) CUDA_CHECK(cudaMemcpy(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            }
 
             if (debug) {
                 dim3 block(768);
@@ -3284,13 +3396,15 @@ namespace ntt {
                         if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
                         if (success) CUDA_CHECK(cudaGetLastError());
                     } else {
-                        auto kernel = SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group>;
+                        auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
+                        SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group, true> : SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
                         if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d, zeta_d);
+                        
                         if (success) CUDA_CHECK(cudaGetLastError());
                     }
                     break;
@@ -3476,11 +3590,15 @@ namespace ntt {
 
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group>;
+                    auto kernel = inverse && (log_stride - (int)deg < 0) ?
+                    (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, true, true>
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, true, false>)
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, false, false>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d);
+                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
+
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3508,7 +3626,26 @@ namespace ntt {
 
             if (success) CUDA_CHECK(cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
 
+            // manually tackle log_len == 1 case because the stage2 kernel won't run
+            if (log_len == 1) {
+                if (inverse) {
+                    auto env = mont256::Env::host_new(*param);
+                    env.host_mul(mont256::Element::load(data), mont256::Element::load(inv_n)).store(data);
+                    env.host_mul(mont256::Element::load(data + WORDS), mont256::Element::load(inv_n)).store(data + WORDS);
+                    if (process) {
+                        env.host_mul(mont256::Element::load(data + WORDS), mont256::Element::load(zeta)).store(data + WORDS);
+                    }
+                }
+            }
+
             CUDA_CHECK(cudaFree(x));
+            
+            if (inverse) {
+                CUDA_CHECK(cudaFree(inv_n_d));
+            }
+            if (process) {
+                CUDA_CHECK(cudaFree(zeta_d));
+            }
 
             if (debug) CUDA_CHECK(clean_gpu());
 

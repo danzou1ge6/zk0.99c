@@ -203,9 +203,12 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data) override {
+        cudaError_t ntt(u32 * data, bool inverse = false, bool process = false, const u32 * inv_n = nullptr, const u32 * zeta = nullptr) override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
+
+            assert(inverse == false);
+            assert(process == false);
 
             cudaEvent_t start, end;
             if (success) CUDA_CHECK(cudaEventCreate(&start));

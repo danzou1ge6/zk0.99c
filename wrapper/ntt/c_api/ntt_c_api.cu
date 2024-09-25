@@ -2,13 +2,9 @@
 #include "../../../ntt/src/runtime.cuh"
 #include <cuda_runtime.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+runtime::ntt_runtime<runtime::fifo> temp_runtime(1);
 
-runtime::ntt_runtime<runtime::fifo> temp_runtime(2);
-
-bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD field) {
+bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n, FIELD field, bool inverse, bool process, const unsigned int * inv_n, const unsigned int * zeta) {
     runtime::ntt_id id;
     id.field = field;
     id.log_len = log_n;
@@ -26,8 +22,8 @@ bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n,
     }
     
     if (first_err == cudaSuccess) try {
-        auto ntt_kernel = temp_runtime.get_ntt_kernel(id);    
-        CUDA_CHECK(ntt_kernel->ntt(data));
+        auto ntt_kernel = temp_runtime.get_ntt_kernel(id);
+        CUDA_CHECK(ntt_kernel->ntt(data, inverse, process, inv_n, zeta));
     } catch(const char *msg) {
         std::cerr << msg << std::endl;
         success = false;
@@ -35,8 +31,4 @@ bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n,
     CUDA_CHECK(cudaHostUnregister((void *)data));
 
     return success;
-}  
-
-#ifdef __cplusplus
 }
-#endif

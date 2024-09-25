@@ -34,15 +34,15 @@ fn main() {
     // Tell cargo to look for libraries in the specified directory
     println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());
     println!("cargo:rustc-link-search=/usr/local/cuda/lib64");
-    
+
     println!("cargo:rustc-link-lib=static=cuda_ntt");
-    
-    println!("cargo:rustc-link-lib=dylib=cudart");  // 使用动态链接
+
+    println!("cargo:rustc-link-lib=dylib=cudart"); // 使用动态链接
     println!("cargo:rustc-link-lib=dylib=cudadevrt");
     println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64/stub");
     println!("cargo:rustc-link-lib=dylib=cuda");
     println!("cargo:rustc-link-lib=dylib=stdc++");
-    
+
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
     // the resulting bindings.
@@ -52,8 +52,8 @@ fn main() {
         .header(headers_path_str)
         // Tell cargo to invalidate the built crate whenever any of the
         // included header files changed.
-        .clang_arg("-xc++")  // Enable C++ mode
-        .clang_arg("-std=c++20")  // Specify the C++ standard
+        .clang_arg("-xc++") // Enable C++ mode
+        .clang_arg("-std=c++20") // Specify the C++ standard
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Finish the builder and generate the bindings.
         .generate()
