@@ -3126,6 +3126,10 @@ namespace ntt {
         bool debug;
         u32_E *pq = nullptr, *pq_d; // Precalculated values for radix degrees up to `max_deg`
         u32_E *roots, *roots_d;
+        const bool inverse; 
+        const bool process;
+        u32 * inv_n, * inv_n_d;
+        u32 * zeta, * zeta_d;
 
         u32 get_deg (u32 deg_stage, u32 max_deg_stage) {
             u32 deg_per_round;
@@ -3169,8 +3173,17 @@ namespace ntt {
         const SSIP_config config;
         float milliseconds = 0;
 
-        self_sort_in_place_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug, SSIP_config config = SSIP_config()) 
-        : log_len(log_len), len(1 << log_len), debug(debug), config(config) {
+        self_sort_in_place_ntt(
+            const mont256::Params param, 
+            const u32* omega, u32 log_len, 
+            bool debug, 
+            bool inverse = false, 
+            bool process = false, 
+            const u32 * inv_n = nullptr, 
+            const u32 * zeta = nullptr, 
+            SSIP_config config = SSIP_config()) 
+        : log_len(log_len), len(1 << log_len), debug(debug)
+        , config(config), inverse(inverse), process(process){
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3245,6 +3258,22 @@ namespace ntt {
             CUDA_CHECK(cudaHostAlloc(&this->param, sizeof(mont256::Params), cudaHostAllocDefault));
             CUDA_CHECK(cudaMemcpy(this->param, &param, sizeof(mont256::Params), cudaMemcpyHostToHost));
 
+            if (inverse) {
+                assert(inv_n != nullptr);
+                assert(config.stage2_mode == SSIP_config::stage2_config::stage2_warp_no_twiddle_no_share);
+                CUDA_CHECK(cudaHostAlloc(&this->inv_n, sizeof(u32) * WORDS, cudaHostAllocDefault));
+                CUDA_CHECK(cudaMemcpy(this->inv_n, inv_n, sizeof(u32) * WORDS, cudaMemcpyHostToHost));
+            }
+
+            if (process) {
+                assert(zeta != nullptr);
+                if (!inverse) {
+                    assert(config.stage1_mode == SSIP_config::stage1_warp_no_twiddle);
+                }
+                CUDA_CHECK(cudaHostAlloc(&this->zeta, 2 * WORDS * sizeof(u32),cudaHostAllocDefault));
+                CUDA_CHECK(cudaMemcpy(this->zeta, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            }
+
             if (!success) {
                 std::cerr << "error occurred during gen_roots" << std::endl;
                 throw cudaGetErrorString(first_err);
@@ -3255,6 +3284,8 @@ namespace ntt {
             if (pq != nullptr) cudaFreeHost(pq);
             cudaFreeHost(roots);
             cudaFreeHost(param);
+            if (inverse) cudaFreeHost(inv_n);
+            if (process) cudaFreeHost(zeta);
             if (on_gpu) clean_gpu();
         }
 
@@ -3281,6 +3312,16 @@ namespace ntt {
                 CUDA_CHECK(cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
             }
 
+            if (inverse) {
+                CUDA_CHECK(cudaMalloc(&inv_n_d, WORDS * sizeof(u32)));
+                CUDA_CHECK(cudaMemcpy(inv_n_d, inv_n, WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            }
+
+            if (process) {
+                CUDA_CHECK(cudaMalloc(&zeta_d, 2 * WORDS * sizeof(u32)));
+                CUDA_CHECK(cudaMemcpy(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            }
+
             if (!success) {
                 if (pq != nullptr) CUDA_CHECK(cudaFree(pq_d));
                 CUDA_CHECK(cudaFree(roots_d));
@@ -3301,11 +3342,14 @@ namespace ntt {
             CUDA_CHECK(cudaFree(roots_d));
             CUDA_CHECK(cudaFree(param_d));
 
+            if (inverse) CUDA_CHECK(cudaFree(inv_n_d));
+            if (process) CUDA_CHECK(cudaFree(zeta_d));
+
             this->on_gpu = false;
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data, bool inverse = false, bool process = false, const u32 * inv_n = nullptr, const u32 * zeta = nullptr) override {
+        cudaError_t ntt(u32 * data) override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3327,24 +3371,6 @@ namespace ntt {
             u32 * x;
             if (success) CUDA_CHECK(cudaMalloc(&x, len * WORDS * sizeof(u32)));
             if (success) CUDA_CHECK(cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
-                
-            u32 * inv_n_d;
-            if (inverse) {
-                assert(inv_n != nullptr);
-                assert(config.stage2_mode == SSIP_config::stage2_config::stage2_warp_no_twiddle_no_share);
-                if (success) CUDA_CHECK(cudaMalloc(&inv_n_d, sizeof(u32) * WORDS));
-                if (success) CUDA_CHECK(cudaMemcpy(inv_n_d, inv_n, sizeof(u32) * WORDS, cudaMemcpyHostToDevice));
-            }
-            
-            u32 * zeta_d;
-            if (process) {
-                assert(zeta != nullptr);
-                if (!inverse) {
-                    assert(config.stage1_mode == SSIP_config::stage1_warp_no_twiddle);
-                }
-                if (success) CUDA_CHECK(cudaMalloc(&zeta_d, 2 * WORDS * sizeof(u32)));
-                if (success) CUDA_CHECK(cudaMemcpy(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
-            }
 
             if (debug) {
                 dim3 block(768);
@@ -3652,13 +3678,6 @@ namespace ntt {
             }
 
             CUDA_CHECK(cudaFree(x));
-            
-            if (inverse) {
-                CUDA_CHECK(cudaFree(inv_n_d));
-            }
-            if (process) {
-                CUDA_CHECK(cudaFree(zeta_d));
-            }
 
             if (debug) CUDA_CHECK(clean_gpu());
 

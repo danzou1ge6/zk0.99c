@@ -5,7 +5,6 @@
 #include <map>
 #include <mutex>
 #include <shared_mutex>
-#include <vector>
 #include <memory>
 #include <deque>
 
@@ -31,23 +30,19 @@ namespace runtime {
     struct ntt_id {
         uint log_len;
         FIELD field;
-        std::vector<uint> omega;
+        bool process, inverse;
         friend bool operator < (const ntt_id &a, const ntt_id &b) {
             if (a.log_len != b.log_len) return a.log_len < b.log_len;
             if (a.field != b.field) return a.field < b.field;
-            if (a.omega.size() != b.omega.size()) return a.omega.size() < b.omega.size();
-            for (size_t i = 0; i < a.omega.size(); i++) {
-                if (a.omega[i] != b.omega[i]) return a.omega[i] < b.omega[i];
-            }
+            if (a.process != b.process) return a.process < b.process;
+            if (a.inverse != b.inverse) return a.inverse < b.inverse;
             return false;
         }
         friend bool operator == (const ntt_id &a, const ntt_id &b) {
             if (a.log_len != b.log_len) return false;
             if (a.field != b.field) return false;
-            if (a.omega.size() != b.omega.size()) return false;
-            for (auto i = 0; i < a.omega.size(); i++) {
-                if (a.omega[i] != b.omega[i]) return false;
-            }
+            if (a.process != b.process) return false;
+            if (a.inverse != b.inverse) return false;
             return true;
         }
         friend bool operator != (const ntt_id &a, const ntt_id &b) {
@@ -114,7 +109,7 @@ namespace runtime {
         public:
         ntt_runtime(int max_num = 1) : ntt_kernels(std::make_shared<std::map<ntt_id, std::shared_ptr<ntt::best_ntt> > >()),
         mtx_ntt_kernels(std::make_shared<std::shared_mutex>()), cache_manager(ntt_kernels, mtx_ntt_kernels, max_num) {}
-        std::shared_ptr<ntt::best_ntt> get_ntt_kernel(ntt_id id) {
+        std::shared_ptr<ntt::best_ntt> get_ntt_kernel(ntt_id id, const uint *omega, const uint *inv_n, const uint *zeta) {
             std::shared_lock<std::shared_mutex> rlock(*mtx_ntt_kernels);
             auto iter = ntt_kernels->find(id);
             rlock.unlock();
@@ -124,13 +119,9 @@ namespace runtime {
                 if (iter == ntt_kernels->end()) {
                     std::shared_ptr<ntt::best_ntt> ntt_kernel;
                     if (id.field == FIELD::PASTA_CURVES_FIELDS_FP) {
-                        uint omega[8];
-                        for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
-                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false);
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false, id.inverse, id.process, inv_n, zeta);
                     } else if (id.field == FIELD::HALO2CURVES_BN256_FR) {
-                        uint omega[8];
-                        for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
-                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false);
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false, id.inverse, id.process, inv_n, zeta);
                     }
                     ntt_kernels->insert(std::make_pair(id, ntt_kernel));
                     wlock.unlock();
