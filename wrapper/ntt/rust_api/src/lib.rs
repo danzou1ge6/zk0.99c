@@ -120,3 +120,57 @@ where
         _ => Err(format!("Unsupported field type: {}", type_name::<F>())),
     }
 }
+
+pub fn gpu_coeff_to_extended<F>(
+    values: &mut Vec<F>,
+    extended_len: usize,
+    extended_omega: F,
+    extended_k: u32,
+    zeta: &[F],
+) -> Result<(), String>
+where
+    F: WithSmallOrderMulGroup<3>,
+{
+    values.resize(extended_len, F::ZERO);
+    match type_name::<F>() {
+        "pasta_curves::fields::fp::Fp" => {
+            let res = unsafe {
+                cuda_ntt(
+                    values.as_mut_ptr() as *mut u32,
+                    (&extended_omega) as *const F as *const u32,
+                    extended_k,
+                    FIELD_PASTA_CURVES_FIELDS_FP,
+                    false,
+                    true,
+                    null(),
+                    zeta.as_ptr() as *const u32,
+                )
+            };
+            if res {
+                Ok(())
+            } else {
+                Err(String::from("cuda failed to operate"))
+            }
+        }
+        "halo2curves::bn256::fr::Fr" => {
+            let res = unsafe {
+                cuda_ntt(
+                    values.as_mut_ptr() as *mut u32,
+                    (&extended_omega) as *const F as *const u32,
+                    extended_k,
+                    FIELD_HALO2CURVES_BN256_FR,
+                    false,
+                    true,
+                    null(),
+                    zeta.as_ptr() as *const u32,
+                )
+            };
+            if res {
+                Ok(())
+            } else {
+                Err(String::from("cuda failed to operate"))
+            }
+        }
+        _ => Err(format!("Unsupported field type: {}", type_name::<F>())),
+    }
+}
