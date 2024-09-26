@@ -1,14 +1,11 @@
-use group::ff::Field;
+use group::ff::{Field, WithSmallOrderMulGroup};
 use halo2_proofs::poly::EvaluationDomain;
-use halo2curves::bn256::Fr;
-use halo2curves::pasta::Fp;
-use rand_core::OsRng;
-use rand_core::SeedableRng;
+use halo2curves::{bn256::Fr, pasta::Fp};
+use rand_core::{OsRng, SeedableRng};
 use rand_xorshift::XorShiftRng;
 use rayon::prelude::*;
 use std::time::Instant;
 use zk0d99c_ntt::gpu_coeff_to_extended;
-use group::ff::WithSmallOrderMulGroup;
 
 #[test]
 fn compare_with_halo2() {
@@ -76,7 +73,7 @@ fn compare_with_halo2() {
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let domain = EvaluationDomain::<Fr>::new(4, k);
+        let domain = EvaluationDomain::<Fr>::new(1, k);
 
         let poly_rust = domain.coeff_from_vec(data_rust);
         let g_coset = Fr::ZETA;

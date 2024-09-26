@@ -2224,6 +2224,7 @@ namespace ntt {
                 u32 group_offset, group_id;
                 u64 gpos;
                 mont256::Element z;
+                u32 id;
 
                 p = __brev((lid << 1)) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2237,8 +2238,11 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
-                a = env.mul(a, z);
+                id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
+                if (id != 0) {
+                    z = mont256::Element::load(zeta + WORDS * (id - 1));
+                    a = env.mul(a, z);
+                }
 
                 p = __brev((lid << 1) + 1) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2252,8 +2256,11 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
-                b = env.mul(b, z);
+                id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
+                if (id != 0) {
+                    z = mont256::Element::load(zeta + WORDS * (id - 1));
+                    b = env.mul(b, z);
+                }
 
                 p = __brev((lid << 1) + lsize * 2) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2267,8 +2274,11 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
-                c = env.mul(c, z);
+                id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
+                if (id != 0) {
+                    z = mont256::Element::load(zeta + WORDS * (id - 1));
+                    c = env.mul(c, z);
+                }
 
                 p = __brev((lid << 1) + lsize * 2 + 1) >> (32 - (deg << 1));
                 second_half_l = (p >= lsize * 2);
@@ -2282,8 +2292,11 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                z = mont256::Element::load(zeta + WORDS * ((gpos + second_half_l * end_pair_stride + gap * end_stride) % 3 - 1));
-                d = env.mul(d, z);
+                id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
+                if (id != 0) {
+                    z = mont256::Element::load(zeta + WORDS * (id - 1));
+                    d = env.mul(d, z);
+                }
             }
         }
         
