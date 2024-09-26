@@ -117,24 +117,26 @@ namespace runtime {
         std::shared_ptr<ntt::best_ntt> get_ntt_kernel(ntt_id id) {
             std::shared_lock<std::shared_mutex> rlock(*mtx_ntt_kernels);
             auto iter = ntt_kernels->find(id);
-
+            rlock.unlock();
             if (iter == ntt_kernels->end()) {
-                rlock.unlock();
                 std::unique_lock<std::shared_mutex> wlock(*mtx_ntt_kernels);
-                std::shared_ptr<ntt::best_ntt> ntt_kernel;
-                if (id.field == FIELD::PASTA_CURVES_FIELDS_FP) {
-                    uint omega[8];
-                    for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
-                    ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false);
-                } else if (id.field == FIELD::HALO2CURVES_BN256_FR) {
-                    uint omega[8];
-                    for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
-                    ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false);
+                iter = ntt_kernels->find(id);
+                if (iter == ntt_kernels->end()) {
+                    std::shared_ptr<ntt::best_ntt> ntt_kernel;
+                    if (id.field == FIELD::PASTA_CURVES_FIELDS_FP) {
+                        uint omega[8];
+                        for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false);
+                    } else if (id.field == FIELD::HALO2CURVES_BN256_FR) {
+                        uint omega[8];
+                        for (int i = 0; i < 8; i++) omega[i] = id.omega[i];
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false);
+                    }
+                    ntt_kernels->insert(std::make_pair(id, ntt_kernel));
+                    wlock.unlock();
+                    cache_manager.arrive(id);
+                    return ntt_kernel;
                 }
-                ntt_kernels->insert(std::make_pair(id, ntt_kernel));
-                wlock.unlock();
-                cache_manager.arrive(id);
-                return ntt_kernel;
             }
             cache_manager.arrive(id);
             return iter->second;
