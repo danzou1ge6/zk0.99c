@@ -3,11 +3,13 @@ use group::{
     GroupOpsOwned, ScalarMulOwned,
 };
 use std::{
+    alloc::{ alloc, Layout},
     any::type_name,
     mem::size_of,
     os::raw::c_void,
     ptr::{addr_of_mut, null, null_mut},
 };
+
 use zk0d99c_cuda_api::{cpp_free, cuda_device_to_host_sync, cuda_free, cuda_unregister};
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -177,11 +179,14 @@ where
         }
         _ => return Err(format!("Unsupported field type: {}", type_name::<F>())),
     };
-    let mut buffer = Vec::<F>::new();
-    buffer.resize(extended_len, F::ZERO);
+    let buffer: *mut u8;
+    unsafe {
+        buffer = alloc(Layout::array::<F>(extended_len).unwrap());
+    }
+
     let res = unsafe {
         cuda_device_to_host_sync(
-            buffer.as_mut_ptr() as *mut c_void,
+            buffer as *mut c_void,
             dev_ptr as *const c_void,
             (extended_len * size_of::<F>()).try_into().unwrap(),
             stream,
@@ -196,7 +201,7 @@ where
         cpp_free(stream);
         cuda_unregister(values.as_mut_ptr() as *mut c_void);
     }
-    *values = buffer;
+    *values = unsafe { Vec::<F>::from_raw_parts(buffer as *mut F, extended_len, extended_len) };
     Ok(())
 }
 
