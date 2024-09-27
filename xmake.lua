@@ -91,6 +91,19 @@ target("cuda_ntt")
 
     set_targetdir("lib")
 
+target("cuda_api")
+    set_kind("static")
+    add_values("cuda.build.devlink", true)
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    
+    add_files("wrapper/cuda_api/c_api/*.cu")
+    add_headerfiles("wrapper/cuda_api/c_api/*.h")
+    add_cugencodes("native")
+
+    set_targetdir("lib")
+
 task("sync-epcc")
     on_run(function ()
         import ("core.base.option")

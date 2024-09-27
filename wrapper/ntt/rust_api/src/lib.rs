@@ -2,7 +2,13 @@ use group::{
     ff::{Field, WithSmallOrderMulGroup},
     GroupOpsOwned, ScalarMulOwned,
 };
-use std::{any::type_name, ptr::null};
+use std::{
+    any::type_name,
+    mem::size_of,
+    os::raw::c_void,
+    ptr::{addr_of_mut, null, null_mut},
+};
+use zk0d99c_cuda_api::{cpp_free, cuda_device_to_host_sync, cuda_free, cuda_unregister};
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 /// Copyed from halo2_proof
@@ -131,48 +137,66 @@ pub fn gpu_coeff_to_extended<F>(
 where
     F: WithSmallOrderMulGroup<3>,
 {
-    values.resize(extended_len, F::ZERO);
+    // values.resize(extended_len, F::ZERO);
+    let mut dev_ptr: *mut u32 = null_mut();
+    let mut stream: *mut c_void = null_mut();
     match type_name::<F>() {
         "pasta_curves::fields::fp::Fp" => {
             let res = unsafe {
-                cuda_ntt(
+                cuda_coeff_to_extended(
                     values.as_mut_ptr() as *mut u32,
                     (&extended_omega) as *const F as *const u32,
                     extended_k,
                     FIELD_PASTA_CURVES_FIELDS_FP,
-                    false,
-                    true,
-                    null(),
                     zeta.as_ptr() as *const u32,
+                    addr_of_mut!(dev_ptr),
+                    values.len().try_into().unwrap(),
+                    addr_of_mut!(stream),
                 )
             };
-            if res {
-                Ok(())
-            } else {
-                Err(String::from("cuda failed to operate"))
+            if !res {
+                return Err(String::from("cuda failed to operate"));
             }
         }
         "halo2curves::bn256::fr::Fr" => {
             let res = unsafe {
-                cuda_ntt(
+                cuda_coeff_to_extended(
                     values.as_mut_ptr() as *mut u32,
                     (&extended_omega) as *const F as *const u32,
                     extended_k,
                     FIELD_HALO2CURVES_BN256_FR,
-                    false,
-                    true,
-                    null(),
                     zeta.as_ptr() as *const u32,
+                    addr_of_mut!(dev_ptr),
+                    values.len().try_into().unwrap(),
+                    addr_of_mut!(stream),
                 )
             };
-            if res {
-                Ok(())
-            } else {
-                Err(String::from("cuda failed to operate"))
+            if !res {
+                return Err(String::from("cuda failed to operate"));
             }
         }
-        _ => Err(format!("Unsupported field type: {}", type_name::<F>())),
+        _ => return Err(format!("Unsupported field type: {}", type_name::<F>())),
+    };
+    let mut buffer = Vec::<F>::with_capacity(extended_len * size_of::<F>());
+    let res = unsafe {
+        cuda_device_to_host_sync(
+            buffer.as_mut_ptr() as *mut c_void,
+            dev_ptr as *const c_void,
+            (extended_len * size_of::<F>()).try_into().unwrap(),
+            stream,
+        )
+    };
+
+    if !res {
+        return Err(String::from("cuda failed to operate"));
     }
+    unsafe {
+        cuda_free(dev_ptr as *mut c_void, stream);
+        cpp_free(stream);
+        cuda_unregister(values.as_mut_ptr() as *mut c_void);
+    }
+    *values = buffer;
+    Ok(())
 }
 
 pub fn gpu_extended_to_coeff<F>(

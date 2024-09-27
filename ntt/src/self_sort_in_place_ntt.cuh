@@ -2482,7 +2482,7 @@ namespace ntt {
     }
 
     template <u32 WORDS, u32 io_group, bool process>
-    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * zeta) {
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * zeta, u32 start_len) {
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -2529,8 +2529,13 @@ namespace ntt {
                 if (io < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_id << (lgp + 1);
-                    u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
-                    u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                    if (!process) {
+                        u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
+                        u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                    } else {
+                        u[(i << 1) + io * shared_read_stride] = gpos >= start_len ? 0 : x[gpos * WORDS + io];
+                        u[(i << 1) + 1 + io * shared_read_stride] = gpos + end_stride >= start_len ? 0 : x[(gpos + end_stride) * WORDS + io];
+                    }
                 }
             }
         }
@@ -2562,14 +2567,14 @@ namespace ntt {
             auto b = mont256::Element::load(u + i1, shared_read_stride);
 
             if (process) if(rnd == 0) {
-                auto ida = ((segment_start + segment_id) + i0 * end_stride) % 3;
-                auto idb = (ida + (1 << (log_len - 1))) % 3;
-                if (ida != 0) {
-                    auto z = mont256::Element::load(zeta + (ida - 1) * WORDS);
+                auto ida = ((segment_start + segment_id) + i0 * end_stride);
+                auto idb = (ida + (1 << (log_len - 1)));
+                if (ida % 3 != 0 && ida < start_len) {
+                    auto z = mont256::Element::load(zeta + (ida % 3 - 1) * WORDS);
                     a = env.mul(a, z);
                 }
-                if (idb != 0) {
-                    auto z = mont256::Element::load(zeta + (idb - 1) * WORDS);
+                if (idb % 3 != 0 && idb < start_len) {
+                    auto z = mont256::Element::load(zeta + (idb % 3 - 1) * WORDS);
                     b = env.mul(b, z);
                 }
             }
@@ -3182,7 +3187,7 @@ namespace ntt {
             const u32 * inv_n = nullptr, 
             const u32 * zeta = nullptr, 
             SSIP_config config = SSIP_config()) 
-        : log_len(log_len), len(1 << log_len), debug(debug)
+        : log_len(log_len), len(1ll << log_len), debug(debug)
         , config(config), inverse(inverse), process(process){
             bool success = true;
             cudaError_t first_err = cudaSuccess;
@@ -3289,67 +3294,67 @@ namespace ntt {
             if (on_gpu) clean_gpu();
         }
 
-        cudaError_t to_gpu() override {
+        cudaError_t to_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             if (pq != nullptr) {
-                CUDA_CHECK(cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS));
-                CUDA_CHECK(cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMallocAsync(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, stream));
+                CUDA_CHECK(cudaMemcpyAsync(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice, stream));
             }
-            CUDA_CHECK(cudaMalloc(&param_d, sizeof(mont256::Params)));
-            CUDA_CHECK(cudaMemcpy(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMallocAsync(&param_d, sizeof(mont256::Params), stream));
+            CUDA_CHECK(cudaMemcpyAsync(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice, stream));
 
             if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
             (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
-                CUDA_CHECK(cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32)));
-                CUDA_CHECK(cudaMemcpy(roots_d, roots, len / 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMallocAsync(&roots_d, len / 2 * WORDS * sizeof(u32), stream));
+                CUDA_CHECK(cudaMemcpyAsync(roots_d, roots, len / 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
             } else {
-                CUDA_CHECK(cudaMalloc(&roots_d, len * WORDS * sizeof(u32)));
-                CUDA_CHECK(cudaMemcpy(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMallocAsync(&roots_d, len * WORDS * sizeof(u32), stream));
+                CUDA_CHECK(cudaMemcpyAsync(roots_d, roots, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
             }
 
             if (inverse) {
-                CUDA_CHECK(cudaMalloc(&inv_n_d, WORDS * sizeof(u32)));
-                CUDA_CHECK(cudaMemcpy(inv_n_d, inv_n, WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMallocAsync(&inv_n_d, WORDS * sizeof(u32), stream));
+                CUDA_CHECK(cudaMemcpyAsync(inv_n_d, inv_n, WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
             }
 
             if (process) {
-                CUDA_CHECK(cudaMalloc(&zeta_d, 2 * WORDS * sizeof(u32)));
-                CUDA_CHECK(cudaMemcpy(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+                CUDA_CHECK(cudaMallocAsync(&zeta_d, 2 * WORDS * sizeof(u32), stream));
+                CUDA_CHECK(cudaMemcpyAsync(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
             }
 
             if (!success) {
-                if (pq != nullptr) CUDA_CHECK(cudaFree(pq_d));
-                CUDA_CHECK(cudaFree(roots_d));
-                CUDA_CHECK(cudaFree(param_d));
+                if (pq != nullptr) CUDA_CHECK(cudaFreeAsync(pq_d, stream));
+                CUDA_CHECK(cudaFreeAsync(roots_d, stream));
+                CUDA_CHECK(cudaFreeAsync(param_d, stream));
             } else {
                 this->on_gpu = true;
             }
             return first_err;
         }
 
-        cudaError_t clean_gpu() override {
+        cudaError_t clean_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
-            if (pq != nullptr) CUDA_CHECK(cudaFree(pq_d));
-            CUDA_CHECK(cudaFree(roots_d));
-            CUDA_CHECK(cudaFree(param_d));
+            if (pq != nullptr) CUDA_CHECK(cudaFreeAsync(pq_d, stream));
+            CUDA_CHECK(cudaFreeAsync(roots_d, stream));
+            CUDA_CHECK(cudaFreeAsync(param_d, stream));
 
-            if (inverse) CUDA_CHECK(cudaFree(inv_n_d));
-            if (process) CUDA_CHECK(cudaFree(zeta_d));
+            if (inverse) CUDA_CHECK(cudaFreeAsync(inv_n_d, stream));
+            if (process) CUDA_CHECK(cudaFreeAsync(zeta_d, stream));
 
             this->on_gpu = false;
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data) override {
+        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
@@ -3363,19 +3368,24 @@ namespace ntt {
             if (success) {
                 while(!this->on_gpu) {
                     rlock.unlock();
-                    CUDA_CHECK(to_gpu());
+                    CUDA_CHECK(to_gpu(stream));
                     rlock.lock();
                 }
             }
 
             u32 * x;
-            if (success) CUDA_CHECK(cudaMalloc(&x, len * WORDS * sizeof(u32)));
-            if (success) CUDA_CHECK(cudaMemcpy(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            if (success) CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
+            if (process && !inverse) {
+                if (success) CUDA_CHECK(cudaMemcpyAsync(x, data, start_n * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+            } else {
+                if (success) CUDA_CHECK(cudaMemcpyAsync(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+            }
+            if (dev_ptr != nullptr) *dev_ptr = x;
 
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) number_to_element <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) number_to_element <WORDS> <<< grid, block, 0, stream >>> (x, len, param_d);
                 if (success) CUDA_CHECK(cudaGetLastError());
                 if (success) CUDA_CHECK(cudaEventRecord(start));
             }
@@ -3408,7 +3418,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3420,7 +3430,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3432,7 +3442,7 @@ namespace ntt {
                         
                         if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
                         if (success) CUDA_CHECK(cudaGetLastError());
                     } else {
                         auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
@@ -3442,7 +3452,7 @@ namespace ntt {
                         
                         if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d, zeta_d);
+                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d, zeta_d, start_n);
                         
                         if (success) CUDA_CHECK(cudaGetLastError());
                     }
@@ -3455,7 +3465,7 @@ namespace ntt {
                     
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3466,7 +3476,7 @@ namespace ntt {
                     
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3507,7 +3517,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3528,7 +3538,7 @@ namespace ntt {
                     auto kernel = SSIP_NTT_stage2_two_per_thread <WORDS, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3550,7 +3560,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3571,7 +3581,7 @@ namespace ntt {
                     auto kernel = SSIP_NTT_stage2_two_per_thread_warp <WORDS, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3592,7 +3602,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3612,7 +3622,7 @@ namespace ntt {
                     auto kernel = SSIP_NTT_stage2_two_per_thread_warp_no_share <WORDS, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3636,7 +3646,7 @@ namespace ntt {
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
 
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
@@ -3657,13 +3667,15 @@ namespace ntt {
                 if (success) CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) element_to_number <WORDS> <<< grid, block, 0, stream >>> (x, len, param_d);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
             
             rlock.unlock();
 
-            if (success) CUDA_CHECK(cudaMemcpy(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
+            if (success && !(process && (!inverse))) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+
+            if (success && stream == 0) CUDA_CHECK(cudaStreamSynchronize(stream));
 
             // manually tackle log_len == 1 case because the stage2 kernel won't run
             if (log_len == 1) {
@@ -3677,9 +3689,9 @@ namespace ntt {
                 }
             }
 
-            CUDA_CHECK(cudaFree(x));
+            if (!(process && (!inverse)))CUDA_CHECK(cudaFreeAsync(x, stream));
 
-            if (debug) CUDA_CHECK(clean_gpu());
+            if (debug) CUDA_CHECK(clean_gpu(stream));
 
             return first_err;
         }

@@ -938,6 +938,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zk0d99c_cuda_api"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
 name = "zk0d99c_ntt"
 version = "0.1.0"
 dependencies = [
@@ -949,4 +956,5 @@ dependencies = [
  "rand_core",
  "rand_xorshift",
  "rayon",
+ "zk0d99c_cuda_api",
 ]
