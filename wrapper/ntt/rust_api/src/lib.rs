@@ -177,7 +177,8 @@ where
         }
         _ => return Err(format!("Unsupported field type: {}", type_name::<F>())),
     };
-    let mut buffer = Vec::<F>::with_capacity(extended_len * size_of::<F>());
+    let mut buffer = Vec::<F>::new();
+    buffer.resize(extended_len, F::ZERO);
     let res = unsafe {
         cuda_device_to_host_sync(
             buffer.as_mut_ptr() as *mut c_void,
