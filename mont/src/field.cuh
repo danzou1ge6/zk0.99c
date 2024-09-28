@@ -213,7 +213,7 @@ namespace mont
         u32
         mac_n_1_even(u32 *acc, const u32 *a, const u32 b, const u32 carry_in = 0)
     {
-      return mad_n_1_even<N, CARRY_IN, CARRY_OUT>(acc, a, b, acc);
+      return mad_n_1_even<N, CARRY_IN, CARRY_OUT>(acc, a, b, acc, carry_in);
     }
 
     // Multiplies `a` and `b`, where `a` has `N` limbs.
@@ -387,11 +387,10 @@ namespace mont
           sub<(N >> 1)>(&middle_part[N >> 1], &middle_part[N >> 1], &diffs[N >> 1]);
         if (carry2)
           sub<(N >> 1)>(&middle_part[N >> 1], &middle_part[N >> 1], diffs);
-        u32 carry = add<N>(&r[N >> 1], &r[N >> 1], middle_part);
+        add<N>(&r[N >> 1], &r[N >> 1], middle_part);
 
-        r[N + (N >> 1)] = ptx::add_cc(r[N + (N >> 1)], carry);
 #pragma unroll
-        for (usize i = N + (N >> 1) + 1; i < 2 * N; i++)
+        for (usize i = N + (N >> 1); i < 2 * N; i++)
           r[i] = ptx::addc_cc(r[i], 0);
       }
       else if (N == 2)
@@ -493,7 +492,7 @@ namespace mont
     __device__ __forceinline__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
     {
       __align__(16) u32 prod[2 * N];
-      multiply_naive<N>(prod, a, b);
+      multiply<N>(prod, a, b);
       montgomery_reduction<N>(prod, m, m_prime);
 #pragma unroll
       for (usize i = N; i < 2 * N; i++)
@@ -623,7 +622,7 @@ namespace mont
     {
       Number<LIMBS * 2> r;
 #ifdef __CUDA_ARCH__
-      device_arith::multiply_naive<LIMBS>(r.limbs, limbs, rhs.limbs);
+      device_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
 #else
       host_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
 #endif
