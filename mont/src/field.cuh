@@ -677,8 +677,8 @@ namespace mont
     }
   };
 
-  // An element on field defined by `Params` (and `HostParams`)
-  template <class Params, class HostParams>
+  // An element on field defined by `Params`
+  template <class Params>
   struct Element
   {
     static const usize LIMBS = Params::LIMBS;
@@ -686,6 +686,7 @@ namespace mont
     Number<LIMBS> n;
 
     __host__ __device__ Element() {}
+    constexpr __host__ __device__ Element(Number<LIMBS> n) : n(n) {}
 
     static __host__ __device__ __forceinline__
         Element
@@ -728,11 +729,7 @@ namespace mont
         one()
     {
       Element elem;
-#ifdef __CUDA_ARCH__
       elem.n = Params::r_mod();
-#else
-      elem.n = HostParams::r_mod;
-#endif
       return elem;
     }
 
@@ -745,7 +742,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs, HostParams::m_prime);
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
@@ -766,7 +763,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
-      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs);
+      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
       return r;
     }
@@ -780,7 +777,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, HostParams::m.limbs);
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
       return r;
     }
@@ -795,7 +792,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
 #else
-      host_arith::sub<LIMBS>(r.n.limbs, HostParams::m.limbs, n.limbs);
+      host_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
 #endif
       return r;
     }
@@ -809,7 +806,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, HostParams::r2_mod.limbs, HostParams::m.limbs, HostParams::m_prime);
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
@@ -827,7 +824,7 @@ namespace mont
 #ifdef __CUDA_ARCH__
       device_arith::montgomery_reduction<LIMBS>(n.limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_reduction<LIMBS>(n.limbs, HostParams::m.limbs, HostParams::m_prime);
+      host_arith::montgomery_reduction<LIMBS>(n.limbs, Params::m().limbs, Params::m_prime);
 #endif
 
       memcpy(r.limbs, n.limbs + LIMBS, LIMBS * sizeof(u32));
@@ -875,11 +872,7 @@ namespace mont
     // Field inversion
     __host__ __device__ __forceinline__ Element invert() const &
     {
-#ifdef __CUDA_ARCH__
       return this->pow(Params::m_sub2());
-#else
-      return this->pow(HostParams::m_sub2);
-#endif
     }
 
     // Generate a random field element
@@ -888,7 +881,7 @@ namespace mont
         host_random()
     {
       Element r;
-      host_arith::random<LIMBS>(r.n.limbs, HostParams::m.limbs);
+      host_arith::random<LIMBS>(r.n.limbs, Params::m().limbs);
       return r;
     }
   };
@@ -915,9 +908,9 @@ namespace mont
     return os;
   }
 
-  template <class Params, class HostParams>
+  template <class Params>
   std::ostream &
-  operator<<(std::ostream &os, const Element<Params, HostParams> &e)
+  operator<<(std::ostream &os, const Element<Params> &e)
   {
     auto n = e.to_number();
     os << n;
