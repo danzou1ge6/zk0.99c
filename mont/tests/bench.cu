@@ -6,7 +6,7 @@ using bn254_scalar::Element;
 using mont::u32;
 
 const u32 BATCH = 128;
-const u32 THREADS = 960;
+const u32 THREADS = 512;
 const u32 ITERS = 2;
 
 __global__ void bench(Element *r, const Element *a)
@@ -26,7 +26,7 @@ int main()
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
 
-  u32 grid_size = 96 * deviceProp.multiProcessorCount;
+  u32 grid_size = 32 * deviceProp.multiProcessorCount;
 
   for (u32 i = 0; i < ITERS; i++)
   {
@@ -44,6 +44,13 @@ int main()
     cudaEventRecord(start);
     bench<<<grid_size, THREADS>>>(r, a);
     cudaEventRecord(stop);
+
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+      std::cout << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+      return 1;
+    }
 
     cudaEventSynchronize(stop);
     float elapsed_time;
