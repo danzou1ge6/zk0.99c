@@ -2,70 +2,69 @@
 #include <doctest/doctest.h>
 #include <iostream>
 
-#include "../../mont/src/mont.cuh"
+#include "../../mont/src/field.cuh"
 #include "../src/bn254.cuh"
 
-using namespace mont256;
-using namespace curve256;
+using mont::u32;
+using namespace bn254;
 
 __global__ void to_affine_kernel(PointAffine *pr, const Point *p)
 {
-  auto cur = bn254::new_bn254();
-  *pr = cur.to_affine(*p);
+  *pr = p->to_affine();
 }
 
 __global__ void from_affine_kernel(Point *pr, const PointAffine *p)
 {
-  auto cur = bn254::new_bn254();
-  *pr = cur.from_affine(*p);
+  
+  *pr = p->to_projective();
 }
 
 __global__ void is_on_curve_kernel(bool *r, const Point *p)
 {
-  auto cur = bn254::new_bn254();
-  *r = cur.is_on_curve(*p);
+  
+  *r = p->is_on_curve();
 }
 
 __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
 {
-  auto cur = bn254::new_bn254();
-  *r = cur.is_on_curve(*p);
+  
+  *r = p->is_on_curve();
 }
 
 __global__ void self_add_kernel(Point *pr, const Point *p)
 {
-  auto cur = bn254::new_bn254();
-  *pr = cur.self_add(*p);
+  
+  *pr = p->self_add();
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
 {
-  auto cur = bn254::new_bn254();
-  *pr = cur.add(*pa, *pb);
+  
+  *pr = *pa + *pb;
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
 {
-  auto cur = bn254::new_bn254();
-  *pr = cur.add(*pa, *pb);
+  
+  *pr = *pa + *pb;
 }
 
 __global__ void eq_kernel(bool *r, const Point *pa, const Point *pb)
 {
-  auto cur = bn254::new_bn254();
-  *r = cur.eq(*pa, *pb);
+  
+  *r = *pa == *pb;
 }
 
 __global__ void eq_kernel(bool *r, const PointAffine *pa, const PointAffine *pb)
 {
-  auto cur = bn254::new_bn254();
-  *r = cur.eq(*pa, *pb);
+  
+  *r = *pa == *pb;
 }
 
 __global__ void multiple_kernel(Point *r, const Point *p, u32 n)
 {
-  auto cur = bn254::new_bn254();
-  *r = cur.multiple(*p, n);
+  
+  *r = p->multiple(n);
 }
 
 void to_affine(PointAffine *pr, const Point *p)
@@ -277,9 +276,6 @@ TEST_CASE("Reproducible")
 
   auto sum1 = launch_kernel2(p1p, p2, add);
   auto sum2 = launch_kernel2(p1p, p2, add);
-
-  std::cout << sum1;
-  std::cout << sum2;
 
   REQUIRE(launch_kernel1(sum1, is_on_curve));
   REQUIRE(launch_kernel1(sum2, is_on_curve));

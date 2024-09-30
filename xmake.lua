@@ -39,7 +39,7 @@ target("test-bn254")
     if is_mode("debug") then
         set_symbols("debug")
     end
-    add_deps("mont.cuh")
+    set_languages(("c++17"))
     add_files("msm/tests/bn254.cu")
     add_packages("doctest")
 

@@ -1,39 +1,216 @@
 #ifndef CURVE_H
 #define CURVE_H
 
-#include "../../mont/src/mont.cuh"
+#include "../../mont/src/field.cuh"
 
-namespace curve256
+namespace curve
 {
-  using mont256::Element;
-  using mont256::Number;
-  using mont256::u32;
+  using mont::u32;
 
-  // A point on curve (x z^(-1), y z^(-1)).
+  template <class Params, class Element>
+  struct PointAffine;
+
+  // A point (x z^(-1), y z^(-1)) on curve
+  //   y^2 = x^3 + a x + b
   // z = 0 markes an identity point.
+  //
+  // Algorithms from
+  //   Complete Addition Formulas for Prime Order Elliptic Curves
+  template <class Params, class Element>
   struct Point
   {
     Element x, y, z;
 
     __host__ __device__ __forceinline__ Point() {}
     __host__ __device__ __forceinline__ Point(Element x, Element y, Element z) : x(x), y(y), z(z) {}
-    static __host__ __device__ __forceinline__ Point load(const u32* p, u32 stride = 1)
+    static __host__ __device__ __forceinline__ Point load(const u32 *p)
     {
-      auto x = Element::load(p, stride);
-      auto y = Element::load(p + Number::N_WORDS * stride, stride);
-      auto z = Element::load(p + Number::N_WORDS * stride * 2, stride);
+      auto x = Element::load(p);
+      auto y = Element::load(p + Element::LIMBS);
+      auto z = Element::load(p + Element::LIMBS * 2);
       return Point(x, y, z);
     }
-    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    __host__ __device__ __forceinline__ void store(u32 *p)
     {
-      x.store(p, stride);
-      y.store(p + Number::N_WORDS * stride, stride);
-      z.store(p + Number::N_WORDS * stride * 2, stride);
+      x.store(p);
+      y.store(p + Element::LIMBS);
+      z.store(p + Element::LIMBS * 2);
+    }
+
+    __device__ __host__ __forceinline__ PointAffine<Params, Element> to_affine() const &;
+
+    static __device__ __host__ __forceinline__
+        Point
+        identity()
+    {
+      return Point(Element::zero(), Element::one(), Element::zero());
+    }
+
+    __device__ __host__ __forceinline__ bool is_identity() const &
+    {
+      return z.is_zero();
+    }
+
+    __device__ __host__ __forceinline__ bool operator==(const Point &rhs) const &
+    {
+      if (is_identity() && rhs.is_identity())
+        return true;
+      auto x1 = x * rhs.z;
+      auto y1 = y * rhs.z;
+      auto x2 = rhs.x * z;
+      auto y2 = rhs.y * z;
+      return x1 == x2 && y1 == y2;
+    }
+
+    __device__ __host__ __forceinline__
+        Point
+        neg() const &
+    {
+      return Point(x, y.neg(), z);
+    }
+
+    __device__ __host__ __forceinline__ bool is_on_curve() const &
+    {
+      Element t0, t1;
+      t0 = Params::a() * x;
+      t1 = Params::b() * z;
+      t0 = t0 + t1;
+      t0 = z * t0;
+      t1 = y.square();
+      t0 = t0 - t1;
+      t0 = t0 * z;
+      t1 = x.square();
+      t1 = t1 * x;
+      t0 = t0 + t1;
+      return t0.is_zero();
+    }
+
+    __device__ __host__ __forceinline__ Point self_add() const &
+    {
+      Element t0, t1, t2, t3, x3, y3, z3;
+      t0 = x.square();
+      t1 = y.square();
+      t2 = z.square();
+      t3 = x * y;
+      t3 = t3 + t3;
+      z3 = x * z;
+      z3 = z3 + z3;
+      x3 = Params::a() * z3;
+      y3 = Params::b3() * t2;
+      y3 = x3 + y3;
+      x3 = t1 - y3;
+      y3 = t1 + y3;
+      y3 = x3 * y3;
+      x3 = t3 * x3;
+      z3 = Params::b3() * z3;
+      t2 = Params::a() * t2;
+      t3 = t0 - t2;
+      t3 = Params::a() * t3;
+      t3 = t3 + z3;
+      z3 = t0 + t0;
+      t0 = z3 + t0;
+      t0 = t0 + t2;
+      t0 = t0 * t3;
+      y3 = y3 + t0;
+      t2 = y * z;
+      t2 = t2 + t2;
+      t0 = t2 * t3;
+      x3 = x3 - t0;
+      z3 = t2 * t1;
+      z3 = z3 + z3;
+      z3 = z3 + z3;
+      return Point(x3, y3, z3);
+    }
+
+    __device__ __host__ __forceinline__ Point operator+(const Point &rhs) const &
+    {
+      if (is_identity())
+        return rhs;
+      if (rhs.is_identity())
+        return *this;
+      Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
+      t0 = x * rhs.x;
+      t1 = y * rhs.y;
+      t2 = z * rhs.z;
+      t3 = x + y;
+      t4 = rhs.x + rhs.y;
+      t3 = t3 * t4;
+      t4 = t0 + t1;
+      t3 = t3 - t4;
+      t4 = x + z;
+      t5 = rhs.x + rhs.z;
+      t4 = t4 * t5;
+      t5 = t0 + t2;
+      t4 = t4 - t5;
+      t5 = y + z;
+      x3 = rhs.y + rhs.z;
+      t5 = t5 * x3;
+      x3 = t1 + t2;
+      t5 = t5 - x3;
+      z3 = Params::a() * t4;
+      x3 = Params::b3() * t2;
+      z3 = x3 + z3;
+      x3 = t1 - z3;
+      z3 = t1 + z3;
+      y3 = x3 * z3;
+      t1 = t0 + t0;
+      t1 = t1 + t0;
+      t2 = Params::a() * t2;
+      t4 = Params::b3() * t4;
+      t1 = t1 + t2;
+      t2 = t0 - t2;
+      t2 = Params::a() * t2;
+      t4 = t4 + t2;
+      t0 = t1 * t4;
+      y3 = y3 + t0;
+      t0 = t5 * t4;
+      x3 = t3 * x3;
+      x3 = x3 - t0;
+      t0 = t3 * t1;
+      z3 = t5 * z3;
+      z3 = z3 + t0;
+      return Point(x3, y3, z3);
+    }
+
+    __device__ __host__ __forceinline__ Point operator+(const PointAffine<Params, Element> &rhs) const &;
+
+    static __device__ __host__ __forceinline__ void multiple_iter(const Point &p, bool &found_one, Point &res, u32 n)
+    {
+      for (int i = 31; i >= 0; i--)
+      {
+        if (found_one)
+          res = res.self_add();
+        if ((n >> i) & 1)
+        {
+          found_one = true;
+          res = res + p;
+        }
+      }
+    }
+
+    template <mont::usize N>
+    __device__ __host__ __forceinline__ Point multiple(const mont::Number<N> &n) const &
+    {
+      auto res = identity();
+      bool found_one = false;
+#pragma unroll
+      for (int i = N - 1; i >= 0; i--)
+        multiple_iter(*this, found_one, res, n.limbs[i]);
+      return res;
+    }
+
+    __device__ __host__ __forceinline__ Point multiple(u32 n) const &
+    {
+      auto res = identity();
+      bool found_one = false;
+      multiple_iter(*this, found_one, res, n);
+      return res;
     }
   };
 
+  template <class Params, class Element>
   std::ostream &
-  operator<<(std::ostream &os, const Point &p)
+  operator<<(std::ostream &os, const Point<Params, Element> &p)
   {
     os << "{\n";
     os << "  .x = " << p.x << ",\n";
@@ -45,7 +222,8 @@ namespace curve256
 
   const u32 WORDS_PER_POINT_AFFINE = 16;
 
-  // A point on curve. Identity marked by (0, 0).
+  // A point (x, y) on curve. Identity marked by (0, 0).
+  template <class Params, class Element>
   struct PointAffine
   {
     Element x, y;
@@ -54,23 +232,121 @@ namespace curve256
 
     __host__ __device__ __forceinline__ PointAffine() {}
     __host__ __device__ __forceinline__ PointAffine(Element x, Element y) : x(x), y(y) {}
-    static __host__ __device__ __forceinline__ PointAffine load(const u32* p, u32 stride = 1)
+    static __host__ __device__ __forceinline__ PointAffine load(const u32 *p)
     {
-      auto x = Element::load(p, stride);
-      auto y = Element::load(p + Number::N_WORDS * stride, stride);
+      auto x = Element::load(p);
+      auto y = Element::load(p + Element::LIMBS);
       return PointAffine(x, y);
     }
-    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1)
+    __host__ __device__ __forceinline__ void store(u32 *p)
     {
-      x.store(p, stride);
-      y.store(p + Number::N_WORDS * stride, stride);
+      x.store(p);
+      y.store(p + Element::LIMBS);
     }
-    friend std::ostream & operator<<(std::ostream &os, const PointAffine &p);
-    friend std::istream & operator>>(std::istream &is, PointAffine &p);
+
+    __device__ __host__ __forceinline__ Point<Params, Element> to_projective() const &;
+
+    static __device__ __host__ __forceinline__
+        PointAffine
+        identity()
+    {
+      return PointAffine(Element::zero(), Element::zero());
+    }
+
+    __device__ __host__ __forceinline__ bool is_identity() const &
+    {
+      return x.is_zero() && y.is_zero();
+    }
+
+    __device__ __host__ __forceinline__ bool operator==(const PointAffine &rhs) const &
+    {
+      return x == rhs.x && y == rhs.y;
+    }
+
+    __device__ __host__ __forceinline__
+        PointAffine
+        neg() const &
+    {
+      return PointAffine(x, y.neg());
+    }
+
+    __device__ __host__ __forceinline__ bool is_on_curve() const &
+    {
+      Element t0, t1;
+      t0 = x.square();
+      t0 = t0 + Params::a();
+      t0 = t0 * x;
+      t0 = t0 + Params::b();
+      t1 = y.square();
+      t0 = t1 - t0;
+      return t0.is_zero();
+    }
   };
 
+  template <class Params, class Element>
+  __device__ __host__ __forceinline__ PointAffine<Params, Element> Point<Params, Element>::to_affine() const &
+  {
+    auto zinv = z.invert();
+    auto x1 = x * zinv;
+    auto y1 = y * zinv;
+    return PointAffine<Params, Element>(x1, y1);
+  }
+
+  template <class Params, class Element>
+  __device__ __host__ __forceinline__ Point<Params, Element> PointAffine<Params, Element>::to_projective() const &
+  {
+    return Point<Params, Element>(x, y, Element::one());
+  }
+
+  template <class Params, class Element>
+  __device__ __host__ __forceinline__
+      Point<Params, Element>
+      Point<Params, Element>::operator+(const PointAffine<Params, Element> &rhs) const &
+  {
+    if (rhs.is_identity())
+      return *this;
+    if (is_identity())
+      return rhs.to_projective();
+    Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
+    t0 = x * rhs.x;
+    t1 = y * rhs.y;
+    t3 = rhs.x + rhs.y;
+    t4 = x + y;
+    t3 = t3 * t4;
+    t4 = t0 + t1;
+    t3 = t3 - t4;
+    t4 = rhs.x * z;
+    t4 = t4 + x;
+    t5 = rhs.y * z;
+    t5 = t5 + y;
+    z3 = Params::a() * t4;
+    x3 = Params::b3() * z;
+    z3 = x3 + z3;
+    x3 = t1 - z3;
+    z3 = t1 + z3;
+    y3 = x3 * z3;
+    t1 = t0 + t0;
+    t1 = t1 + t0;
+    t2 = Params::a() * z;
+    t4 = Params::b3() * t4;
+    t1 = t1 + t2;
+    t2 = t0 - t2;
+    t2 = Params::a() * t2;
+    t4 = t4 + t2;
+    t0 = t1 * t4;
+    y3 = y3 + t0;
+    t0 = t5 * t4;
+    x3 = t3 * x3;
+    x3 = x3 - t0;
+    t0 = t3 * t1;
+    z3 = t5 * z3;
+    z3 = z3 + t0;
+    return Point<Params, Element>(x3, y3, z3);
+  }
+
+  template <class Params, class Element>
   std::ostream &
-  operator<<(std::ostream &os, const PointAffine &p)
+  operator<<(std::ostream &os, const PointAffine<Params, Element> &p)
   {
     os << "{\n";
     os << "  .x = " << p.x << ",\n";
@@ -79,283 +355,12 @@ namespace curve256
     return os;
   }
 
+  template <class Params, class Element>
   std::istream &
-  operator>>(std::istream &is, PointAffine &p)
+  operator>>(std::istream &is, PointAffine<Params, Element> &p)
   {
     is >> p.x >> p.y;
     return is;
   }
-
-  // Y^2 = X^3 + aX + b
-  struct Curve
-  {
-    mont256::Env field;
-    // b3 = 3 b
-    Element a, b, b3;
-
-    __host__ __device__ __forceinline__ Curve(mont256::Env field, Element a, Element b, Element b3) : field(field), a(a), b(b), b3(b3)
-    {
-    }
-
-    __device__ __forceinline__ PointAffine to_affine(const Point &p)
-    {
-      auto zinv = field.invert(p.z);
-      auto x = field.mul(p.x, zinv);
-      auto y = field.mul(p.y, zinv);
-      return PointAffine(x, y);
-    }
-
-    __device__ __forceinline__ Point from_affine(const PointAffine &p)
-    {
-      return Point(p.x, p.y, field.one());
-    }
-
-    __device__ __host__ __forceinline__ PointAffine identity_affine()
-    {
-      return PointAffine(field.zero(), field.zero());
-    }
-
-    __device__ __host__ __forceinline__ Point identity()
-    {
-      return Point(field.zero(), field.one(), field.zero());
-    }
-
-    __device__ __host__ __forceinline__ bool is_identity(const Point &p)
-    {
-      return field.is_zero(p.z);
-    }
-
-    __device__ __host__ __forceinline__ bool is_identity(const PointAffine &p)
-    {
-      return field.is_zero(p.x) && field.is_zero(p.y);
-    }
-
-    __device__ __forceinline__ bool eq(const Point &a, const Point &b)
-    {
-      auto x1 = field.mul(a.x, b.z);
-      auto y1 = field.mul(a.y, b.z);
-      auto x2 = field.mul(b.x, a.z);
-      auto y2 = field.mul(b.y, a.z);
-      return is_identity(a) && is_identity(b) || !is_identity(a) && !is_identity(b) && x1 == x2 && y1 == y2;
-    }
-
-    __device__ __forceinline__ bool eq(const PointAffine &a, const PointAffine &b)
-    {
-      return a.x == b.x && a.y == b.y;
-    }
-
-    __device__ __forceinline__ Point neg(const Point &p)
-    {
-      return Point(p.x, field.neg(p.y), p.z);
-    }
-
-    __device__ __forceinline__ PointAffine neg(const PointAffine &p)
-    {
-      return PointAffine(p.x, field.neg(p.y));
-    }
-
-    __device__ __forceinline__ bool is_on_curve(const Point &p)
-    {
-      Element t0, t1;
-      t0 = field.mul(a, p.x);
-      t1 = field.mul(b, p.z);
-      t0 = field.add(t0, t1);
-      t0 = field.mul(p.z, t0);
-      t1 = field.square(p.y);
-      t0 = field.sub(t0, t1);
-      t0 = field.mul(t0, p.z);
-      t1 = field.mul(p.x, p.x);
-      t1 = field.mul(t1, p.x);
-      t0 = field.add(t0, t1);
-      return field.is_zero(t0);
-    }
-
-    __device__ __forceinline__ bool is_on_curve(const PointAffine &p)
-    {
-      Element t0, t1;
-      t0 = field.square(p.x);
-      t0 = field.add(t0, a);
-      t0 = field.mul(t0, p.x);
-      t0 = field.add(t0, b);
-      t1 = field.square(p.y);
-      t0 = field.sub(t1, t0);
-      return field.is_zero(t0);
-    }
-
-    // A alternative name for double, which is not a valid function name
-    // Ref. Complete Addition Formulas for Prime Order Elliptic Curves, Algorithm 3.
-    __device__ __forceinline__ Point self_add(const Point &p)
-    {
-      Element t0, t1, t2, t3, x3, y3, z3;
-      t0 = field.square(p.x);
-      t1 = field.square(p.y);
-      t2 = field.square(p.z);
-      t3 = field.mul(p.x, p.y);
-      t3 = field.add(t3, t3);
-      z3 = field.mul(p.x, p.z);
-      z3 = field.add(z3, z3);
-      x3 = field.mul(a, z3);
-      y3 = field.mul(b3, t2);
-      y3 = field.add(x3, y3);
-      x3 = field.sub(t1, y3);
-      y3 = field.add(t1, y3);
-      y3 = field.mul(x3, y3);
-      x3 = field.mul(t3, x3);
-      z3 = field.mul(b3, z3);
-      t2 = field.mul(a, t2);
-      t3 = field.sub(t0, t2);
-      t3 = field.mul(a, t3);
-      t3 = field.add(t3, z3);
-      z3 = field.add(t0, t0);
-      t0 = field.add(z3, t0);
-      t0 = field.add(t0, t2);
-      t0 = field.mul(t0, t3);
-      y3 = field.add(y3, t0);
-      t2 = field.mul(p.y, p.z);
-      t2 = field.add(t2, t2);
-      t0 = field.mul(t2, t3);
-      x3 = field.sub(x3, t0);
-      z3 = field.mul(t2, t1);
-      z3 = field.add(z3, z3);
-      z3 = field.add(z3, z3);
-      return Point(x3, y3, z3);
-    }
-
-    // Adding two points.
-    // Ref. Complete Addition Formulas for Prime Order Elliptic Curves, Algorithm 1.
-    __device__ __forceinline__ Point add(const Point &p1, const Point &p2)
-    {
-      if (is_identity(p1))
-        return p2;
-      if (is_identity(p2))
-        return p1;
-      Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
-      t0 = field.mul(p1.x, p2.x);
-      t1 = field.mul(p1.y, p2.y);
-      t2 = field.mul(p1.z, p2.z);
-      t3 = field.add(p1.x, p1.y);
-      t4 = field.add(p2.x, p2.y);
-      t3 = field.mul(t3, t4);
-      t4 = field.add(t0, t1);
-      t3 = field.sub(t3, t4);
-      t4 = field.add(p1.x, p1.z);
-      t5 = field.add(p2.x, p2.z);
-      t4 = field.mul(t4, t5);
-      t5 = field.add(t0, t2);
-      t4 = field.sub(t4, t5);
-      t5 = field.add(p1.y, p1.z);
-      x3 = field.add(p2.y, p2.z);
-      t5 = field.mul(t5, x3);
-      x3 = field.add(t1, t2);
-      t5 = field.sub(t5, x3);
-      z3 = field.mul(a, t4);
-      x3 = field.mul(b3, t2);
-      z3 = field.add(x3, z3);
-      x3 = field.sub(t1, z3);
-      z3 = field.add(t1, z3);
-      y3 = field.mul(x3, z3);
-      t1 = field.add(t0, t0);
-      t1 = field.add(t1, t0);
-      t2 = field.mul(a, t2);
-      t4 = field.mul(b3, t4);
-      t1 = field.add(t1, t2);
-      t2 = field.sub(t0, t2);
-      t2 = field.mul(a, t2);
-      t4 = field.add(t4, t2);
-      t0 = field.mul(t1, t4);
-      y3 = field.add(y3, t0);
-      t0 = field.mul(t5, t4);
-      x3 = field.mul(t3, x3);
-      x3 = field.sub(x3, t0);
-      t0 = field.mul(t3, t1);
-      z3 = field.mul(t5, z3);
-      z3 = field.add(z3, t0);
-      return Point(x3, y3, z3);
-    }
-
-    // Addint one point and one affine point.
-    // Ref. Complete Addition Formulas for Prime Order Elliptic Curves, Algorithm 2.
-    __device__ __forceinline__ Point add(const Point &p1, const PointAffine &p2)
-    {
-      if (is_identity(p2))
-        return p1;
-      if (is_identity(p1))
-        return from_affine(p2);
-      Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
-      t0 = field.mul(p1.x, p2.x);
-      t1 = field.mul(p1.y, p2.y);
-      t3 = field.add(p2.x, p2.y);
-      t4 = field.add(p1.x, p1.y);
-      t3 = field.mul(t3, t4);
-      t4 = field.add(t0, t1);
-      t3 = field.sub(t3, t4);
-      t4 = field.mul(p2.x, p1.z);
-      t4 = field.add(t4, p1.x);
-      t5 = field.mul(p2.y, p1.z);
-      t5 = field.add(t5, p1.y);
-      z3 = field.mul(a, t4);
-      x3 = field.mul(b3, p1.z);
-      z3 = field.add(x3, z3);
-      x3 = field.sub(t1, z3);
-      z3 = field.add(t1, z3);
-      y3 = field.mul(x3, z3);
-      t1 = field.add(t0, t0);
-      t1 = field.add(t1, t0);
-      t2 = field.mul(a, p1.z);
-      t4 = field.mul(b3, t4);
-      t1 = field.add(t1, t2);
-      t2 = field.sub(t0, t2);
-      t2 = field.mul(a, t2);
-      t4 = field.add(t4, t2);
-      t0 = field.mul(t1, t4);
-      y3 = field.add(y3, t0);
-      t0 = field.mul(t5, t4);
-      x3 = field.mul(t3, x3);
-      x3 = field.sub(x3, t0);
-      t0 = field.mul(t3, t1);
-      z3 = field.mul(t5, z3);
-      z3 = field.add(z3, t0);
-      return Point(x3, y3, z3);
-    }
-
-    __device__ __forceinline__ void multiple_iter(const Point &p, bool &found_one, Point &res, u32 n)
-    {
-      for (int i = 31; i >= 0; i--)
-      {
-        if (found_one)
-          res = self_add(res);
-        if ((n >> i) & 1)
-        {
-          found_one = true;
-          res = add(res, p);
-        }
-      }
-    }
-
-    __device__ __forceinline__ Point multiple(const Point &p, const Number& n)
-    {
-      auto res = identity();
-      bool found_one = false;
-      multiple_iter(p, found_one, res, n.c7);
-      multiple_iter(p, found_one, res, n.c6);
-      multiple_iter(p, found_one, res, n.c5);
-      multiple_iter(p, found_one, res, n.c4);
-      multiple_iter(p, found_one, res, n.c3);
-      multiple_iter(p, found_one, res, n.c2);
-      multiple_iter(p, found_one, res, n.c1);
-      multiple_iter(p, found_one, res, n.c0);
-      return res;
-    }
-
-    __device__ __forceinline__ Point multiple(const Point &p, u32 n)
-    {
-      auto res = identity();
-      bool found_one = false;
-      multiple_iter(p, found_one, res, n);
-      return res;
-    }
-  };
-};
-
-
+}
 #endif

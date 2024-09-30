@@ -712,6 +712,13 @@ namespace mont
       return r;
     }
 
+    __host__ __device__
+        bool
+        is_zero() const &
+    {
+      return n.is_zero();
+    }
+
     // Word-by-word equality
     __host__ __device__ __forceinline__ bool operator==(const Element &rhs) const &
     {
