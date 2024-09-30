@@ -1,5 +1,5 @@
-#include "../../mont/src/mont.cuh"
-#include "./curve.cuh"
+#include "../../mont/src/bn254_scalar.cuh"
+#include "bn254.cuh"
 
 #include <cub/cub.cuh>
 #include <iostream>
@@ -16,13 +16,12 @@
 
 namespace msm
 {
-  using curve256::Curve;
-  using curve256::Point;
-  using curve256::PointAffine;
-  using mont256::Number;
-  using mont256::u32;
-
-  using u64 = u_int64_t;
+  using bn254::Point;
+  using bn254::PointAffine;
+  using bn254_scalar::Number;
+  using bn254_scalar::Element;
+  using mont::u32;
+  using mont::u64;
 
   const u32 THREADS_PER_WARP = 32;
 
@@ -87,6 +86,35 @@ namespace msm
     static constexpr bool debug = true;
   };
 
+  // initialize the array 'counts'
+  template <typename Config>
+  __global__ void initialize_counts(Array2D<u32, Config::n_windows, Config::n_buckets> counts)
+  {
+    if (threadIdx.x < Config::n_windows)
+    {
+      u32 window_id = threadIdx.x;
+      for (u32 i = 0; i < Config::n_buckets; i++)
+      {
+        counts.get(window_id, i) = 0;
+      }
+    }
+
+    __syncthreads();
+
+    // for(u32 i=0; i < Config::n_windows; ++i)
+    // {
+    //   for (u32 j = 0; j < Config::n_buckets; j++)
+    //   {
+    //     if(counts.get(i, j) != 0)
+    //     {
+    //       printf("Assertion failed! i: %d, j: %d, value: %d\n", 
+    //             i, j, counts.get(i, j));
+    //       assert(false);
+    //     }
+    //   }
+    // }
+  }
+
   // with n_windows = 32, launched 64 threads
   //
   //   scaler 0 = digit 0 | d1 | ... | d31
@@ -121,19 +149,33 @@ namespace msm
       {
         shm_counts[window_id][i] = 0;
 
-        if (blockIdx.x == 0)
-          counts.get(window_id, i) = 0;
+        // if (blockIdx.x == 0)
+        //   counts.get(window_id, i) = 0;
       }
     }
 
     __syncthreads();
 
+    // for(u32 i=0; i < Config::n_windows; ++i)
+    // {
+    //   for (u32 j = 0; j < Config::n_buckets; j++)
+    //   {
+    //     if(shm_counts[i][j] != 0)
+    //     {
+    //       printf("Assertion failed! i: %d, j: %d, value: %d\n", 
+    //             i, j, shm_counts[i][j]);
+    //       assert(false);
+    //     }
+    //   }
+    // }
+
     // Count into block-wide counter
     for (u32 i = i0_scaler; i < len; i += i_stride)
     {
-      auto scaler = Number::load(scalers + i * Number::N_WORDS);
+      auto scaler = Number::load(scalers + i * Number::LIMBS);
       auto scaler_window = scaler.bit_slice(window_id * Config::s, Config::s);
-      atomicAdd(&shm_counts[window_id][scaler_window], 1);
+      if(scaler_window != 0)
+        atomicAdd(&shm_counts[window_id][scaler_window], 1);
     }
 
     __syncthreads();
@@ -165,6 +207,19 @@ namespace msm
     }
   };
 
+  // initialize the array 'buckets_len'
+  template <typename Config>
+  __global__ void initialize_buckets_len(Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len)
+  {
+    if (threadIdx.x < Config::n_windows)
+    {
+      for (u32 i = 0; i < Config::n_buckets; i++)
+        buckets_len.get(threadIdx.x, i) = 0;
+    }
+
+    __syncthreads();
+  }
+
   // with n_windows = 32, scatter_batch_size = 2, launched 64 threads
   //
   //   scaler 0 = digit 0 | d1 | ... | d31
@@ -193,14 +248,18 @@ namespace msm
     u32 n_threads = gridDim.x * blockDim.x;
     u32 i_stride = n_threads / Config::n_windows * Config::scatter_batch_size;
 
-    // Initialize length of each bucket into 0
-    if (tid < Config::n_windows)
-    {
-      for (u32 i = 0; i < Config::n_buckets; i++)
-        buckets_len.get(window_id, i) = 0;
-    }
+    if(tid == 0)
+      printf("config info: %d %d %d %d\n", Config::n_windows, Config::n_buckets, Config::scatter_batch_size, i_stride);
 
-    __syncthreads();
+    // // Initialize length of each bucket into 0
+    // if (tid < Config::n_windows)
+    // // if (threadIdx.x < Config::n_windows)
+    // {
+    //   for (u32 i = 0; i < Config::n_buckets; i++)
+    //     buckets_len.get(window_id, i) = 0;
+    // }
+
+    // __syncthreads();
 
     // Opt. Opportunity: First scatter to shared memory, then scatter to global, so as to reduce
     // global atomic operations.
@@ -208,11 +267,16 @@ namespace msm
     {
       for (u32 j = i; j < i + Config::scatter_batch_size && j < len; j++)
       {
-        auto scaler = Number::load(scalers + j * Number::N_WORDS);
+        auto scaler = Number::load(scalers + j * Number::LIMBS);
         auto scaler_window = scaler.bit_slice(window_id * Config::s, Config::s);
         if (scaler_window != 0)
         {
           u32 old_count = atomicAdd(buckets_len.addr(window_id, scaler_window), 1);
+          if (buckets_offset.get_const(window_id, scaler_window) + old_count >= len * Config::n_windows) {
+            printf("Assertion failed! window_id: %d, scaler_window: %d, old_count: %d, offset: %d, len: %d\n", 
+                window_id, scaler_window, old_count, buckets_offset.get_const(window_id, scaler_window), len);
+            assert(false);
+          }
           buckets_buffer[buckets_offset.get_const(window_id, scaler_window) + old_count] = PointId(window_id, j);
         }
       }
@@ -222,7 +286,6 @@ namespace msm
   // blockDim.x better be multiple of n_windows, and total number threads must be mutiple of n_windows
   template <typename Config>
   __global__ void initalize_sum(
-      Curve *curve,
       Array2D<Point, Config::n_buckets, Config::n_windows> sum)
   {
     u32 tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -234,9 +297,27 @@ namespace msm
 
     for (u32 i = i0_bucket; i < Config::n_buckets; i += i_stride)
     {
-      auto id = curve->identity();
-      sum.get(i, window_id) = id;
+      sum.get(i, window_id) = Point::identity();
     }
+  }
+
+  // check sum is all intialized
+  template <typename Config>
+  __global__ void check_sum(Array2D<Point, Config::n_buckets, Config::n_windows> sum)
+  {
+    for (u32 i = 0; i < Config::n_buckets; i++)
+    {
+      for( u32 j = 0; j < Config::n_windows; j++)
+      {
+        if(!sum.get(i, j).x.is_zero() || sum.get(i, j).y != Element::one() || !sum.get(i, j).z.is_zero())
+        {
+          printf("Assertion failed! i: %d, j: %d\n", 
+                i, j);
+          assert(false);
+        }
+      }
+    }
+    printf("check true\n");
   }
 
   template <typename Config, u32 WarpPerBlock>
@@ -244,7 +325,6 @@ namespace msm
       const PointId *buckets_buffer,
       const Array2D<u32, Config::n_windows, Config::n_buckets> buckets_offset,
       const Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len,
-      Curve *curve,
       const u32 *points,
       Array2D<Point, Config::n_buckets, Config::n_windows> sum)
   {
@@ -269,13 +349,19 @@ namespace msm
         continue;
 
       // A warp works independently to sum up points in the bucket
-      auto acc = curve->identity();
+      auto acc = Point::identity();
       for (u32 j = in_warp_id; j < buckets_len.get_const(window_id, bucket_no); j += THREADS_PER_WARP)
       {
         auto p = PointAffine::load(
             points + buckets_buffer[buckets_offset.get_const(window_id, bucket_no) + j].scaler_id() * PointAffine::N_WORDS);
-        acc = curve->add(acc, p);
-        // printf("tid %u, warp_id %u, i %u, window_id %u, bucket_no %u, j %u, p 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x, acc 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x\n", tid, warp_id, i, window_id, bucket_no, j,
+        // if(window_id == 0 && bucket_no == 1)
+        // {
+        //   printf("%d ", buckets_buffer[buckets_offset.get_const(window_id, bucket_no) + j].scaler_id());
+        // }  
+        acc = acc + p;
+        // if(window_id == 0 && bucket_no == 1 && j % THREADS_PER_WARP == 0)
+        //   printf("tid %u, warp_id %u, i %u, window_id %u, bucket_no %u, j %u, scaler %u, p 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x, acc 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x, 0x%x_%x_%x_%x_%x_%x_%x_%x\n", tid, warp_id, i, window_id, bucket_no, j,
+        //        buckets_buffer[buckets_offset.get_const(window_id, bucket_no) + j].scaler_id(),
         //        p.x.n.c7, p.x.n.c6, p.x.n.c5, p.x.n.c4, p.x.n.c3, p.x.n.c2, p.x.n.c1, p.x.n.c0,
         //        p.y.n.c7, p.y.n.c6, p.y.n.c5, p.y.n.c4, p.y.n.c3, p.y.n.c2, p.y.n.c1, p.y.n.c0,
         //        acc.x.n.c7, acc.x.n.c6, acc.x.n.c5, acc.x.n.c4, acc.x.n.c3, acc.x.n.c2, acc.x.n.c1, acc.x.n.c0,
@@ -283,10 +369,12 @@ namespace msm
         //        acc.z.n.c7, acc.z.n.c6, acc.z.n.c5, acc.z.n.c4, acc.z.n.c3, acc.z.n.c2, acc.z.n.c1, acc.z.n.c0);
       }
 
+      // __syncwarp();
+
       // Sum up accumulated point from each thread in warp, returing the result to thread 0 in warp
       int in_block_warp_id = threadIdx.x / THREADS_PER_WARP;
-      Point reduced_acc = WarpReduce(temp_storage[in_block_warp_id]).Reduce(acc, [curve](const Point &a, const Point &b)
-                                                                            { return curve->add(a, b); });
+      Point reduced_acc = WarpReduce(temp_storage[in_block_warp_id]).Reduce(acc, [](const Point &a, const Point &b)
+                                                                            { return a + b; });
 
       if (in_warp_id == 0)
       {
@@ -295,30 +383,29 @@ namespace msm
         //        reduced_acc.x.n.c7, reduced_acc.x.n.c6, reduced_acc.x.n.c5, reduced_acc.x.n.c4, reduced_acc.x.n.c3, reduced_acc.x.n.c2, reduced_acc.x.n.c1, reduced_acc.x.n.c0,
         //        reduced_acc.y.n.c7, reduced_acc.y.n.c6, reduced_acc.y.n.c5, reduced_acc.y.n.c4, reduced_acc.y.n.c3, reduced_acc.y.n.c2, reduced_acc.y.n.c1, reduced_acc.y.n.c0,
         //        reduced_acc.z.n.c7, reduced_acc.z.n.c6, reduced_acc.z.n.c5, reduced_acc.z.n.c4, reduced_acc.z.n.c3, reduced_acc.z.n.c2, reduced_acc.z.n.c1, reduced_acc.z.n.c0);
-        sum.get(bucket_no, window_id) = curve->add(sum.get_const(bucket_no, window_id), reduced_acc);
+        sum.get(bucket_no, window_id) = sum.get_const(bucket_no, window_id) + reduced_acc;
       }
     }
   }
-
+  
   // A total of n_windows threads should be launched, only one block should be launched.
   // Opt. Opportunity: Perhaps this can be done faster by CPU; Or assign multiple threads to a window somehow
   template <typename Config>
   __global__ void bucket_reduction_and_window_reduction(
-      Curve *curve,
       const Array2D<Point, Config::n_buckets, Config::n_windows> buckets_sum,
       Point *reduced)
   {
     u32 window_id = threadIdx.x;
 
-    auto acc = curve->identity();
-    auto sum = curve->identity();
+    auto acc = Point::identity();
+    auto sum = Point::identity();
 
     // Bucket reduction
     // Perhaps save an iteration here by initializing acc to buckets_sum[n_buckets - 1][...]
     for (u32 i = Config::n_buckets - 1; i >= 1; i--)
     {
-      acc = curve->add(acc, buckets_sum.get_const(i, window_id));
-      sum = curve->add(sum, acc);
+      acc = acc + buckets_sum.get_const(i, window_id);
+      sum = sum + acc;
     }
 
     __syncthreads();
@@ -327,23 +414,20 @@ namespace msm
     // Opt. Opportunity: Diverges here
     for (u32 i = 0; i < window_id * Config::s; i++)
     {
-      sum = curve->self_add(sum);
+      sum = sum.self_add();
     }
+
+    __syncthreads();
 
     using BlockReduce = cub::BlockReduce<Point, Config::n_windows>;
     __shared__ typename BlockReduce::TempStorage temp_storage;
 
     Point msm_result = BlockReduce(temp_storage)
-                           .Reduce(sum, [curve](const Point &a, const Point &b)
-                                   { return curve->add(a, b); }, blockDim.x);
+                           .Reduce(sum, [](const Point &a, const Point &b)
+                                   { return a + b; }, blockDim.x);
 
     if (threadIdx.x == 0)
       *reduced = msm_result;
-  }
-
-  __global__ void load_curve(Curve* curve)
-  {
-    *curve = bn254::new_bn254();
   }
 
   template <typename Config>
@@ -417,23 +501,23 @@ namespace msm
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
-
     // Count items in buckets
     u32 *scalers;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::N_WORDS * len));
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::LIMBS * len));
     u32 *counts_buf;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&counts_buf, sizeof(u32) * Config::n_windows * Config::n_buckets));
-    PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::N_WORDS * len, cudaMemcpyHostToDevice));
+    PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
     auto counts = Array2D<u32, Config::n_windows, Config::n_buckets>(counts_buf);
 
     u32 block_size = 96;
     u32 grid_size = 128;
+    initialize_counts<Config><<<1, block_size>>>(counts);
     count_buckets<Config><<<grid_size, block_size>>>(scalers, len, counts);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " 
+                  << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
 
     if (Config::debug)
     {
@@ -465,14 +549,19 @@ namespace msm
     // Scatter
     block_size = 96;
     grid_size = 128;
+    initialize_buckets_len<Config><<<1, block_size>>>(counts);
     scatter<Config><<<grid_size, block_size>>>(
         scalers,
         len,
         buckets_buffer,
         buckets_offset,
         counts);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " 
+                  << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
     // space for counts is reused
-
     PROPAGATE_CUDA_ERROR(cudaFree(scalers));
 
     if (Config::debug)
@@ -482,9 +571,6 @@ namespace msm
       // print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
     }
 
-    Curve *curve;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&curve, sizeof(Curve)));
-    load_curve<<<1, 1>>>(curve);
 
     // Prepare for bucket sum
     Point *buckets_sum_buf;
@@ -494,8 +580,13 @@ namespace msm
     block_size = 96;
     grid_size = 128;
     initalize_sum<Config><<<grid_size, block_size>>>(
-        curve,
         buckets_sum);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " 
+                  << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
+    // check_sum<Config><<<1, 1>>>(buckets_sum);
 
     // TODO: Cut into chunks to support len at 2^30
     u32 *points;
@@ -503,23 +594,21 @@ namespace msm
     PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
 
     // Do bucket sum
-    block_size = 8 * THREADS_PER_WARP;
-    grid_size = Config::n_windows * Config::n_buckets / 8;
-
-    cudaEvent_t bucket_sum_start, bucket_sum_stop;
-    cudaEventCreate(&bucket_sum_start);
-    cudaEventCreate(&bucket_sum_stop);
-    cudaEventRecord(bucket_sum_start);
-
-    bucket_sum<Config, 8><<<grid_size, block_size>>>(
+    block_size = 2 * THREADS_PER_WARP;
+    grid_size = deviceProp.multiProcessorCount;
+    bucket_sum<Config, 2><<<grid_size, block_size>>>(
         buckets_buffer,
         Array2D<u32, Config::n_windows, Config::n_buckets>(buckets_offset),
         Array2D<u32, Config::n_windows, Config::n_buckets>(counts),
-        curve,
         points,
         buckets_sum);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " 
+                  << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
 
-    cudaEventRecord(bucket_sum_stop);
+    print_sums<Config>(buckets_sum);
 
     if (Config::debug)
     {
@@ -533,25 +622,20 @@ namespace msm
     block_size = Config::n_windows;
     grid_size = 1;
     bucket_reduction_and_window_reduction<Config><<<grid_size, block_size>>>(
-        curve,
         buckets_sum,
         reduced);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " 
+                  << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
 
     PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
 
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-
-    if (Config::debug)
-    {
-      float elapsed_time;
-      cudaEventElapsedTime(&elapsed_time, bucket_sum_start, bucket_sum_stop);
-      std::cout << "MSM::bucket_sum cost " << elapsed_time << " ms" << std::endl;
-      cudaEventElapsedTime(&elapsed_time, start, stop);
-      std::cout << "MSM cost " << elapsed_time << " ms" << std::endl;
-    }
+    printf("finished!\n");
 
     return cudaSuccess;
   }
 
 }
+

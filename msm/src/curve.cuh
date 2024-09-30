@@ -6,6 +6,7 @@
 namespace curve
 {
   using mont::u32;
+  using mont::usize;
 
   template <class Params, class Element>
   struct PointAffine;
@@ -19,6 +20,8 @@ namespace curve
   template <class Params, class Element>
   struct Point
   {
+    static const usize N_WORDS = 3 * Element::LIMBS;
+
     Element x, y, z;
 
     __host__ __device__ __forceinline__ Point() {}
@@ -226,9 +229,9 @@ namespace curve
   template <class Params, class Element>
   struct PointAffine
   {
-    Element x, y;
+    static const usize N_WORDS = 2 * Element::LIMBS;
 
-    static const u32 N_WORDS = 16;
+    Element x, y;
 
     __host__ __device__ __forceinline__ PointAffine() {}
     __host__ __device__ __forceinline__ PointAffine(Element x, Element y) : x(x), y(y) {}
@@ -359,7 +362,7 @@ namespace curve
   std::istream &
   operator>>(std::istream &is, PointAffine<Params, Element> &p)
   {
-    is >> p.x >> p.y;
+    is >> p.x.n >> p.y.n;
     return is;
   }
 }

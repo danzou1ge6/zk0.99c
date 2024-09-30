@@ -502,18 +502,19 @@ namespace mont
   }
 
   // A big integer
-  template <usize LIMBS>
+  template <usize LIMBS_>
   struct
       __align__(16)
           Number
   {
+    static const usize LIMBS = LIMBS_;
     u32 limbs[LIMBS];
 
     __device__ __host__
-    Number<LIMBS>() {}
+    Number() {}
 
     // Constructor: `Number x = {0, 1, 2, 3, 4, 5, 6, 7}` in little endian
-    constexpr Number<LIMBS>(const std::initializer_list<uint32_t> &values) : limbs{}
+    constexpr Number(const std::initializer_list<uint32_t> &values) : limbs{}
     {
       size_t i = 0;
       for (auto value : values)
@@ -525,10 +526,10 @@ namespace mont
     }
 
     static __device__ __host__ __forceinline__
-        Number<LIMBS>
+        Number
         load(const u32 *p)
     {
-      Number<LIMBS> r;
+      Number r;
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
         r.limbs[i] = p[i];
@@ -543,20 +544,20 @@ namespace mont
     }
 
     static __device__ __host__ __forceinline__
-        Number<LIMBS>
+        Number
         zero()
     {
-      Number<LIMBS> r;
+      Number r;
       memset(r.limbs, 0, LIMBS * sizeof(u32));
       return r;
     }
 
     // Shift logical right by `k` bits
     __host__ __device__ __forceinline__
-        Number<LIMBS>
+        Number
         slr(u32 k) const &
     {
-      Number<LIMBS> r;
+      Number r;
       device_arith::slr<LIMBS>(r.limbs, limbs, k);
       return r;
     }
@@ -567,13 +568,13 @@ namespace mont
         u32
         bit_slice(u32 lo, u32 n_bits)
     {
-      Number<LIMBS> t = slr(lo);
-      return t.limbs & ~((u32)0 - (1 << n_bits));
+      Number t = slr(lo);
+      return t.limbs[0] & ~((u32)0 - (1 << n_bits));
     }
 
     // Word-by-word equality
     __host__ __device__ __forceinline__ bool
-    operator==(const Number<LIMBS> &rhs) const &
+    operator==(const Number &rhs) const &
     {
       bool r = true;
 #pragma unroll
@@ -583,7 +584,7 @@ namespace mont
     }
 
     __host__ __device__ __forceinline__ bool
-    operator!=(const Number<LIMBS> &rhs) const &
+    operator!=(const Number &rhs) const &
     {
       bool r = false;
 #pragma unroll
@@ -631,10 +632,10 @@ namespace mont
 
     // Big number addition
     __host__ __device__ __forceinline__
-        Number<LIMBS>
+        Number
         operator+(const Number &rhs) const &
     {
-      Number<LIMBS> r;
+      Number r;
 #ifdef __CUDA_ARCH__
       device_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
 #else
@@ -645,7 +646,7 @@ namespace mont
 
     // Big number subtraction
     __host__ __device__ __forceinline__
-        Number<LIMBS>
+        Number
         operator-(const Number &rhs) const &
     {
       u32 useless;
@@ -656,10 +657,10 @@ namespace mont
     // Big number subtraction.
     // Carry of subtraction is written to `borrow_ret`: `UINT32_MAX` if borrow occurred, otherwise 0.
     __host__ __device__ __forceinline__
-        Number<LIMBS>
+        Number
         sub_borrowed(const Number &rhs, u32 &borrow_ret) const &
     {
-      Number<LIMBS> r;
+      Number r;
 #ifdef __CUDA_ARCH__
       borrow_ret = device_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
 #else

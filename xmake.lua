@@ -47,7 +47,7 @@ target("test-msm")
     if is_mode("debug") then
         set_symbols("debug")
     end
-    set_optimize("fastest")
+    set_languages(("c++17"))
     add_deps("mont.cuh")
     add_files("msm/tests/msm.cu")
 
