@@ -1,13 +1,11 @@
-use group::ff::Field;
-use halo2_proofs::*;
-use halo2curves::bn256::Fr;
-use halo2curves::pasta::Fp;
-use rand_core::OsRng;
-use rand_core::SeedableRng;
+use group::ff::{Field, WithSmallOrderMulGroup};
+use halo2_proofs::poly::EvaluationDomain;
+use halo2curves::{bn256::Fr, pasta::Fp};
+use rand_core::{OsRng, SeedableRng};
 use rand_xorshift::XorShiftRng;
 use rayon::prelude::*;
 use std::time::Instant;
-use zk0d99c_ntt::gpu_ntt;
+use zk0d99c_ntt::gpu_coeff_to_extended;
 
 #[test]
 fn compare_with_halo2() {
@@ -15,25 +13,43 @@ fn compare_with_halo2() {
     println!("testing with pasta Fp...");
     for k in 1..=max_k {
         println!("generating data for k = {k}...");
-        let mut data_rust: Vec<Fp> = (0..(1 << k))
+        let data_rust: Vec<Fp> = (0..(1 << k))
             .into_par_iter()
             .map(|_| Fp::random(XorShiftRng::from_rng(OsRng).unwrap()))
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let omega = Fp::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
+        let domain = EvaluationDomain::<Fp>::new(4, k);
+
+        let poly_rust = domain.coeff_from_vec(data_rust);
+        let g_coset = Fp::ZETA;
+        let g_coset_inv = g_coset.square();
+        let zeta = vec![g_coset, g_coset_inv];
 
         println!("testing for k = {k}:");
         let start1 = Instant::now();
-        arithmetic::best_fft(&mut data_rust, omega, k as u32);
+        let poly_rust = domain.coeff_to_extended(poly_rust);
         let time1 = start1.elapsed().as_micros();
         println!("cpu time: {time1}");
 
-        gpu_ntt(&mut data_cuda.clone(), omega, k as u32).unwrap();
+        gpu_coeff_to_extended(
+            &mut data_cuda.clone(),
+            domain.extended_len(),
+            domain.get_extended_omega(),
+            domain.extended_k(),
+            &zeta,
+        )
+        .unwrap();
 
         let start2 = Instant::now();
 
-        match gpu_ntt(&mut data_cuda, omega, k as u32) {
+        match gpu_coeff_to_extended(
+            &mut data_cuda,
+            domain.extended_len(),
+            domain.get_extended_omega(),
+            domain.extended_k(),
+            &zeta,
+        ) {
             Ok(_) => {}
             Err(e) => panic!("{e}"),
         };
@@ -43,7 +59,7 @@ fn compare_with_halo2() {
 
         data_cuda
             .par_iter()
-            .zip(data_rust.par_iter())
+            .zip(poly_rust.par_iter())
             .for_each(|(a, b)| {
                 assert_eq!(a, b);
             });
@@ -51,23 +67,34 @@ fn compare_with_halo2() {
     println!("testing with pasta Fr...");
     for k in 1..=max_k {
         println!("generating data for k = {k}...");
-        let mut data_rust: Vec<Fr> = (0..(1 << k))
+        let data_rust: Vec<Fr> = (0..(1 << k))
             .into_par_iter()
             .map(|_| Fr::random(XorShiftRng::from_rng(OsRng).unwrap()))
             .collect();
         let mut data_cuda = data_rust.clone();
 
-        let omega = Fr::random(XorShiftRng::from_rng(OsRng).unwrap()); // would be weird if this mattered
+        let domain = EvaluationDomain::<Fr>::new(1, k);
+
+        let poly_rust = domain.coeff_from_vec(data_rust);
+        let g_coset = Fr::ZETA;
+        let g_coset_inv = g_coset.square();
+        let zeta = vec![g_coset, g_coset_inv];
 
         println!("testing for k = {k}:");
         let start1 = Instant::now();
-        arithmetic::best_fft(&mut data_rust, omega, k as u32);
+        let poly_rust = domain.coeff_to_extended(poly_rust);
         let time1 = start1.elapsed().as_micros();
         println!("cpu time: {time1}");
 
         let start2 = Instant::now();
 
-        match gpu_ntt(&mut data_cuda, omega, k as u32) {
+        match gpu_coeff_to_extended(
+            &mut data_cuda,
+            domain.extended_len(),
+            domain.get_extended_omega(),
+            domain.extended_k(),
+            &zeta,
+        ) {
             Ok(_) => {}
             Err(e) => panic!("{e}"),
         };
@@ -77,7 +104,7 @@ fn compare_with_halo2() {
 
         data_cuda
             .par_iter()
-            .zip(data_rust.par_iter())
+            .zip(poly_rust.par_iter())
             .for_each(|(a, b)| {
                 assert_eq!(a, b);
             });

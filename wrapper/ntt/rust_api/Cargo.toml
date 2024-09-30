@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 group = "0.13"
+zk0d99c_cuda_api = { path = "../../cuda_api/rust_api" }
 
 [build-dependencies]
 bindgen = "0.69.4"

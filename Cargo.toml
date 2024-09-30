@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "wrapper/ntt/rust_api"  # 子项目路径
+    "wrapper/ntt/rust_api",  # ntt
+    "wrapper/cuda_api/rust_api",  # cuda_api
 ]
 
 [workspace.package]

@@ -11,12 +11,12 @@ fn main() {
         .join("lib/");
 
     // This is the path to the `c` headers file.
-    let headers_path = PathBuf::from("../c_api/ntt_c_api.h");
+    let headers_path = PathBuf::from("../c_api/cuda_api.h");
     let headers_path_str = headers_path.to_str().expect("Path is not a valid string");
 
     if !std::process::Command::new("xmake")
         .arg("build")
-        .arg("cuda_ntt")
+        .arg("cuda_api")
         .current_dir("../../..")
         .output()
         .expect("could not spawn `xmake`")
@@ -28,14 +28,13 @@ fn main() {
     }
 
     println!("cargo:rerun-if-changed={}", "../c_api");
-    println!("cargo:rerun-if-changed={}", "../../../ntt/src");
     println!("cargo:rerun-if-changed={}", libdir_path.to_str().unwrap());
 
     // Tell cargo to look for libraries in the specified directory
     println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());
     println!("cargo:rustc-link-search=/usr/local/cuda/lib64");
 
-    println!("cargo:rustc-link-lib=static=cuda_ntt");
+    println!("cargo:rustc-link-lib=static=cuda_api");
 
     println!("cargo:rustc-link-lib=dylib=cudart"); // 使用动态链接
     println!("cargo:rustc-link-lib=dylib=cudadevrt");

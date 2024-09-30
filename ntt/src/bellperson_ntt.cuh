@@ -159,12 +159,10 @@ namespace ntt {
             cudaFreeHost(pq);
             cudaFreeHost(omegas);
             cudaFreeHost(param);
-            if (this->on_gpu) {
-                clean_gpu();
-            }
+            if (this->on_gpu) clean_gpu();
         }
 
-        cudaError_t to_gpu() override {
+        cudaError_t to_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (this->on_gpu) return cudaSuccess;
 
@@ -189,7 +187,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t clean_gpu() override {
+        cudaError_t clean_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
             bool success = true;
@@ -203,7 +201,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data) override {
+        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 

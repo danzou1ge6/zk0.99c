@@ -30,12 +30,10 @@ namespace ntt {
         public:
         std::shared_mutex mtx; // lock for on_gpu data
         bool on_gpu = false;
-        virtual cudaError_t ntt(u32 * data) = 0;
-        virtual ~best_ntt() {
-            if (on_gpu) clean_gpu();
-        }
-        virtual cudaError_t to_gpu() {return cudaSuccess;}
-        virtual cudaError_t clean_gpu() {return cudaSuccess;}
+        virtual cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) = 0;
+        virtual ~best_ntt() = default;
+        virtual cudaError_t to_gpu(cudaStream_t stream = 0) = 0;
+        virtual cudaError_t clean_gpu(cudaStream_t stream = 0) = 0;
     };
 
     template <u32 WORDS>
@@ -182,7 +180,6 @@ namespace ntt {
         data[rindex * WORDS + word] = tmp;
     }
 
-        
     template <u32 WORDS>
     __forceinline__ __device__ mont256::Element pow_lookup_constant(u32 exponent, mont256::Env &env, const u32_E *omegas) {
         auto res = env.one();
