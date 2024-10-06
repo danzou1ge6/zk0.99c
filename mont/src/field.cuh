@@ -898,10 +898,12 @@ namespace mont
   std::istream &
   operator>>(std::istream &is, Number<LIMBS> &n)
   {
+    is >> std::hex;
     char _;
     is >> _ >> _;
-    for (int i = LIMBS - 1; i >= 0; i--)
-      is >> std::hex >> n.limbs[i] >> _;
+    for (int i = LIMBS - 1; i >= 1; i--)
+      is >> n.limbs[i] >> _;
+    is >> n.limbs[0];
     return is;
   }
 
