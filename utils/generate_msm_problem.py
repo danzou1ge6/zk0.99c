@@ -12,7 +12,9 @@ if __name__ == "__main__":
     for i in range(msm_len):
         s = randint(0, m - 1)
         x, y = random_point()
-        wf.write(f'{chunked_hex(s, 8)}|{chunked_hex(x, 8)} {chunked_hex(y, 8)}\n')
+        x_mont = (x * r) % m
+        y_mont = (y * r) % m
+        wf.write(f'{chunked_hex(s, 8)}|{chunked_hex(x_mont, 8)} {chunked_hex(y_mont, 8)}\n')
     
     wf.close()
         
