@@ -3182,12 +3182,13 @@ namespace ntt {
             const mont256::Params param, 
             const u32* omega, u32 log_len, 
             bool debug, 
+            u32 max_instance = 1,
             bool inverse = false, 
             bool process = false, 
             const u32 * inv_n = nullptr, 
             const u32 * zeta = nullptr, 
             SSIP_config config = SSIP_config()) 
-        : log_len(log_len), len(1ll << log_len), debug(debug)
+        : best_ntt(max_instance), log_len(log_len), len(1ll << log_len), debug(debug)
         , config(config), inverse(inverse), process(process){
             bool success = true;
             cudaError_t first_err = cudaSuccess;
@@ -3372,6 +3373,8 @@ namespace ntt {
                     rlock.lock();
                 }
             }
+
+            this->sem.acquire();
 
             u32 * x;
             if (success) CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
@@ -3673,7 +3676,7 @@ namespace ntt {
             
             rlock.unlock();
 
-            if (success && !(process && (!inverse))) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+            if (success && dev_ptr == nullptr) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
             if (success && stream == 0) CUDA_CHECK(cudaStreamSynchronize(stream));
 
@@ -3692,6 +3695,8 @@ namespace ntt {
             if (!(process && (!inverse)))CUDA_CHECK(cudaFreeAsync(x, stream));
 
             if (debug) CUDA_CHECK(clean_gpu(stream));
+
+            this->sem.release();
 
             return first_err;
         }

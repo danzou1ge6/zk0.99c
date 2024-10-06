@@ -9,6 +9,7 @@
 #include <cuda/barrier>
 #include <iostream>
 #include <shared_mutex>
+#include <semaphore>
 
 #define CUDA_CHECK(call)                                                                                             \
 {                                                                                                                    \
@@ -25,11 +26,15 @@ namespace ntt {
     typedef unsigned long long u64;
     typedef uint u32_E;
     typedef uint u32_N;
+    const u32 MAX_NTT_INSTANCES = 1024; // 1024 should be big enough for typically there will be only 64 threads
 
     class best_ntt {
-        public:
+        protected:
+        std::counting_semaphore<MAX_NTT_INSTANCES> sem; 
         std::shared_mutex mtx; // lock for on_gpu data
+        public:
         bool on_gpu = false;
+        best_ntt(u32 max_instance = 1) : sem(std::min(max_instance, MAX_NTT_INSTANCES)) {}
         virtual cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) = 0;
         virtual ~best_ntt() = default;
         virtual cudaError_t to_gpu(cudaStream_t stream = 0) = 0;

@@ -2,6 +2,7 @@
 
 #include "self_sort_in_place_ntt.cuh"
 #include "../../wrapper/ntt/c_api/ntt_c_api.h"
+#include <cstddef>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -118,10 +119,17 @@ namespace runtime {
                 iter = ntt_kernels->find(id);
                 if (iter == ntt_kernels->end()) {
                     std::shared_ptr<ntt::best_ntt> ntt_kernel;
+                    size_t avail, total;
                     if (id.field == FIELD::PASTA_CURVES_FIELDS_FP) {
-                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false, id.inverse, id.process, inv_n, zeta);
+                        cudaMemGetInfo(&avail, &total);
+                        auto instance_memory = 8ull * sizeof(uint) * (1 << id.log_len);
+                        avail -= instance_memory / 2;
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_pasta_fp, omega, id.log_len, false, avail / instance_memory, id.inverse, id.process, inv_n, zeta);
                     } else if (id.field == FIELD::HALO2CURVES_BN256_FR) {
-                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false, id.inverse, id.process, inv_n, zeta);
+                        cudaMemGetInfo(&avail, &total);
+                        auto instance_memory = 8ull * sizeof(uint) * (1 << id.log_len);
+                        avail -= instance_memory / 2;
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<8> >(params_bn256_fr, omega, id.log_len, false, avail / instance_memory, id.inverse, id.process, inv_n, zeta);
                     }
                     ntt_kernels->insert(std::make_pair(id, ntt_kernel));
                     wlock.unlock();
