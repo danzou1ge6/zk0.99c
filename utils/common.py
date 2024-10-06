@@ -1,4 +1,36 @@
-from typing import Tuple
+from typing import Tuple, Union
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+    z: int
+
+@dataclass
+class PointAffine:
+    x: int
+    y: int
+
+@dataclass
+class Curve:
+    m: int
+    a: int
+    b: int
+
+BN254_G1 = Curve(21888242871839275222246405745257275088696311157297823662689037894645226208583, 0, 3)
+
+def padd(a: PointAffine, b: PointAffine, curve: Curve) -> PointAffine:
+    m = curve.m
+    if a.x == b.x and a.y == b.y:
+        lam = (3 * a.x * a.x + curve.a) % m
+        lam = (lam * inv_modulo(2 * a.y, curve.m)) % m
+    else:
+        lam = (b.y - a.y) % m
+        lam = (lam * inv_modulo(b.x - a.x, curve.m)) % m
+    x3 = (lam * lam - a.x - b.x) % m
+    y3 = (lam * (a.x - x3) - a.y) % m
+    return PointAffine(x3, y3)
 
 def chunks(x: int, n_words: int) -> str:
     s = hex(x)[2:]
