@@ -15,23 +15,20 @@ using mont::u64;
 struct MsmProblem
 {
   u32 len;
-  u32 *scalers, *points;
+  PointAffine *points;
+  Element *scalers;
 };
 
 std::istream &
 operator>>(std::istream &is, MsmProblem &msm)
 {
   is >> msm.len;
-  msm.scalers = new u32[msm.len * Number::LIMBS];
-  msm.points = new u32[msm.len * PointAffine::N_WORDS];
+  msm.scalers = new Element[msm.len];
+  msm.points = new PointAffine[msm.len];
   for (u32 i = 0; i < msm.len; i++)
   {
-    Number scaler;
-    PointAffine point;
     char _;
-    is >> scaler >> _ >> point;
-    scaler.store(msm.scalers + i * Number::LIMBS);
-    point.store(msm.points + i * PointAffine::N_WORDS);
+    is >> msm.scalers[i].n >> _ >> msm.points[i];
   }
   return is;
 }
@@ -42,9 +39,7 @@ operator<<(std::ostream &os, const MsmProblem &msm)
 
   for (u32 i = 0; i < msm.len; i++)
   {
-    auto scaler = Element::load(msm.scalers + i * Number::LIMBS);
-    auto point = PointAffine::load(msm.points + i * PointAffine::N_WORDS);
-    os << scaler << '|' << point << std::endl;
+    os << msm.scalers[i].n << '|' << msm.points[i] << std::endl;
   }
   return os;
 }
@@ -67,9 +62,8 @@ int main(int argc, char *argv[])
   MsmProblem msm;
 
   rf >> msm;
-  // std::cout << msm;
   Point r;
-  msm::run<msm::MsmConfig>(msm.scalers, msm.points, msm.len, r);
-  std::cout << r;
+  msm::run<msm::MsmConfig>((u32*)msm.scalers, (u32*)msm.points, msm.len, r);
+  std::cout << r.to_affine();
   return 0;
 }

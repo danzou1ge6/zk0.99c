@@ -180,6 +180,11 @@ const u32 p2_x[8] = BIG_INTEGER_CHUNKS8(0x2a602b3e, 0x1b4f3db1, 0xbe03a8be, 0x55
 // y_mont = 14394749309957023594572365872892788643083852397597524596381726046325896367924
 const u32 p2_y[8] = BIG_INTEGER_CHUNKS8(0x1fd323ae, 0xc7ed1080, 0xf3890048, 0x493e9f2f, 0x243c445d, 0xd7b99618, 0xaefe84ff, 0xa1dbcf34);
 
+// x = 1429041557224557752552626303000099472202069419966672611522353279561688898742
+const u32 pr_x[8] = BIG_INTEGER_CHUNKS8(0x6790889, 0x79be73c4, 0x0f7643bb, 0x661c0f71, 0xd9ab80b1, 0x7e230fc0, 0xea2b2797, 0xa3758869);
+// y = 18492289853934875728433615546364519615101151049369325523076021792381188176633
+const u32 pr_y[8] = BIG_INTEGER_CHUNKS8(0x1c74dd57, 0xe8850b6f, 0x089652a2, 0x98192463, 0x1a12ecaa, 0x3494b476, 0x83832570, 0xaea7b267);
+
 PointAffine load_affine(const u32 x_data[8], const u32 y_data[8])
 {
   auto x = Element::load(x_data);
@@ -207,9 +212,11 @@ TEST_CASE("On curve")
 {
   auto p1 = load_affine(p1_x, p1_y);
   auto p2 = load_affine(p2_x, p2_y);
+  auto pr = load_affine(pr_x, pr_y);
 
   REQUIRE(launch_kernel1(p1, is_on_curve));
   REQUIRE(launch_kernel1(p2, is_on_curve));
+  REQUIRE(launch_kernel1(pr, is_on_curve));
 }
 
 TEST_CASE("Affine/Projective back and forth 1")
@@ -236,6 +243,31 @@ TEST_CASE("Point addition commutative")
   REQUIRE(launch_kernel1(sum2, is_on_curve));
 
   REQUIRE(launch_kernel2(sum1, sum2, eq));
+}
+
+TEST_CASE("Point-Point addition")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto pr = load_affine(pr_x, pr_y);
+  auto p1p = launch_kernel1(p1, from_affine);
+  auto p2p = launch_kernel1(p2, from_affine);
+  auto prp = launch_kernel1(pr, from_affine);
+
+  auto sum1 = launch_kernel2(p1p, p2p, add);
+  REQUIRE(launch_kernel2(sum1, prp, eq));
+}
+
+TEST_CASE("Point-PointAffine addition")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto pr = load_affine(pr_x, pr_y);
+  auto p1p = launch_kernel1(p1, from_affine);
+  auto prp = launch_kernel1(pr, from_affine);
+
+  auto sum1 = launch_kernel2(p1p, p2, add);
+  REQUIRE(launch_kernel2(sum1, prp, eq));
 }
 
 TEST_CASE("Point-PointAffine addition equivalent")

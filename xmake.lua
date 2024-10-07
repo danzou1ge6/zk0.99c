@@ -44,11 +44,8 @@ target("test-bn254")
     add_packages("doctest")
 
 target("test-msm")
-    if is_mode("debug") then
-        set_symbols("debug")
-    end
+    add_options("-lineinfo")
     set_languages(("c++17"))
-    add_deps("mont.cuh")
     add_files("msm/tests/msm.cu")
 
 target("test-ntt-int")
