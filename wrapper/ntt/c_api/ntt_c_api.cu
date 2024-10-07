@@ -19,7 +19,10 @@ bool cuda_ntt(unsigned int *data, const unsigned int *omega, unsigned int log_n,
     
     if (first_err == cudaSuccess) try {
         auto ntt_kernel = temp_runtime.get_ntt_kernel(id, omega, inv_n, zeta);
-        CUDA_CHECK(ntt_kernel->ntt(data, 0, start_n));
+        cudaStream_t stream;
+        CUDA_CHECK(cudaStreamCreate(&stream));
+        CUDA_CHECK(ntt_kernel->ntt(data, stream, start_n));
+        CUDA_CHECK(cudaStreamDestroy(stream));
     } catch(const char *msg) {
         std::cerr << msg << std::endl;
         success = false;

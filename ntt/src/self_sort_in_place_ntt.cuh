@@ -3364,6 +3364,8 @@ namespace ntt {
             cudaEvent_t start, end;
             if (success) CUDA_CHECK(cudaEventCreate(&start));
             if (success) CUDA_CHECK(cudaEventCreate(&end));
+            
+            this->sem.acquire();
 
             std::shared_lock<std::shared_mutex> rlock(this->mtx);
             if (success) {
@@ -3374,7 +3376,6 @@ namespace ntt {
                 }
             }
 
-            this->sem.acquire();
 
             u32 * x;
             if (success) CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
@@ -3396,6 +3397,7 @@ namespace ntt {
             int log_stride = log_len - 1;
             constexpr u32 io_group = 1 << (log2_int(WORDS - 1) + 1);
             
+            this->sem_kernel.acquire();
             while (log_stride >= log_len / 2) {
                 u32 deg = std::min((int)max_deg_stage1, (log_stride + 1 - log_len / 2));
 
@@ -3664,6 +3666,8 @@ namespace ntt {
                 log_stride -= deg;
             }
 
+            this->sem_kernel.release();
+
             if (debug) {
                 if (success) CUDA_CHECK(cudaEventRecord(end));
                 if (success) CUDA_CHECK(cudaEventSynchronize(end));
@@ -3673,12 +3677,14 @@ namespace ntt {
                 if (success) element_to_number <WORDS> <<< grid, block, 0, stream >>> (x, len, param_d);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
-            
+
             rlock.unlock();
 
             if (success && dev_ptr == nullptr) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
-            if (success && stream == 0) CUDA_CHECK(cudaStreamSynchronize(stream));
+            if (dev_ptr == nullptr)CUDA_CHECK(cudaFreeAsync(x, stream));
+
+            if (dev_ptr == nullptr) CUDA_CHECK(cudaStreamSynchronize(stream));
 
             // manually tackle log_len == 1 case because the stage2 kernel won't run
             if (log_len == 1) {
@@ -3691,12 +3697,9 @@ namespace ntt {
                     }
                 }
             }
-
-            if (!(process && (!inverse)))CUDA_CHECK(cudaFreeAsync(x, stream));
+            this->sem.release();
 
             if (debug) CUDA_CHECK(clean_gpu(stream));
-
-            this->sem.release();
 
             return first_err;
         }

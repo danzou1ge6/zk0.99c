@@ -74,6 +74,16 @@ target("test-ntt-big")
     add_packages("doctest")
     add_defines("PROJECT_ROOT=\"" .. project_root .. "\"")
 
+target("test-ntt-parallel")
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_deps("mont.cuh")
+    add_headerfiles("ntt/src/*.cuh")
+    add_files("ntt/tests/test-parallel.cu")
+    add_cugencodes("native")
+
 target("cuda_ntt")
     set_kind("static")
     add_values("cuda.build.devlink", true)
