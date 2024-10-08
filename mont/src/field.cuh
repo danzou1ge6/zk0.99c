@@ -682,6 +682,7 @@ namespace mont
   template <class Params>
   struct Element
   {
+    using ParamsType = Params;
     static const usize LIMBS = Params::LIMBS;
 
     Number<LIMBS> n;
