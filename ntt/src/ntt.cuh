@@ -175,17 +175,18 @@ namespace ntt {
         data[rindex * WORDS + word] = tmp;
     }
 
-    // template <u32 WORDS>
-    // __forceinline__ __device__ mont256::Element pow_lookup_constant(u32 exponent, mont256::Env &env, const u32_E *omegas) {
-    //     auto res = env.one();
-    //     u32 i = 0;
-    //     while(exponent > 0) {
-    //         if (exponent & 1) {
-    //             res = env.mul(res, mont256::Element::load(omegas + (i * WORDS)));
-    //         }
-    //         exponent = exponent >> 1;
-    //         i++;
-    //     }
-    //     return res;
-    // }
+    template <typename Field>
+    __forceinline__ __device__ Field pow_lookup_constant(u32 exponent, const u32_E *omegas) {
+        static const usize WORDS = Field::LIMBS;
+        auto res = Field::one();
+        u32 i = 0;
+        while(exponent > 0) {
+            if (exponent & 1) {
+                res = res * Field::load(omegas + (i * WORDS));
+            }
+            exponent = exponent >> 1;
+            i++;
+        }
+        return res;
+    }
 }

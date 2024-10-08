@@ -7,7 +7,7 @@ namespace ntt {
     /*
     * FFT algorithm is inspired from: http://www.bealto.com/gpu-fft_group-1.html
     */
-    template <u32 WORDS>
+    template <typename Field>
     __global__ void bellperson_kernel(u32_E * x, // Source buffer
                         u32_E * y, // Destination buffer
                         const u32_E * omegas,
@@ -15,14 +15,12 @@ namespace ntt {
                         u32 n, // Number of elements
                         u32 lgp, // Log2 of `p` (Read more in the link above)
                         u32 deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
-                        u32 max_deg, // Maximum degree supported, according to `pq` and `omegas`
-                        mont256::Params* param)
+                        u32 max_deg // Maximum degree supported, according to `pq` and `omegas`
+                        )
     {
-
+        static const mont::usize WORDS = Field::LIMBS;
         // There can only be a single dynamic shared memory item, hence cast it to the type we need.
         extern __shared__ u32 u[];
-
-        auto env = mont256::Env(*param);
 
         u32 lid = threadIdx.x;//GET_LOCAL_ID();
         u32 lsize = blockDim.x;//GET_LOCAL_SIZE();
@@ -41,15 +39,15 @@ namespace ntt {
         u32 counte = counts + count / lsize;
 
         // Compute powers of twiddle
-        auto twiddle = pow_lookup_constant<WORDS>((n >> lgp >> deg) * k, env, omegas);
+        auto twiddle = pow_lookup_constant<Field>((n >> lgp >> deg) * k, omegas);
 
-        auto tmp = env.pow(twiddle, counts, deg);
+        auto tmp = twiddle.pow(counts, deg);
 
         for(u64 i = counts; i < counte; i++) {
-            auto num = mont256::Element::load(x + (i * t * WORDS));
-            num = env.mul(num, tmp);
+            auto num = Field::load(x + (i * t * WORDS));
+            num = num * tmp;
             num.store(u + (i * WORDS));
-            tmp = env.mul(tmp, twiddle);
+            tmp = tmp * twiddle;
         }
 
         __syncthreads();
@@ -61,15 +59,15 @@ namespace ntt {
                 const u32 di = i & (bit - 1);
                 const u32 i0 = (i << 1) - di;
                 const u32 i1 = i0 + bit;
-                mont256::Element a, b, tmp, w;
-                a = mont256::Element::load(u + (i0 * WORDS));
-                b = mont256::Element::load(u + (i1 * WORDS));
+                Field a, b, tmp, w;
+                a = Field::load(u + (i0 * WORDS));
+                b = Field::load(u + (i1 * WORDS));
                 tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 if (di != 0) {
-                    w = mont256::Element::load(pq + ((di << rnd << pqshift) * WORDS));
-                    b = env.mul(b, w);
+                    w = Field::load(pq + ((di << rnd << pqshift) * WORDS));
+                    b = b * w;
                 }
                 a.store(u + (i0 * WORDS));
                 b.store(u + (i1 * WORDS));
@@ -87,51 +85,50 @@ namespace ntt {
         }
     }
     
-    template<u32 WORDS>
+    template<typename Field>
     class bellperson_ntt : public best_ntt {
+        const static usize WORDS = Field::LIMBS;
+        using Number = mont::Number<WORDS>;
+
         const u32 max_deg;
         const u32 log_len;
         const u64 len;
-        mont256::Element unit;
+        Field unit;
         bool debug;
         u32_E *pq; // Precalculated values for radix degrees up to `max_deg`
         u32_E *omegas, *omegas_d; // Precalculated values for [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
         u32_E* pq_d;
-        mont256::Params *param_d, *param;
 
         public:
         float milliseconds = 0;
-        bellperson_ntt(const mont256::Params param, const u32* omega, u32 log_len, bool debug) : log_len(log_len), max_deg(std::min(8u, log_len)), len(1 << log_len), debug(debug) {
+        bellperson_ntt(const u32* omega, u32 log_len, bool debug) : log_len(log_len), max_deg(std::min(8u, log_len)), len(1 << log_len), debug(debug) {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             // Precalculate:
-            auto env = mont256::Env::host_new(param);
 
             if (debug) {
                 // unit = qpow(omega, (P - 1ll) / len)
-                unit = env.host_from_number(mont256::Number::load(omega));
-                auto exponent = mont256::Number::load(param.m);
-                auto one = mont256::Number::zero();
-                one.c0 = 1;
-                exponent = exponent.host_sub(one);
-                exponent = exponent.slr(log_len);
-                unit = env.host_pow(unit, exponent);
+                unit = Field::from_number(Number::load(omega));
+                auto one = Number::zero();
+                one.limbs[0] = 1;
+                Number exponent = (Field::ParamsType::m() - one).slr(log_len);
+                unit = unit.pow(exponent);
             } else {
-                unit = mont256::Element::load(omega);
+                unit = Field::load(omega);
             }
 
             // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
 
             CUDA_CHECK(cudaHostAlloc(&pq, (1 << max_deg >> 1) * sizeof(u32) * WORDS, cudaHostAllocDefault));
             memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
-            env.one().store(pq);
-            auto twiddle = env.host_pow(unit, len >> max_deg);
+            Field::one().store(pq);
+            auto twiddle = unit.pow(len >> max_deg);
             if (max_deg > 1) {
                 twiddle.store(pq + WORDS);
                 auto last = twiddle;
-                for (u32 i = 2; i < (1 << max_deg >> 1); i++) {
-                    last = env.host_mul(last, twiddle);
+                for (u64 i = 2; i < (1 << max_deg >> 1); i++) {
+                    last = last * twiddle;
                     last.store(pq + i * WORDS);
                 }
             }
@@ -139,13 +136,10 @@ namespace ntt {
             // omegas: [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
 
             CUDA_CHECK(cudaHostAlloc(&omegas, 32 * sizeof(u32) * WORDS, cudaHostAllocDefault));
-            CUDA_CHECK(cudaHostAlloc(&this->param, sizeof(mont256::Params), cudaHostAllocDefault));
-            CUDA_CHECK(cudaMemcpy(this->param, &param, sizeof(mont256::Params), cudaMemcpyHostToHost));
-
             unit.store(omegas);
             auto last = unit;
             for (u32 i = 1; i < 32; i++) {
-                last = env.host_square(last);
+                last = last.square();
                 last.store(omegas + i * WORDS);
             }
 
@@ -158,7 +152,6 @@ namespace ntt {
         ~bellperson_ntt() override {
             cudaFreeHost(pq);
             cudaFreeHost(omegas);
-            cudaFreeHost(param);
             if (this->on_gpu) clean_gpu();
         }
 
@@ -171,16 +164,13 @@ namespace ntt {
 
             CUDA_CHECK(cudaMalloc(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS))
             CUDA_CHECK(cudaMalloc(&omegas_d, 32 * sizeof(u32_E) * WORDS))
-            CUDA_CHECK(cudaMalloc(&param_d, sizeof(mont256::Params)));
 
             CUDA_CHECK(cudaMemcpy(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice))
             CUDA_CHECK(cudaMemcpy(omegas_d, omegas, 32 * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice))
-            CUDA_CHECK(cudaMemcpy(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
 
             if (!success) {
                 CUDA_CHECK(cudaFree(pq_d));
                 CUDA_CHECK(cudaFree(omegas_d));
-                CUDA_CHECK(cudaFree(param_d));
             } else {
                 this->on_gpu = true;
             }
@@ -195,7 +185,6 @@ namespace ntt {
 
             CUDA_CHECK(cudaFree(pq_d));
             CUDA_CHECK(cudaFree(omegas_d));
-            CUDA_CHECK(cudaFree(param_d));
 
             this->on_gpu = false;
             return first_err;
@@ -229,7 +218,7 @@ namespace ntt {
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) number_to_element <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) number_to_element <Field> <<< grid, block >>> (x, len);
                 if (success) CUDA_CHECK(cudaGetLastError());
                 if (success) CUDA_CHECK(cudaEventRecord(start));
             }
@@ -247,11 +236,11 @@ namespace ntt {
 
                 uint shared_size = (1 << deg) * WORDS * sizeof(u32);
 
-                auto kernel = bellperson_kernel<WORDS>;
+                auto kernel = bellperson_kernel<Field>;
             
                 if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                if (success) kernel <<< grid, block, shared_size >>> (x, y, omegas_d, pq_d, len, log_p, deg, max_deg, param_d);
+                if (success) kernel <<< grid, block, shared_size >>> (x, y, omegas_d, pq_d, len, log_p, deg, max_deg);
                 
                 if (success) CUDA_CHECK(cudaGetLastError());
 
@@ -268,7 +257,7 @@ namespace ntt {
                 if (success) CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) element_to_number <WORDS> <<< grid, block >>> (x, len, param_d);
+                if (success) element_to_number <Field> <<< grid, block >>> (x, len);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
             

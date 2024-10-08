@@ -1,7 +1,7 @@
 #include <random>
 #include <ctime>
 #include "../src/naive_ntt.cuh"
-// #include "../src/bellperson_ntt.cuh"
+#include "../src/bellperson_ntt.cuh"
 // #include "../src/self_sort_in_place_ntt.cuh"
 #include "small_field.cuh"
 
@@ -122,20 +122,20 @@ int main() {
     }
 
     // bellperson approach
-    // memset(data_gpu, 0, sizeof(uint) * length * WORDS);
-    // for (int i = 0; i < length; i++) {
-    //     data_gpu[i * WORDS] = data_copy[i];
-    // }
-    // ntt::bellperson_ntt<WORDS> bellperson(params, unit, bits, true);
-    // bellperson.ntt(data_gpu);
-    // printf("bellperson: %fms\n", bellperson.milliseconds);
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    ntt::bellperson_ntt<small_field::Element> bellperson(unit, bits, true);
+    bellperson.ntt(data_gpu);
+    printf("bellperson: %fms\n", bellperson.milliseconds);
 
-    // for (long long i = 0; i < length; i++) {
-    //     if (data[i] != data_gpu[i * WORDS]) {
-    //         printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-    //         break;
-    //     }
-    // }
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            break;
+        }
+    }
 
     // // self sort in place approach
     // memset(data_gpu, 0, sizeof(uint) * length * WORDS);
