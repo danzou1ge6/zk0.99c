@@ -6,18 +6,18 @@
 #include <cstdio>
 
 namespace ntt {
-    template <u32 WORDS, u32 io_group>
+    template <typename Field, u32 io_group>
     __global__ void SSIP_NTT_stage1 (u32_E * x, // input data, shape: [1, len*words] data stored in row major i.e. a_0 ... a_7 b_0 ... b_7 ...
                                     const u32_E * pq, // twiddle factors for shard memory NTT
                                     u32 log_len, // input data length
                                     u32 log_stride, // the log of the stride of initial butterfly op
                                     u32 deg, // the deg of the shared memory NTT
                                     u32 max_deg, // max deg supported by pq
-                                    mont256::Params* param, // params for field ops
                                     u32 group_sz, // number of threads used in a shared memory NTT
                                     u32 * roots, // twiddle factors for global NTT
                                     bool coalesced_roots) // whether to use cub to coalesce the read of roots
-    {
+    {        
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
@@ -84,16 +84,9 @@ namespace ntt {
                     u64 gpos = group_id << (lgp + 1);
                     u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
                     u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
-                    // if (blockIdx.x == 0 && threadIdx.x < 32) printf("%d ", ((i << 1) + io * shared_read_stride) % 32);
-                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
-                    // if (blockIdx.x == 0 && threadIdx.x < 32) printf("%d ",  ((i << 1) + 1 + io * shared_read_stride) % 32);
-                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
-                    // if (blockIdx.x == 0 && threadIdx.x == 0) printf("\n");
                 }
             }
         }
-
-        auto env = mont256::Env(*param);
 
         __syncthreads();
 
@@ -104,15 +97,15 @@ namespace ntt {
             const u32 i0 = (lid << 1) - di;
             const u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
             auto tmp = a;
-            a = env.add(a, b);
-            b = env.sub(tmp, b);
+            a = a + b;
+            b = tmp - b;
 
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
-                b = env.mul(b, w);
+                auto w = Field::load(pq + (di << rnd << pqshift) * WORDS);
+                b = b * w;
             }
             a.store(u + i0, shared_read_stride);
             b.store(u + i1, shared_read_stride);
@@ -124,7 +117,7 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u64 twiddle = ((1 << log_len) >> lgp >> deg) * k;
 
-        mont256::Element t1, t2;
+        Field t1, t2;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -135,10 +128,10 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
-            t1 = mont256::Element::load(roots + (twiddle * (lid << 1)) * WORDS);
+            t1 = Field::load(roots + (twiddle * (lid << 1)) * WORDS);
         }
 
         if (coalesced_roots && cur_io_group == io_group) {
@@ -151,27 +144,27 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t2 = mont256::Element::load(thread_data);
+            t2 = Field::load(thread_data);
         } else {
-            t2 = mont256::Element::load(roots + (twiddle * ((lid << 1) + 1)) * WORDS);
+            t2 = Field::load(roots + (twiddle * ((lid << 1) + 1)) * WORDS);
         }
 
-        // auto t1 = mont256::Element::load(roots);
-        // auto t2 = mont256::Element::load(roots + WORDS * twiddle);
+        // auto t1 = Field::load(roots);
+        // auto t2 = Field::load(roots + WORDS * twiddle);
 
-        // auto twiddle = pow_lookup_constant <WORDS> ((len >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle = pow_lookup_constant <Field> ((len >> (log_stride - deg + 1) >> deg) * k, env);
         // auto t1 = env.pow(twiddle, lid << 1, deg);
         // auto t2 = env.mul(t1, twiddle);
         
         auto pos1 = __brev(lid << 1) >> (32 - deg);
         auto pos2 = __brev((lid << 1) + 1) >> (32 - deg);
 
-        auto a = mont256::Element::load(u + pos1, shared_read_stride);
-        a = env.mul(a, t1);
+        auto a = Field::load(u + pos1, shared_read_stride);
+        a = a * t1;
         a.store(u + pos1, shared_read_stride);
         
-        auto b = mont256::Element::load(u + pos2, shared_read_stride);
-        b = env.mul(b, t2);
+        auto b = Field::load(u + pos2, shared_read_stride);
+        b = b * t2;
         b.store(u + pos2, shared_read_stride);
 
         __syncthreads();
@@ -190,8 +183,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1_warp (u32_E * x, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage1_warp (u32_E * x, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -260,8 +254,6 @@ namespace ntt {
             }
         }
 
-        auto env = mont256::Env(*param);
-
         __syncthreads();
 
         const u32 pqshift = max_deg - deg;
@@ -282,35 +274,31 @@ namespace ntt {
             u32 i0 = segment_start + segment_id + laneid * end_stride;
             u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
 
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    mont256::Element tmp;
+                    Field tmp;
                     tmp = ((lid / lanemask) & 1) ? a : b;
-                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    }
                     if ((lid / lanemask) & 1) a = tmp;
                     else b = tmp;
                 }
 
                 auto tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 u32 bit = (1 << sub_deg) >> (i + 1);
                 u32 di = (lid & (bit - 1)) * end_stride + segment_id;
 
                 if (di != 0) {
-                    auto w = mont256::Element::load(pq + (di << (rnd + i) << pqshift) * WORDS);
-                    b = env.mul(b, w);
+                    auto w = Field::load(pq + (di << (rnd + i) << pqshift) * WORDS);
+                    b = b * w;
                 }
             }            
 
@@ -326,7 +314,7 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u64 twiddle = ((1 << log_len) >> lgp >> deg) * k;
 
-        mont256::Element t1, t2;
+        Field t1, t2;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -337,10 +325,10 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
-            t1 = mont256::Element::load(roots + (twiddle * (lid << 1)) * WORDS);
+            t1 = Field::load(roots + (twiddle * (lid << 1)) * WORDS);
         }
 
         if (coalesced_roots && cur_io_group == io_group) {
@@ -353,27 +341,27 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t2 = mont256::Element::load(thread_data);
+            t2 = Field::load(thread_data);
         } else {
-            t2 = mont256::Element::load(roots + (twiddle * ((lid << 1) + 1)) * WORDS);
+            t2 = Field::load(roots + (twiddle * ((lid << 1) + 1)) * WORDS);
         }
 
-        // auto t1 = mont256::Element::load(roots);
-        // auto t2 = mont256::Element::load(roots + WORDS * twiddle);
+        // auto t1 = Field::load(roots);
+        // auto t2 = Field::load(roots + WORDS * twiddle);
 
-        // auto twiddle = pow_lookup_constant <WORDS> ((len >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle = pow_lookup_constant <Field> ((len >> (log_stride - deg + 1) >> deg) * k, env);
         // auto t1 = env.pow(twiddle, lid << 1, deg);
         // auto t2 = env.mul(t1, twiddle);
         
         auto pos1 = __brev(lid << 1) >> (32 - deg);
         auto pos2 = __brev((lid << 1) + 1) >> (32 - deg);
 
-        auto a = mont256::Element::load(u + pos1, shared_read_stride);
-        a = env.mul(a, t1);
+        auto a = Field::load(u + pos1, shared_read_stride);
+        a = a * t1;
         a.store(u + pos1, shared_read_stride);
         
-        auto b = mont256::Element::load(u + pos2, shared_read_stride);
-        b = env.mul(b, t2);
+        auto b = Field::load(u + pos2, shared_read_stride);
+        b = b * t2;
         b.store(u + pos2, shared_read_stride);
 
         __syncthreads();
@@ -392,8 +380,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_two_per_thread (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage2_two_per_thread (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
         
         u32 lid = threadIdx.x & (group_sz - 1);
@@ -469,8 +458,6 @@ namespace ntt {
             }
         }
         
-        auto env = mont256::Env(*param);
-
         __syncthreads();
 
         const u32 pqshift = max_deg - deg;
@@ -486,16 +473,16 @@ namespace ntt {
             const u32 i0 = (lid << 1) - di;
             const u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
             auto tmp1 = a;
 
-            a = env.add(a, b);
-            b = env.sub(tmp1, b);
+            a = a + b;
+            b = tmp1 - b;
 
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
-                b = env.mul(b, w);
+                auto w = Field::load(pq + (di << rnd << pqshift) * WORDS);
+                b = b * w;
             }
 
             a.store(u + i0, shared_read_stride);
@@ -511,7 +498,7 @@ namespace ntt {
         //     printf("group_num: %d\n", group_num);
         //     for(int j  = 0; j < group_num; j++) {
         //         for (u32 i = 0; i < (1 << (deg * 2)); i++) {
-        //             auto a = mont256::Element::load(tu + i, shared_read_stride);
+        //             auto a = Field::load(tu + i, shared_read_stride);
         //             printf("%d ", a.n.c0);
         //         }
         //         tu += ((1 << (deg << 1)) + 1) * WORDS;
@@ -523,14 +510,14 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
 
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        // auto twiddle = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle_gap = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
         // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
         // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1;
+        Field t1;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
                 u32 second_half = (ti >= (lsize >> 1));
@@ -543,28 +530,28 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
         } else {
-            t1 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg) + second_half * twiddle * WORDS * (1 << (deg - 1)));
+            t1 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg) + second_half * twiddle * WORDS * (1 << (deg - 1)));
             // printf("twiddle: %lld lid: %d threadid: %d \n", twiddle * (lid << 1 >> deg) + second_half * twiddle * (1 << (deg - 1)), lid, threadIdx.x);
         }
 
         // roots += twiddle * WORDS * (lid << 1 >> deg);
-        // auto t1 = mont256::Element::load(roots);
+        // auto t1 = Field::load(roots);
         // roots += twiddle * WORDS * (1 << (deg - 1));
-        // auto t2 = mont256::Element::load(roots);
+        // auto t2 = Field::load(roots);
         
         u32 a, b;
         a = __brev((lid << 1) + second_half * (lsize)) >> (32 - (deg << 1));
         b = __brev((lid << 1) + 1 + second_half * (lsize)) >> (32 - (deg << 1));
 
         // printf("a: %d b: %d threadid: %d \n", a, b, threadIdx.x);
-        auto num = mont256::Element::load(u + a, shared_read_stride);
-        num = env.mul(num, t1);
+        auto num = Field::load(u + a, shared_read_stride);
+        num = num * t1;
         num.store(u + a, shared_read_stride);
 
-        num = mont256::Element::load(u + b, shared_read_stride);
-        num = env.mul(num, t1);
+        num = Field::load(u + b, shared_read_stride);
+        num = num * t1;
         num.store(u + b, shared_read_stride);
 
         __syncthreads();
@@ -574,7 +561,7 @@ namespace ntt {
         //     printf("group_num: %d\n", group_num);
         //     for(int j  = 0; j < group_num; j++) {
         //         for (u32 i = 0; i < (1 << (deg * 2)); i++) {
-        //             auto a = mont256::Element::load(tu + i, shared_read_stride);
+        //             auto a = Field::load(tu + i, shared_read_stride);
         //             printf("%d ", a.n.c0);
         //         }
         //         tu += ((1 << (deg << 1)) + 1) * WORDS;
@@ -604,8 +591,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage2 (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
         
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -682,7 +670,7 @@ namespace ntt {
             }
         }
         
-        auto env = mont256::Env(*param);
+
 
         __syncthreads();
 
@@ -696,22 +684,22 @@ namespace ntt {
             const u32 i2 = i0 + (lsize << 1);
             const u32 i3 = i2 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
-            auto c = mont256::Element::load(u + i2, shared_read_stride);
-            auto d = mont256::Element::load(u + i3, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
+            auto c = Field::load(u + i2, shared_read_stride);
+            auto d = Field::load(u + i3, shared_read_stride);
             auto tmp1 = a;
             auto tmp2 = c;
 
-            a = env.add(a, b);
-            c = env.add(c, d);
-            b = env.sub(tmp1, b);
-            d = env.sub(tmp2, d);
+            a = a + b;
+            c = c + d;
+            b = tmp1 - b;
+            d = tmp2 - d;
 
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << rnd << pqshift) * WORDS);
-                b = env.mul(b, w);
-                d = env.mul(d, w);
+                auto w = Field::load(pq + (di << rnd << pqshift) * WORDS);
+                b = b * w;
+                d = d * w;
             }
 
             a.store(u + i0, shared_read_stride);
@@ -726,14 +714,14 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
 
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        // auto twiddle = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle_gap = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
         // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
         // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1, t2;
+        Field t1, t2;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -744,10 +732,10 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
-            t1 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg));
+            t1 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg));
         }
 
         if (coalesced_roots && cur_io_group == io_group) {
@@ -760,15 +748,15 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t2 = mont256::Element::load(thread_data);
+            t2 = Field::load(thread_data);
         } else {
-            t2 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg) + twiddle * WORDS * (1 << (deg - 1)));
+            t2 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg) + twiddle * WORDS * (1 << (deg - 1)));
         }
 
         // roots += twiddle * WORDS * (lid << 1 >> deg);
-        // auto t1 = mont256::Element::load(roots);
+        // auto t1 = Field::load(roots);
         // roots += twiddle * WORDS * (1 << (deg - 1));
-        // auto t2 = mont256::Element::load(roots);
+        // auto t2 = Field::load(roots);
         
         u32 a, b, c, d;
         a = __brev(lid << 1) >> (32 - (deg << 1));
@@ -776,20 +764,20 @@ namespace ntt {
         c = __brev((lid << 1) + (lsize << 1)) >> (32 - (deg << 1));
         d = __brev((lid << 1) + (lsize << 1) + 1) >> (32 - (deg << 1));
 
-        auto num = mont256::Element::load(u + a, shared_read_stride);
-        num = env.mul(num, t1);
+        auto num = Field::load(u + a, shared_read_stride);
+        num = num * t1;
         num.store(u + a, shared_read_stride);
 
-        num = mont256::Element::load(u + b, shared_read_stride);
-        num = env.mul(num, t1);
+        num = Field::load(u + b, shared_read_stride);
+        num = num * t1;
         num.store(u + b, shared_read_stride);
 
-        num = mont256::Element::load(u + c, shared_read_stride);
-        num = env.mul(num, t2);
+        num = Field::load(u + c, shared_read_stride);
+        num = num * t2;
         num.store(u + c, shared_read_stride);
 
-        num = mont256::Element::load(u + d, shared_read_stride);
-        num = env.mul(num, t2);
+        num = Field::load(u + d, shared_read_stride);
+        num = num * t2;
         num.store(u + d, shared_read_stride);
 
         __syncthreads();
@@ -818,8 +806,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_two_per_thread_warp (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage2_two_per_thread_warp (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
 
         u32 lid = threadIdx.x & (group_sz - 1);
@@ -895,7 +884,7 @@ namespace ntt {
             }
         }
         
-        auto env = mont256::Env(*param);
+
 
         __syncthreads();
 
@@ -912,35 +901,31 @@ namespace ntt {
             u32 i0 = (lid << 1) - di;
             u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
 
             u32 sub_deg = min(6, deg - rnd);
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    mont256::Element tmp;
+                    Field tmp;
                     tmp = ((lid / lanemask) & 1) ? a : b;
-                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    }
                     if ((lid / lanemask) & 1) a = tmp;
                     else b = tmp;
                 }
 
                 auto tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 bit = subblock_sz >> (rnd + i);
                 di = lid & (bit - 1);
                 if (di != 0) {
-                    auto w = mont256::Element::load(pq + (di << (rnd + i) << pqshift) * WORDS);
-                    b = env.mul(b, w);
+                    auto w = Field::load(pq + (di << (rnd + i) << pqshift) * WORDS);
+                    b = b * w;
                 }
             }            
 
@@ -959,7 +944,7 @@ namespace ntt {
         //     printf("group_num: %d\n", group_num);
         //     for(int j  = 0; j < group_num; j++) {
         //         for (u32 i = 0; i < (1 << (deg * 2)); i++) {
-        //             auto a = mont256::Element::load(tu + i, shared_read_stride);
+        //             auto a = Field::load(tu + i, shared_read_stride);
         //             printf("%d ", a.n.c0);
         //         }
         //         tu += ((1 << (deg << 1)) + 1) * WORDS;
@@ -971,14 +956,14 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
 
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        // auto twiddle = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle_gap = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
         // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
         // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1;
+        Field t1;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 ti = lid_start; ti < lid_start + cur_io_group; ti++) {
                 u32 second_half = (ti >= (lsize >> 1));
@@ -991,28 +976,28 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
         } else {
-            t1 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg) + second_half * twiddle * WORDS * (1 << (deg - 1)));
+            t1 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg) + second_half * twiddle * WORDS * (1 << (deg - 1)));
             // printf("twiddle: %lld lid: %d threadid: %d \n", twiddle * (lid << 1 >> deg) + second_half * twiddle * (1 << (deg - 1)), lid, threadIdx.x);
         }
 
         // roots += twiddle * WORDS * (lid << 1 >> deg);
-        // auto t1 = mont256::Element::load(roots);
+        // auto t1 = Field::load(roots);
         // roots += twiddle * WORDS * (1 << (deg - 1));
-        // auto t2 = mont256::Element::load(roots);
+        // auto t2 = Field::load(roots);
         
         u32 a, b;
         a = __brev((lid << 1) + second_half * (lsize)) >> (32 - (deg << 1));
         b = __brev((lid << 1) + 1 + second_half * (lsize)) >> (32 - (deg << 1));
 
         // printf("a: %d b: %d threadid: %d \n", a, b, threadIdx.x);
-        auto num = mont256::Element::load(u + a, shared_read_stride);
-        num = env.mul(num, t1);
+        auto num = Field::load(u + a, shared_read_stride);
+        num = num * t1;
         num.store(u + a, shared_read_stride);
 
-        num = mont256::Element::load(u + b, shared_read_stride);
-        num = env.mul(num, t1);
+        num = Field::load(u + b, shared_read_stride);
+        num = num * t1;
         num.store(u + b, shared_read_stride);
 
         __syncthreads();
@@ -1039,8 +1024,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_warp (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage2_warp (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -1116,8 +1102,6 @@ namespace ntt {
                 }
             }
         }
-        
-        auto env = mont256::Env(*param);
 
         __syncthreads();
 
@@ -1130,37 +1114,28 @@ namespace ntt {
             u32 i2 = i0 + (lsize << 1);
             u32 i3 = i2 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
-            auto c = mont256::Element::load(u + i2, shared_read_stride);
-            auto d = mont256::Element::load(u + i3, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
+            auto c = Field::load(u + i2, shared_read_stride);
+            auto d = Field::load(u + i3, shared_read_stride);
 
             u32 sub_deg = min(6, deg - rnd);
 
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    mont256::Element tmp, tmp1;
+                    Field tmp, tmp1;
                     tmp = ((lid / lanemask) & 1) ? a : b;
                     tmp1 = ((lid / lanemask) & 1) ? c : d;
-                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
-                    
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    }
 
-                    tmp1.n.c0 = __shfl_xor_sync(0xffffffff, tmp1.n.c0, lanemask);
-                    tmp1.n.c1 = __shfl_xor_sync(0xffffffff, tmp1.n.c1, lanemask);
-                    tmp1.n.c2 = __shfl_xor_sync(0xffffffff, tmp1.n.c2, lanemask);
-                    tmp1.n.c3 = __shfl_xor_sync(0xffffffff, tmp1.n.c3, lanemask);
-                    tmp1.n.c4 = __shfl_xor_sync(0xffffffff, tmp1.n.c4, lanemask);
-                    tmp1.n.c5 = __shfl_xor_sync(0xffffffff, tmp1.n.c5, lanemask);
-                    tmp1.n.c6 = __shfl_xor_sync(0xffffffff, tmp1.n.c6, lanemask);
-                    tmp1.n.c7 = __shfl_xor_sync(0xffffffff, tmp1.n.c7, lanemask);
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp1.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp1.n.limbs[j], lanemask);
+                    }
 
                     if ((lid / lanemask) & 1) a = tmp, c = tmp1;
                     else b = tmp, d = tmp1;
@@ -1169,18 +1144,18 @@ namespace ntt {
                 auto tmp1 = a;
                 auto tmp2 = c;
 
-                a = env.add(a, b);
-                c = env.add(c, d);
-                b = env.sub(tmp1, b);
-                d = env.sub(tmp2, d);
+                a = a + b;
+                c = c + d;
+                b = tmp1 - b;
+                d = tmp2 - d;
 
                 bit = subblock_sz >> (rnd + i);
                 di = lid & (bit - 1);
 
                 if (di != 0) {
-                    auto w = mont256::Element::load(pq + (di << (rnd + i) << pqshift) * WORDS);
-                    b = env.mul(b, w);
-                    d = env.mul(d, w);
+                    auto w = Field::load(pq + (di << (rnd + i) << pqshift) * WORDS);
+                    b = b * w;
+                    d = d * w;
                 }
             }
 
@@ -1201,14 +1176,14 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
 
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        // auto twiddle = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle_gap = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
         // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
         // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1, t2;
+        Field t1, t2;
         if (coalesced_roots && cur_io_group == io_group) {
             for (u32 i = 0; i < cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -1219,10 +1194,10 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
-            t1 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg));
+            t1 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg));
         }
 
         if (coalesced_roots && cur_io_group == io_group) {
@@ -1235,15 +1210,15 @@ namespace ntt {
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
 
-            t2 = mont256::Element::load(thread_data);
+            t2 = Field::load(thread_data);
         } else {
-            t2 = mont256::Element::load(roots + twiddle * WORDS * (lid << 1 >> deg) + twiddle * WORDS * (1 << (deg - 1)));
+            t2 = Field::load(roots + twiddle * WORDS * (lid << 1 >> deg) + twiddle * WORDS * (1 << (deg - 1)));
         }
 
         // roots += twiddle * WORDS * (lid << 1 >> deg);
-        // auto t1 = mont256::Element::load(roots);
+        // auto t1 = Field::load(roots);
         // roots += twiddle * WORDS * (1 << (deg - 1));
-        // auto t2 = mont256::Element::load(roots);
+        // auto t2 = Field::load(roots);
         
         u32 a, b, c, d;
         a = __brev(lid << 1) >> (32 - (deg << 1));
@@ -1251,20 +1226,20 @@ namespace ntt {
         c = __brev((lid << 1) + (lsize << 1)) >> (32 - (deg << 1));
         d = __brev((lid << 1) + (lsize << 1) + 1) >> (32 - (deg << 1));
 
-        auto num = mont256::Element::load(u + a, shared_read_stride);
-        num = env.mul(num, t1);
+        auto num = Field::load(u + a, shared_read_stride);
+        num = num * t1;
         num.store(u + a, shared_read_stride);
 
-        num = mont256::Element::load(u + b, shared_read_stride);
-        num = env.mul(num, t1);
+        num = Field::load(u + b, shared_read_stride);
+        num = num * t1;
         num.store(u + b, shared_read_stride);
 
-        num = mont256::Element::load(u + c, shared_read_stride);
-        num = env.mul(num, t2);
+        num = Field::load(u + c, shared_read_stride);
+        num = num * t2;
         num.store(u + c, shared_read_stride);
 
-        num = mont256::Element::load(u + d, shared_read_stride);
-        num = env.mul(num, t2);
+        num = Field::load(u + d, shared_read_stride);
+        num = num * t2;
         num.store(u + d, shared_read_stride);
 
         __syncthreads();
@@ -1293,8 +1268,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __launch_bounds__(1024) __global__ void SSIP_NTT_stage2_two_per_thread_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {
+    template <typename Field, u32 io_group>
+    __launch_bounds__(1024) __global__ void SSIP_NTT_stage2_two_per_thread_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {
+        const static usize WORDS = Field::LIMBS;
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -1343,7 +1319,7 @@ namespace ntt {
         const u32 lid_start = lid - io_id;
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
 
-        mont256::Element a, b;
+        Field a, b;
 
         u32 second_half = (lid >= (lsize >> 1));
         lid -= second_half * (lsize >> 1);
@@ -1363,7 +1339,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = mont256::Element::load(thread_data);
+            a = Field::load(thread_data);
             __syncwarp();
 
             for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
@@ -1379,21 +1355,19 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = mont256::Element::load(thread_data);
+            b = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 group_offset = (lid >> (deg - 1)) << (log_len - log_stride - 1);
             u32 group_id = lid & (subblock_sz - 1);
             u64 gpos = group_offset + (group_id << (log_end_stride));
 
-            a = mont256::Element::load(data + (gpos + second_half * end_pair_stride) * WORDS);
-            b = mont256::Element::load(data + (gpos + (end_stride << (deg - 1)) + second_half * end_pair_stride) * WORDS);
+            a = Field::load(data + (gpos + second_half * end_pair_stride) * WORDS);
+            b = Field::load(data + (gpos + (end_stride << (deg - 1)) + second_half * end_pair_stride) * WORDS);
 
         }
 
         barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
-
-        auto env = mont256::Env(*param);
 
         const u32 pqshift = max_deg - deg;
 
@@ -1403,28 +1377,24 @@ namespace ntt {
         for (u32 i = 0; i < deg; i++) {
             if (i != 0) {
                 u32 lanemask = 1 << (deg - i - 1);
-                mont256::Element tmp;
+                Field tmp;
                 tmp = ((lid / lanemask) & 1) ? a : b;
-                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                #pragma unroll
+                for (u32 j = 0; j < WORDS; j++) {
+                    tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                }
                 if ((lid / lanemask) & 1) a = tmp;
                 else b = tmp;
             }
 
             auto tmp = a;
-            a = env.add(a, b);
-            b = env.sub(tmp, b);
+            a = a + b;
+            b = tmp - b;
             bit = subblock_sz >> i;
             di = lid & (bit - 1);
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << i << pqshift) * WORDS);
-                b = env.mul(b, w);
+                auto w = Field::load(pq + (di << i << pqshift) * WORDS);
+                b = b * w;
             }
         }
 
@@ -1432,14 +1402,14 @@ namespace ntt {
         u32 k = index & (end_stride - 1);
         u32 n = 1 << log_len;
 
-        // auto twiddle = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k, env);
-        // auto twiddle_gap = pow_lookup_constant<WORDS>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
+        // auto twiddle = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k, env);
+        // auto twiddle_gap = pow_lookup_constant<Field>((n >> (log_stride - deg + 1) >> deg) * k * (1 << (deg - 1)), env);
         // auto t1 = env.pow(twiddle, lid << 1 >> deg, deg);
         // auto t2 = env.mul(t1, twiddle_gap);//env.pow(twiddle, ((lid << 1) >> deg) + ((lsize <<1) >> deg), deg);
 
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1;
+        Field t1;
         if (coalesced_roots && cur_io_group == io_group) {
             for (int i = lid_start; i < lid_start + cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -1451,16 +1421,16 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r1 = __brev((lid << 1) + second_half * lsize) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r1 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        a = env.mul(a, t1);
+        a = a * t1;
 
         if (coalesced_roots && cur_io_group == io_group) {
            for (int i = lid_start; i < lid_start + cur_io_group; i++) {
@@ -1473,16 +1443,16 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r2 = __brev((lid << 1) + 1 + second_half * lsize) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r2 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        b = env.mul(b, t1);
+        b = b * t1;
 
         bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
 
@@ -1587,8 +1557,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage2_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, mont256::Params* param, u32 group_sz, u32 * roots, bool coalesced_roots) {        
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage2_warp_no_share (u32_E * data, const u32_E * pq, u32 log_len, u32 log_stride, u32 deg, u32 max_deg, u32 group_sz, u32 * roots, bool coalesced_roots) {        
+        const static usize WORDS = Field::LIMBS;
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -1637,7 +1608,7 @@ namespace ntt {
         const u32 lid_start = lid - io_id;
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
 
-        mont256::Element a, b, c, d;
+        Field a, b, c, d;
 
         // Read data
         if (cur_io_group == io_group) {
@@ -1652,7 +1623,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = mont256::Element::load(thread_data);
+            a = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -1666,7 +1637,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = mont256::Element::load(thread_data);
+            b = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -1680,7 +1651,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            c = mont256::Element::load(thread_data);
+            c = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -1694,20 +1665,20 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            d = mont256::Element::load(thread_data);
+            d = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 group_offset = (lid >> (deg - 1)) << (log_len - log_stride - 1);
             u32 group_id = lid & (subblock_sz - 1);
             u64 gpos = group_offset + (group_id << (log_end_stride));
 
-            a = mont256::Element::load(data + (gpos) * WORDS);
-            b = mont256::Element::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
-            c = mont256::Element::load(data + (gpos + end_pair_stride) * WORDS);
-            d = mont256::Element::load(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS);
+            a = Field::load(data + (gpos) * WORDS);
+            b = Field::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
+            c = Field::load(data + (gpos + end_pair_stride) * WORDS);
+            d = Field::load(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS);
         }
         
-        auto env = mont256::Env(*param);
+
 
         barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
 
@@ -1716,26 +1687,14 @@ namespace ntt {
         for (u32 i = 0; i < deg; i++) {
             if (i != 0) {
                 u32 lanemask = 1 << (deg - i - 1);
-                mont256::Element tmp, tmp1;
+                Field tmp, tmp1;
                 tmp = ((lid / lanemask) & 1) ? a : b;
                 tmp1 = ((lid / lanemask) & 1) ? c : d;
-                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
-
-                tmp1.n.c0 = __shfl_xor_sync(0xffffffff, tmp1.n.c0, lanemask);
-                tmp1.n.c1 = __shfl_xor_sync(0xffffffff, tmp1.n.c1, lanemask);
-                tmp1.n.c2 = __shfl_xor_sync(0xffffffff, tmp1.n.c2, lanemask);
-                tmp1.n.c3 = __shfl_xor_sync(0xffffffff, tmp1.n.c3, lanemask);
-                tmp1.n.c4 = __shfl_xor_sync(0xffffffff, tmp1.n.c4, lanemask);
-                tmp1.n.c5 = __shfl_xor_sync(0xffffffff, tmp1.n.c5, lanemask);
-                tmp1.n.c6 = __shfl_xor_sync(0xffffffff, tmp1.n.c6, lanemask);
-                tmp1.n.c7 = __shfl_xor_sync(0xffffffff, tmp1.n.c7, lanemask);
+                #pragma unroll
+                for (u32 j = 0; j < WORDS; j++) {
+                    tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    tmp1.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp1.n.limbs[j], lanemask);
+                }
 
                 if ((lid / lanemask) & 1) a = tmp, c = tmp1;
                 else b = tmp, d = tmp1;
@@ -1744,18 +1703,18 @@ namespace ntt {
             auto tmp1 = a;
             auto tmp2 = c;
 
-            a = env.add(a, b);
-            c = env.add(c, d);
-            b = env.sub(tmp1, b);
-            d = env.sub(tmp2, d);
+            a = a + b;
+            c = c + d;
+            b = tmp1 - b;
+            d = tmp2 - d;
 
             u32 bit = subblock_sz >> i;
             u32 di = lid & (bit - 1);
 
             if (di != 0) {
-                auto w = mont256::Element::load(pq + (di << i << pqshift) * WORDS);
-                b = env.mul(b, w);
-                d = env.mul(d, w);
+                auto w = Field::load(pq + (di << i << pqshift) * WORDS);
+                b = b * w;
+                d = d * w;
             }
         }
 
@@ -1764,7 +1723,7 @@ namespace ntt {
         u32 n = 1 << log_len;
         u64 twiddle = (n >> log_end_stride >> deg) * k;
 
-        mont256::Element t1;
+        Field t1;
         if (coalesced_roots && cur_io_group == io_group) {
             for (int i = lid_start; i < lid_start + cur_io_group; i++) {
                 if (io_id < WORDS) {
@@ -1776,16 +1735,16 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r1 = __brev((lid << 1)) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r1 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        a = env.mul(a, t1);
+        a = a * t1;
 
         if (coalesced_roots && cur_io_group == io_group) {
            for (int i = lid_start; i < lid_start + cur_io_group; i++) {
@@ -1798,16 +1757,16 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r2 = __brev((lid << 1) + 1) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r2 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        b = env.mul(b, t1);
+        b = b * t1;
 
         if (coalesced_roots && cur_io_group == io_group) {
            for (int i = lid_start; i < lid_start + cur_io_group; i++) {
@@ -1820,16 +1779,16 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r3 = __brev((lid << 1) + (lsize * 2)) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r3 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        c = env.mul(c, t1);
+        c = c * t1;
 
         if (coalesced_roots && cur_io_group == io_group) {
            for (int i = lid_start; i < lid_start + cur_io_group; i++) {
@@ -1842,21 +1801,21 @@ namespace ntt {
 
             // Collectively exchange data into a blocked arrangement across threads
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            t1 = mont256::Element::load(thread_data);
+            t1 = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 r4 = __brev((lid << 1) + 1 + (lsize * 2)) >> (32 - (deg << 1));
 
             u64 pos = twiddle * (r4 >> deg);
-            t1 = mont256::Element::load(roots + pos * WORDS);
+            t1 = Field::load(roots + pos * WORDS);
         }
 
-        d = env.mul(d, t1);
+        d = d * t1;
 
         // roots += twiddle * WORDS * (lid << 1 >> deg);
-        // auto t1 = mont256::Element::load(roots);
+        // auto t1 = Field::load(roots);
         // roots += twiddle * WORDS * (1 << (deg - 1));
-        // auto t2 = mont256::Element::load(roots);
+        // auto t2 = Field::load(roots);
         
         bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
 
@@ -2039,8 +1998,9 @@ namespace ntt {
         }
     }    
 
-    template <u32 WORDS, u32 io_group, bool inverse, bool process>
-    __global__ void SSIP_NTT_stage2_warp_no_share_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * inv_n, const u32 * zeta) {
+    template <typename Field, u32 io_group, bool inverse, bool process>
+    __global__ void SSIP_NTT_stage2_warp_no_share_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots, const u32 * inv_n, const u32 * zeta) {
+        const static usize WORDS = Field::LIMBS;
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -2089,7 +2049,7 @@ namespace ntt {
         const u32 lid_start = lid - io_id;
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
 
-        mont256::Element a, b, c, d;
+        Field a, b, c, d;
 
         // Read data
         if (cur_io_group == io_group) {
@@ -2104,7 +2064,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = mont256::Element::load(thread_data);
+            a = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -2118,7 +2078,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = mont256::Element::load(thread_data);
+            b = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -2132,7 +2092,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            c = mont256::Element::load(thread_data);
+            c = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -2146,20 +2106,20 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            d = mont256::Element::load(thread_data);
+            d = Field::load(thread_data);
             __syncwarp();
         } else {
             u32 group_offset = (lid >> (deg - 1)) << (log_len - log_stride - 1);
             u32 group_id = lid & (subblock_sz - 1);
             u64 gpos = group_offset + (group_id << (log_end_stride));
 
-            a = mont256::Element::load(data + (gpos) * WORDS);
-            b = mont256::Element::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
-            c = mont256::Element::load(data + (gpos + end_pair_stride) * WORDS);
-            d = mont256::Element::load(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS);
+            a = Field::load(data + (gpos) * WORDS);
+            b = Field::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
+            c = Field::load(data + (gpos + end_pair_stride) * WORDS);
+            d = Field::load(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS);
         }
         
-        auto env = mont256::Env(*param);
+
 
         barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
 
@@ -2168,26 +2128,15 @@ namespace ntt {
         for (u32 i = 0; i < deg; i++) {
             if (i != 0) {
                 u32 lanemask = 1 << (deg - i - 1);
-                mont256::Element tmp, tmp1;
+                Field tmp, tmp1;
                 tmp = ((lid / lanemask) & 1) ? a : b;
                 tmp1 = ((lid / lanemask) & 1) ? c : d;
-                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
 
-                tmp1.n.c0 = __shfl_xor_sync(0xffffffff, tmp1.n.c0, lanemask);
-                tmp1.n.c1 = __shfl_xor_sync(0xffffffff, tmp1.n.c1, lanemask);
-                tmp1.n.c2 = __shfl_xor_sync(0xffffffff, tmp1.n.c2, lanemask);
-                tmp1.n.c3 = __shfl_xor_sync(0xffffffff, tmp1.n.c3, lanemask);
-                tmp1.n.c4 = __shfl_xor_sync(0xffffffff, tmp1.n.c4, lanemask);
-                tmp1.n.c5 = __shfl_xor_sync(0xffffffff, tmp1.n.c5, lanemask);
-                tmp1.n.c6 = __shfl_xor_sync(0xffffffff, tmp1.n.c6, lanemask);
-                tmp1.n.c7 = __shfl_xor_sync(0xffffffff, tmp1.n.c7, lanemask);
+                #pragma unroll
+                for (u32 j = 0; j < WORDS; j++) {
+                    tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    tmp1.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp1.n.limbs[j], lanemask);
+                }
 
                 if ((lid / lanemask) & 1) a = tmp, c = tmp1;
                 else b = tmp, d = tmp1;
@@ -2196,34 +2145,34 @@ namespace ntt {
             auto tmp1 = a;
             auto tmp2 = c;
 
-            a = env.add(a, b);
-            c = env.add(c, d);
-            b = env.sub(tmp1, b);
-            d = env.sub(tmp2, d);
+            a = a + b;
+            c = c + d;
+            b = tmp1 - b;
+            d = tmp2 - d;
 
             u32 bit = subblock_sz >> i;
             u64 di = (lid & (bit - 1)) * end_stride + subblock_id;
 
             if (di != 0) {
-                auto w = mont256::Element::load(roots + (di << i << pqshift) * WORDS);
-                b = env.mul(b, w);
-                d = env.mul(d, w);
+                auto w = Field::load(roots + (di << i << pqshift) * WORDS);
+                b = b * w;
+                d = d * w;
             }
         }
 
         if (inverse) {
-            auto inv = mont256::Element::load(inv_n);
-            a = env.mul(a, inv);
-            b = env.mul(b, inv);
-            c = env.mul(c, inv);
-            d = env.mul(d, inv);
+            auto inv = Field::load(inv_n);
+            a = a * inv;
+            b = b * inv;
+            c = c * inv;
+            d = d * inv;
             if (process) {
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
                 u32 group_offset, group_id;
                 u64 gpos;
-                mont256::Element z;
+                Field z;
                 u32 id;
 
                 p = __brev((lid << 1)) >> (32 - (deg << 1));
@@ -2240,8 +2189,8 @@ namespace ntt {
                 
                 id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
                 if (id != 0) {
-                    z = mont256::Element::load(zeta + WORDS * (id - 1));
-                    a = env.mul(a, z);
+                    z = Field::load(zeta + WORDS * (id - 1));
+                    a = a * z;
                 }
 
                 p = __brev((lid << 1) + 1) >> (32 - (deg << 1));
@@ -2258,8 +2207,8 @@ namespace ntt {
                 
                 id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
                 if (id != 0) {
-                    z = mont256::Element::load(zeta + WORDS * (id - 1));
-                    b = env.mul(b, z);
+                    z = Field::load(zeta + WORDS * (id - 1));
+                    b = b * z;
                 }
 
                 p = __brev((lid << 1) + lsize * 2) >> (32 - (deg << 1));
@@ -2276,8 +2225,8 @@ namespace ntt {
                 
                 id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
                 if (id != 0) {
-                    z = mont256::Element::load(zeta + WORDS * (id - 1));
-                    c = env.mul(c, z);
+                    z = Field::load(zeta + WORDS * (id - 1));
+                    c = c * z;
                 }
 
                 p = __brev((lid << 1) + lsize * 2 + 1) >> (32 - (deg << 1));
@@ -2294,8 +2243,8 @@ namespace ntt {
                 
                 id = ((segment_start + subblock_offset + subblock_id) + gpos + second_half_l * end_pair_stride + gap * end_stride) % 3;
                 if (id != 0) {
-                    z = mont256::Element::load(zeta + WORDS * (id - 1));
-                    d = env.mul(d, z);
+                    z = Field::load(zeta + WORDS * (id - 1));
+                    d = d * z;
                 }
             }
         }
@@ -2481,8 +2430,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group, bool process>
-    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots, const u32 * zeta, u32 start_len) {
+    template <typename Field, u32 io_group, bool process>
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots, const u32 * zeta, u32 start_len) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -2540,7 +2490,7 @@ namespace ntt {
             }
         }
 
-        auto env = mont256::Env(*param);
+
 
         __syncthreads();
 
@@ -2563,48 +2513,46 @@ namespace ntt {
             u32 i0 = segment_start_warp + segment_id_warp + laneid * end_stride_warp;
             u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
 
             if (process) if(rnd == 0) {
                 auto ida = ((segment_start + segment_id) + i0 * end_stride);
                 auto idb = (ida + (1 << (log_len - 1)));
                 if (ida % 3 != 0 && ida < start_len) {
-                    auto z = mont256::Element::load(zeta + (ida % 3 - 1) * WORDS);
-                    a = env.mul(a, z);
+                    auto z = Field::load(zeta + (ida % 3 - 1) * WORDS);
+                    a = a * z;
                 }
                 if (idb % 3 != 0 && idb < start_len) {
-                    auto z = mont256::Element::load(zeta + (idb % 3 - 1) * WORDS);
-                    b = env.mul(b, z);
+                    auto z = Field::load(zeta + (idb % 3 - 1) * WORDS);
+                    b = b * z;
                 }
             }
 
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    mont256::Element tmp;
+                    Field tmp;
                     tmp = ((lid / lanemask) & 1) ? a : b;
-                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    }
+
                     if ((lid / lanemask) & 1) a = tmp;
                     else b = tmp;
                 }
 
                 auto tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 u32 bit = (1 << sub_deg) >> (i + 1);
                 u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
 
                 if (di != 0) {
-                    auto w = mont256::Element::load(roots + (di << (rnd + i) << pqshift) * WORDS);
-                    b = env.mul(b, w);
+                    auto w = Field::load(roots + (di << (rnd + i) << pqshift) * WORDS);
+                    b = b * w;
                 }
             }            
 
@@ -2630,8 +2578,9 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1_warp_no_smem_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage1_warp_no_smem_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots) {
+        const static usize WORDS = Field::LIMBS;
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -2673,7 +2622,7 @@ namespace ntt {
         const u32 lid_start = lid - io_id;
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
 
-        mont256::Element a, b;
+        Field a, b;
 
         // Read data
         if (cur_io_group == io_group) {
@@ -2687,7 +2636,7 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = mont256::Element::load(thread_data);
+            a = Field::load(thread_data);
             __syncwarp();
 
             for (int i = lid_start; i != lid_start + io_group; i ++) {
@@ -2700,20 +2649,20 @@ namespace ntt {
             }
 
             WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = mont256::Element::load(thread_data);
+            b = Field::load(thread_data);
             __syncwarp();
 
         } else {
             u32 group_id = lid & (subblock_sz - 1);
             u64 gpos = group_id << (lgp);
 
-            a = mont256::Element::load(data + (gpos) * WORDS);
-            b = mont256::Element::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
+            a = Field::load(data + (gpos) * WORDS);
+            b = Field::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
         }
 
         // printf("threadid: %d, a: %d, b: %d\n", threadIdx.x, a.n.c0, b.n.c0);
         
-        auto env = mont256::Env(*param);
+
 
         barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
 
@@ -2722,17 +2671,13 @@ namespace ntt {
         for (u32 i = 0; i < deg; i++) {
             if (i != 0) {
                 u32 lanemask = 1 << (deg - i - 1);
-                mont256::Element tmp;
+                Field tmp;
                 tmp = ((lid / lanemask) & 1) ? a : b;
 
-                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                #pragma unroll
+                for (u32 j = 0; j < WORDS; j++) {
+                    tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                }
 
                 if ((lid / lanemask) & 1) a = tmp;
                 else b = tmp;
@@ -2740,15 +2685,15 @@ namespace ntt {
 
             auto tmp = a;
 
-            a = env.add(a, b);
-            b = env.sub(tmp, b);
+            a = a + b;
+            b = tmp - b;
 
             u32 bit = subblock_sz >> i;
             u64 di = (lid & (bit - 1)) * end_stride + segment_id;
 
             if (di != 0) {
-                auto w = mont256::Element::load(roots + (di << i << pqshift) * WORDS);
-                b = env.mul(b, w);
+                auto w = Field::load(roots + (di << i << pqshift) * WORDS);
+                b = b * w;
             }
         }
         
@@ -2790,8 +2735,9 @@ namespace ntt {
         }
     }
 
-        template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots (u32_E * x, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
 
         constexpr int warp_threads = io_group;
@@ -2855,7 +2801,7 @@ namespace ntt {
             }
         }
 
-        auto env = mont256::Env(*param);
+
 
         __syncthreads();
 
@@ -2878,14 +2824,14 @@ namespace ntt {
             u32 i0 = segment_start + segment_id_warp + laneid * end_stride_warp;
             u32 i1 = i0 + gap;
 
-            auto a = mont256::Element::load(u + i0, shared_read_stride);
-            auto b = mont256::Element::load(u + i1, shared_read_stride);
+            auto a = Field::load(u + i0, shared_read_stride);
+            auto b = Field::load(u + i1, shared_read_stride);
 
-            mont256::Element w;
+            Field w;
 
             auto tmp = a;
-            a = env.add(a, b);
-            b = env.sub(tmp, b);
+            a = a + b;
+            b = tmp - b;
             u32 bit = (1 << sub_deg) >> 1;
             u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
 
@@ -2901,34 +2847,32 @@ namespace ntt {
                 }
 
                 WarpExchangeT(temp_storage[warp_id_exchange]).StripedToBlocked(thread_data, thread_data);
-                w = mont256::Element::load(thread_data);
+                w = Field::load(thread_data);
                 __syncwarp();
             } else {
-                w = mont256::Element::load(roots + (di << (rnd) << pqshift) * WORDS);
+                w = Field::load(roots + (di << (rnd) << pqshift) * WORDS);
             }
 
             if (di != 0) {
-                b = env.mul(b, w);
+                b = b * w;
             }
 
             for (u32 i = 1; i < sub_deg; i++) {
                 u32 lanemask = 1 << (sub_deg - i - 1);
-                mont256::Element tmp;
+                Field tmp;
                 tmp = ((lid / lanemask) & 1) ? a : b;
-                tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+                
+                #pragma unroll
+                for (u32 j = 0; j < WORDS; j++) {
+                    tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                }
+
                 if ((lid / lanemask) & 1) a = tmp;
                 else b = tmp;
 
                 tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 u32 bit = (1 << sub_deg) >> (i + 1);
                 u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
 
@@ -2944,13 +2888,13 @@ namespace ntt {
                     }
 
                     WarpExchangeT(temp_storage[warp_id_exchange]).StripedToBlocked(thread_data, thread_data);
-                    w = mont256::Element::load(thread_data);
+                    w = Field::load(thread_data);
                     __syncwarp();
                 } else {
-                    w = mont256::Element::load(roots + (di << (rnd + i) << pqshift) * WORDS);
+                    w = Field::load(roots + (di << (rnd + i) << pqshift) * WORDS);
                 }
                 if (di != 0) {
-                    b = env.mul(b, w);
+                    b = b * w;
                 }
             }            
 
@@ -2977,8 +2921,9 @@ namespace ntt {
     }
 
     #define CONVERT_SADDR(x)  (((x) >> 5) * 33 + ((x) & 31))
-    template <u32 WORDS, u32 io_group>
-    __global__ void SSIP_NTT_stage1_warp_no_twiddle_opt_smem (u32_E * x, u32 log_len, u32 log_stride, u32 deg, mont256::Params* param, u32 group_sz, u32 * roots) {
+    template <typename Field, u32 io_group>
+    __global__ void SSIP_NTT_stage1_warp_no_twiddle_opt_smem (u32_E * x, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots) {
+        const static usize WORDS = Field::LIMBS;
         extern __shared__ u32_E s[];
         // column-major in shared memory
         // data patteren:
@@ -3041,7 +2986,7 @@ namespace ntt {
             }
         }
 
-        auto env = mont256::Env(*param);
+
 
         __syncthreads();
 
@@ -3064,35 +3009,33 @@ namespace ntt {
             u32 i0 = segment_start + segment_id_warp + laneid * end_stride_warp;
             u32 i1 = i0 + bit;
 
-            auto a = mont256::Element::load(u + CONVERT_SADDR(i0), shared_read_stride);
-            auto b = mont256::Element::load(u + CONVERT_SADDR(i1), shared_read_stride);
+            auto a = Field::load(u + CONVERT_SADDR(i0), shared_read_stride);
+            auto b = Field::load(u + CONVERT_SADDR(i1), shared_read_stride);
 
             for (u32 i = 0; i < sub_deg; i++) {
                 if (i != 0) {
                     u32 lanemask = 1 << (sub_deg - i - 1);
-                    mont256::Element tmp;
+                    Field tmp;
                     tmp = ((lid / lanemask) & 1) ? a : b;
-                    tmp.n.c0 = __shfl_xor_sync(0xffffffff, tmp.n.c0, lanemask);
-                    tmp.n.c1 = __shfl_xor_sync(0xffffffff, tmp.n.c1, lanemask);
-                    tmp.n.c2 = __shfl_xor_sync(0xffffffff, tmp.n.c2, lanemask);
-                    tmp.n.c3 = __shfl_xor_sync(0xffffffff, tmp.n.c3, lanemask);
-                    tmp.n.c4 = __shfl_xor_sync(0xffffffff, tmp.n.c4, lanemask);
-                    tmp.n.c5 = __shfl_xor_sync(0xffffffff, tmp.n.c5, lanemask);
-                    tmp.n.c6 = __shfl_xor_sync(0xffffffff, tmp.n.c6, lanemask);
-                    tmp.n.c7 = __shfl_xor_sync(0xffffffff, tmp.n.c7, lanemask);
+
+                    #pragma unroll
+                    for (u32 j = 0; j < WORDS; j++) {
+                        tmp.n.limbs[j] = __shfl_xor_sync(0xffffffff, tmp.n.limbs[j], lanemask);
+                    }
+
                     if ((lid / lanemask) & 1) a = tmp;
                     else b = tmp;
                 }
 
                 auto tmp = a;
-                a = env.add(a, b);
-                b = env.sub(tmp, b);
+                a = a + b;
+                b = tmp - b;
                 u32 bit = (1 << sub_deg) >> (i + 1);
                 u64 di = ((lid & (bit - 1)) * end_stride_warp + segment_id_warp) * end_stride + segment_id;
 
                 if (di != 0) {
-                    auto w = mont256::Element::load(roots + (di << (rnd + i) << pqshift) * WORDS);
-                    b = env.mul(b, w);
+                    auto w = Field::load(roots + (di << (rnd + i) << pqshift) * WORDS);
+                    b = b * w;
                 }
             }            
 
@@ -3119,19 +3062,21 @@ namespace ntt {
         }
     }
 
-    template <u32 WORDS>
+    template <typename Field>
     class self_sort_in_place_ntt : public best_ntt {
+        const static usize WORDS = Field::LIMBS;
+        using Number = mont::Number<WORDS>;
+        
         u32 max_deg_stage1;
         u32 max_deg_stage2;
         u32 max_deg;
         const int log_len;
         const u64 len;
-        mont256::Params *param, *param_d;
-        mont256::Element unit;
+        Field unit;
         bool debug;
         u32_E *pq = nullptr, *pq_d; // Precalculated values for radix degrees up to `max_deg`
         u32_E *roots, *roots_d;
-        const bool inverse; 
+        const bool inverse;
         const bool process;
         u32 * inv_n, * inv_n_d;
         u32 * zeta, * zeta_d;
@@ -3179,7 +3124,6 @@ namespace ntt {
         float milliseconds = 0;
 
         self_sort_in_place_ntt(
-            const mont256::Params param, 
             const u32* omega, u32 log_len, 
             bool debug, 
             u32 max_instance = 1,
@@ -3213,19 +3157,15 @@ namespace ntt {
             max_deg = std::max(max_deg_stage1, max_deg_stage2);
 
             // Precalculate:
-            auto env = mont256::Env::host_new(param);
-
             if (debug) {
                 // unit = qpow(omega, (P - 1ll) / len)
-                unit = env.host_from_number(mont256::Number::load(omega));
-                auto exponent = mont256::Number::load(param.m);
-                auto one = mont256::Number::zero();
-                one.c0 = 1;
-                exponent = exponent.host_sub(one);
-                exponent = exponent.slr(log_len);
-                unit = env.host_pow(unit, exponent);
+                unit = Field::from_number(Number::load(omega));
+                auto one = Number::zero();
+                one.limbs[0] = 1;
+                Number exponent = (Field::ParamsType::m() - one).slr(log_len);
+                unit = unit.pow(exponent);
             } else {
-                unit = mont256::Element::load(omega);
+                unit = Field::load(omega);
             }
 
             if (config.stage1_mode == SSIP_config::stage1_naive ||
@@ -3233,16 +3173,15 @@ namespace ntt {
             (config.stage2_mode != SSIP_config::stage2_warp_no_twiddle_no_share)) {
 
                 // pq: [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
-
                 CUDA_CHECK(cudaHostAlloc(&pq, (1 << max_deg >> 1) * sizeof(u32) * WORDS, cudaHostAllocDefault));
                 memset(pq, 0, (1 << max_deg >> 1) * sizeof(u32) * WORDS);
-                env.one().store(pq);
-                auto twiddle = env.host_pow(unit, len >> max_deg);
+                Field::one().store(pq);
+                auto twiddle = unit.pow(len >> max_deg);
                 if (max_deg > 1) {
                     twiddle.store(pq + WORDS);
                     auto last = twiddle;
-                    for (u32 i = 2; i < (1 << max_deg >> 1); i++) {
-                        last = env.host_mul(last, twiddle);
+                    for (u64 i = 2; i < (1 << max_deg >> 1); i++) {
+                        last = last * twiddle;
                         last.store(pq + i * WORDS);
                     }
                 }
@@ -3253,16 +3192,13 @@ namespace ntt {
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle) &&
             (config.stage2_mode == SSIP_config::stage2_warp_no_twiddle_no_share)) {
                 CUDA_CHECK(cudaHostAlloc(&roots, (u64)len / 2 * WORDS * sizeof(u32_E), cudaHostAllocDefault));
-                gen_roots_cub<WORDS> gen;
-                CUDA_CHECK(gen(roots, len / 2, unit, param));
+                gen_roots_cub<Field> gen;
+                CUDA_CHECK(gen(roots, len / 2, unit));
             } else {
                 CUDA_CHECK(cudaHostAlloc(&roots, (u64)len * WORDS * sizeof(u32_E), cudaHostAllocDefault));
-                gen_roots_cub<WORDS> gen;
-                CUDA_CHECK(gen(roots, len, unit, param));
+                gen_roots_cub<Field> gen;
+                CUDA_CHECK(gen(roots, len, unit));
             }
-
-            CUDA_CHECK(cudaHostAlloc(&this->param, sizeof(mont256::Params), cudaHostAllocDefault));
-            CUDA_CHECK(cudaMemcpy(this->param, &param, sizeof(mont256::Params), cudaMemcpyHostToHost));
 
             if (inverse) {
                 assert(inv_n != nullptr);
@@ -3289,7 +3225,6 @@ namespace ntt {
         ~self_sort_in_place_ntt() override {
             if (pq != nullptr) cudaFreeHost(pq);
             cudaFreeHost(roots);
-            cudaFreeHost(param);
             if (inverse) cudaFreeHost(inv_n);
             if (process) cudaFreeHost(zeta);
             if (on_gpu) clean_gpu();
@@ -3304,8 +3239,6 @@ namespace ntt {
                 CUDA_CHECK(cudaMallocAsync(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, stream));
                 CUDA_CHECK(cudaMemcpyAsync(pq_d, pq, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, cudaMemcpyHostToDevice, stream));
             }
-            CUDA_CHECK(cudaMallocAsync(&param_d, sizeof(mont256::Params), stream));
-            CUDA_CHECK(cudaMemcpyAsync(param_d, param, sizeof(mont256::Params), cudaMemcpyHostToDevice, stream));
 
             if ((config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_no_smem ||
             config.stage1_mode == SSIP_config::stage1_warp_no_twiddle_opt_smem ||
@@ -3331,7 +3264,8 @@ namespace ntt {
             if (!success) {
                 if (pq != nullptr) CUDA_CHECK(cudaFreeAsync(pq_d, stream));
                 CUDA_CHECK(cudaFreeAsync(roots_d, stream));
-                CUDA_CHECK(cudaFreeAsync(param_d, stream));
+                if (inverse) CUDA_CHECK(cudaFreeAsync(inv_n_d, stream));
+                if (process) CUDA_CHECK(cudaFreeAsync(zeta_d, stream));
             } else {
                 this->on_gpu = true;
             }
@@ -3346,7 +3280,6 @@ namespace ntt {
 
             if (pq != nullptr) CUDA_CHECK(cudaFreeAsync(pq_d, stream));
             CUDA_CHECK(cudaFreeAsync(roots_d, stream));
-            CUDA_CHECK(cudaFreeAsync(param_d, stream));
 
             if (inverse) CUDA_CHECK(cudaFreeAsync(inv_n_d, stream));
             if (process) CUDA_CHECK(cudaFreeAsync(zeta_d, stream));
@@ -3376,7 +3309,6 @@ namespace ntt {
                 }
             }
 
-
             u32 * x;
             if (success) CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
             if (process && !inverse) {
@@ -3389,7 +3321,7 @@ namespace ntt {
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) number_to_element <WORDS> <<< grid, block, 0, stream >>> (x, len, param_d);
+                if (success) number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
                 if (success) CUDA_CHECK(cudaGetLastError());
                 if (success) CUDA_CHECK(cudaEventRecord(start));
             }
@@ -3416,72 +3348,72 @@ namespace ntt {
                 switch (config.stage1_mode)
                 {
                 case SSIP_config::stage1_naive: {
-                    auto kernel = SSIP_NTT_stage1 <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage1 <Field, io_group>;
 
                     u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     if (config.stage1_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp: {
-                    auto kernel = SSIP_NTT_stage1_warp <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage1_warp <Field, io_group>;
 
                     u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     if (config.stage1_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, 1 << (deg - 1), roots_d, config.stage1_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp_no_twiddle: {
                     if (config.stage1_coalesced_roots) {
-                        auto kernel = SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots <WORDS, io_group>;
+                        auto kernel = SSIP_NTT_stage1_warp_no_twiddle_coalesced_roots <Field, io_group>;
 
                         u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)) +  (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
                         if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d);
                         if (success) CUDA_CHECK(cudaGetLastError());
                     } else {
                         auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
-                        SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group, true> : SSIP_NTT_stage1_warp_no_twiddle <WORDS, io_group, false>;
+                        SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
                         if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d, zeta_d, start_n);
+                        if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
                         
                         if (success) CUDA_CHECK(cudaGetLastError());
                     }
                     break;
                 }
                 case SSIP_config::stage1_warp_no_twiddle_no_smem: {
-                    auto kernel = SSIP_NTT_stage1_warp_no_smem_no_twiddle <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage1_warp_no_smem_no_twiddle <Field, io_group>;
 
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
                     
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
                 case SSIP_config::stage1_warp_no_twiddle_opt_smem: {
-                    auto kernel = SSIP_NTT_stage1_warp_no_twiddle_opt_smem <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage1_warp_no_twiddle_opt_smem <Field, io_group>;
 
                     u32 shared_size = CONVERT_SADDR(sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                     
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, 1 << (deg - 1), roots_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3518,11 +3450,11 @@ namespace ntt {
                     u32 shared_size = (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
                     if (config.stage2_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2 <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2 <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3540,10 +3472,10 @@ namespace ntt {
                     u32 shared_size = (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
                     if (config.stage2_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2_two_per_thread <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2_two_per_thread <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3561,11 +3493,11 @@ namespace ntt {
                     u32 shared_size = (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
                     if (config.stage2_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2_warp <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2_warp <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3583,10 +3515,10 @@ namespace ntt {
                     u32 shared_size = (sizeof(u32) * ((1 << (deg << 1)) + 1) * WORDS) * group_num;
                     if (config.stage2_coalesced_roots) shared_size += (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2_two_per_thread_warp <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2_two_per_thread_warp <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3603,11 +3535,11 @@ namespace ntt {
 
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
-                    auto kernel = SSIP_NTT_stage2_warp_no_share <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2_warp_no_share <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 2), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3624,10 +3556,10 @@ namespace ntt {
 
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group));
 
-                    auto kernel = SSIP_NTT_stage2_two_per_thread_warp_no_share <WORDS, io_group>;
+                    auto kernel = SSIP_NTT_stage2_two_per_thread_warp_no_share <Field, io_group>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, param_d, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, pq_d, log_len, log_stride, deg, max_deg, ((1 << (deg << 1)) >> 1), roots_d, config.stage2_coalesced_roots);
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
                 }
@@ -3645,13 +3577,13 @@ namespace ntt {
                     u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
 
                     auto kernel = inverse && (log_stride - (int)deg < 0) ?
-                    (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, true, true>
-                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, true, false>)
-                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <WORDS, io_group, false, false>;
+                    (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, true, true>
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, true, false>)
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, false, false>;
 
                     if (success) CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
-                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, param_d, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
+                    if (success) kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
 
                     if (success) CUDA_CHECK(cudaGetLastError());
                     break;
@@ -3674,7 +3606,7 @@ namespace ntt {
                 if (success) CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) element_to_number <WORDS> <<< grid, block, 0, stream >>> (x, len, param_d);
+                if (success) element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
                 if (success) CUDA_CHECK(cudaGetLastError());
             }
 
@@ -3689,11 +3621,10 @@ namespace ntt {
             // manually tackle log_len == 1 case because the stage2 kernel won't run
             if (log_len == 1) {
                 if (inverse) {
-                    auto env = mont256::Env::host_new(*param);
-                    env.host_mul(mont256::Element::load(data), mont256::Element::load(inv_n)).store(data);
-                    env.host_mul(mont256::Element::load(data + WORDS), mont256::Element::load(inv_n)).store(data + WORDS);
+                    (Field::load(data) * Field::load(inv_n)).store(data);
+                    (Field::load(data + WORDS) * Field::load(inv_n)).store(data + WORDS);
                     if (process) {
-                        env.host_mul(mont256::Element::load(data + WORDS), mont256::Element::load(zeta)).store(data + WORDS);
+                        (Field::load(data + WORDS) * Field::load(zeta)).store(data + WORDS);
                     }
                 }
             }

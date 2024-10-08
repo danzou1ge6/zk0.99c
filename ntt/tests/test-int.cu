@@ -2,7 +2,7 @@
 #include <ctime>
 #include "../src/naive_ntt.cuh"
 #include "../src/bellperson_ntt.cuh"
-// #include "../src/self_sort_in_place_ntt.cuh"
+#include "../src/self_sort_in_place_ntt.cuh"
 #include "small_field.cuh"
 
 #define P (3221225473   )
@@ -137,21 +137,21 @@ int main() {
         }
     }
 
-    // // self sort in place approach
-    // memset(data_gpu, 0, sizeof(uint) * length * WORDS);
-    // for (int i = 0; i < length; i++) {
-    //     data_gpu[i * WORDS] = data_copy[i];
-    // }
-    // ntt::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true);
-    // SSIP.ntt(data_gpu);
-    // printf("SSIP: %fms\n", SSIP.milliseconds);
+    // self sort in place approach
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    ntt::self_sort_in_place_ntt<small_field::Element> SSIP(unit, bits, true);
+    SSIP.ntt(data_gpu);
+    printf("SSIP: %fms\n", SSIP.milliseconds);
 
-    // for (long long i = 0; i < length; i++) {
-    //     if (data[i] != data_gpu[i * WORDS]) {
-    //         printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
-    //         break;
-    //     }
-    // }
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            break;
+        }
+    }
 
     auto err = cudaGetLastError();
     if (err != cudaSuccess) {

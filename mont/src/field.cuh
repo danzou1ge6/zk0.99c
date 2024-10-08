@@ -527,20 +527,20 @@ namespace mont
 
     static __device__ __host__ __forceinline__
         Number
-        load(const u32 *p)
+        load(const u32 *p, u32 stride = 1)
     {
       Number r;
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
-        r.limbs[i] = p[i];
+        r.limbs[i] = p[i * stride];
       return r;
     }
 
-    __device__ __host__ __forceinline__ void store(u32 * p) const &
+    __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
     {
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
-        p[i] = limbs[i];
+        p[i * stride] = limbs[i];
     }
 
     static __device__ __host__ __forceinline__
@@ -692,16 +692,16 @@ namespace mont
 
     static __host__ __device__ __forceinline__
         Element
-        load(const u32 *p)
+        load(const u32 *p, u32 stride = 1)
     {
       Element r;
-      r.n = Number<LIMBS>::load(p);
+      r.n = Number<LIMBS>::load(p, stride);
       return r;
     }
 
-    __host__ __device__ __forceinline__ void store(u32 *p)
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1) const &
     {
-      n.store(p);
+      n.store(p, stride);
     }
 
     // Addition identity on field
