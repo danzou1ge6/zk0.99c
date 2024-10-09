@@ -451,20 +451,23 @@ namespace mont
     template <usize N>
     __device__ __forceinline__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
     {
+      __align__(16) u32 carries[2 * N] = {0};
 #pragma unroll
       for (usize i = 0; i < N - 1; i += 1)
       {
         u32 u = a[i] * m_prime;
         mac_n_1_even<N, false, false>(&a[i], m, u);
-        a[i + N] = ptx::addc(a[i + N], 0);
+        carries[i + N] = ptx::addc(carries[i + N], 0);
         mac_n_1_even<N, false, false>(&a[i + 1], &m[1], u);
-        a[i + N + 1] = ptx::addc(a[i + N + 1], 0);
+        carries[i + N + 1] = ptx::addc(carries[i + N + 1], 0);
       }
 
       u32 u = a[N - 1] * m_prime;
       mac_n_1_even<N, false, false>(&a[N - 1], m, u);
-      a[2 * N - 1] = ptx::addc(a[2 * N - 1], 0);
+      carries[2 * N - 1] = ptx::addc(carries[2 * N - 1], 0);
       mac_n_1_even<N, false, false>(&a[N], &m[1], u);
+
+      add<2 * N>(a, a, carries);
     }
 
     // Computes `r = a - b mod m`.
