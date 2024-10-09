@@ -1,9 +1,10 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include <iostream>
+#include <ctime>
 
-#include "../src/bn254_scalar.cuh"
-using bn254_scalar::Element;
+#include "../src/bn256_fr.cuh"
+using bn256_fr::Element;
 
 using Number = mont::Number<8>;
 using Number2 = mont::Number<16>;
@@ -212,21 +213,22 @@ void test_host2(const u32 r[WORDS * 2], const u32 a[WORDS],
 
 const u32 WORDS = 8;
 namespace instance1
-{ // 20950602143661580501922242635873223609458169555687161247076590552793214934125
-  const u32 a[WORDS] = BIG_INTEGER_CHUNKS8(0x2e519edf, 0x51995825, 0xd06ddd1c, 0x66a9d40d, 0x07c15275, 0x3fc9b502, 0xb284765a, 0x0bc0dc6d);
-  // 8534682880701732357289068089474441931417200410519833184118768407212130707740
-  const u32 b[WORDS] = BIG_INTEGER_CHUNKS8(0x12de7596, 0x5a479a08, 0x55d31bc9, 0x619f0e62, 0x4d8d3d3b, 0x1b26ec31, 0x3acab18e, 0xadfe291c);
-  const u32 sum[WORDS] = BIG_INTEGER_CHUNKS8(0x41301475, 0xabe0f22e, 0x2640f8e5, 0xc848e26f, 0x554e8fb0, 0x5af0a133, 0xed4f27e8, 0xb9bf0589);
-  const u32 sum_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x10cbc602, 0xcaaf5204, 0x6df0b32f, 0x46c78a11, 0xbdcd251e, 0xf27ed6a6, 0xb12e9bd1, 0xe1420842);
-  const u32 sub[WORDS] = BIG_INTEGER_CHUNKS8(0x1b732948, 0xf751be1d, 0x7a9ac153, 0x050ac5aa, 0xba34153a, 0x24a2c8d1, 0x77b9c4cb, 0x5dc2b351);
-  const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x1b732948, 0xf751be1d, 0x7a9ac153, 0x050ac5aa, 0xba34153a, 0x24a2c8d1, 0x77b9c4cb, 0x5dc2b351);
-  const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x369fd39, 0xfb2a58ae, 0x2cdb8bde, 0xc1849b9c, 0x7a5614f8, 0xd6840711, 0x6a71ca00, 0xfd4ca2f2, 0x236aa040, 0xe35a81ee, 0xd6dd3928, 0xc3119d8c, 0x58790fd2, 0x5aaf6b59, 0x821dfd81, 0x898b90ec);
-  const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2af695a5, 0x37fa68a8, 0x52594465, 0x1c545319, 0x2a450da4, 0x126bb45c, 0xf6618de3, 0xe05185b2);
-  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x8616f1e, 0x2d3d2a3f, 0xeace05c7, 0x46a6f401, 0x130a3cac, 0xcb0e8bab, 0x1feeff4f, 0x3a33eb89, 0x56e7f892, 0xd99e0fab, 0x975f45ca, 0xfdfb647b, 0x5ef25820, 0x2bcb07a0, 0xf3c19ce0, 0xbf4b8669);
-  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2f6dfb3c, 0xa2a0b555, 0xbaf95a0f, 0x780404e0, 0xc1617b88, 0xc7ce4e91, 0xc4883fa2, 0x0e6e37be);
-  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2da9299a, 0x632a0883, 0xfd72a055, 0xe82a7d5b, 0xec24fd02, 0xbbc88ce3, 0x0725256c, 0x62453be5);
-  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x24b92e1c, 0xbb93836e, 0xa0302f6c, 0x306427dc, 0x7e7593af, 0x07c2de33, 0x0c839600, 0x62ef5059);
-  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x1, 0x728cf6fa, 0x8ccac12e, 0x836ee8e3, 0x354ea068);
+{ // 14801559487980499405531442697394884941228070624928855492114078555480107039513
+  const u32 a[WORDS] = BIG_INTEGER_CHUNKS8(0x20b962c2, 0xed033696, 0xa5384118, 0x06c215e1, 0xbb31704c, 0x6a92ae0e, 0x31f7b2f9, 0x1bf8bb19);
+  // 11519749216843687781998751461425624010810819986485618779371694913180741450043
+  const u32 b[WORDS] = BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b);
+  const u32 sum[WORDS] = BIG_INTEGER_CHUNKS8(0x3a315531, 0x6bb715b7, 0xcb3817ff, 0x5c5136f4, 0x7c66fe7f, 0x0356f344, 0x8720622e, 0xfc997454);
+  const u32 sum_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x9cd06be, 0x8a85758e, 0x12e7d248, 0xdacfde97, 0x54331636, 0x899d82b3, 0x433e6c9b, 0x0c997453);
+  const u32 sub[WORDS] = BIG_INTEGER_CHUNKS8(0x7417054, 0x6e4f5775, 0x7f386a30, 0xb132f4ce, 0xf9fbe219, 0xd1ce68d7, 0xdccf03c3, 0x3b5801de);
+  const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x7417054, 0x6e4f5775, 0x7f386a30, 0xb132f4ce, 0xf9fbe219, 0xd1ce68d7, 0xdccf03c3, 0x3b5801de);
+  const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x3416fcf, 0x50f86d63, 0xafe17d87, 0x8859b777, 0x1de23d0a, 0xe34aed4a, 0x41b1a792, 0x16a9da55, 0xc7cc070c, 0x3811180f, 0x3a747983, 0x0905f4b1, 0x6a134051, 0x250dd7bf, 0xb3e436f8, 0x01282fc3);
+  const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x264f37ba, 0x79c9af81, 0xd214d86f, 0x5e282b59, 0x8377f5bd, 0xb19cce9c, 0x0eb3ee7f, 0x2d53a6a3);
+  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x42edef0, 0x9f152e2d, 0x1921e182, 0xd29945c4, 0xad0e6750, 0xc2569051, 0xaac0c4af, 0x0d86c313, 0x614d56de, 0xa5d465aa, 0x3469dd8a, 0x519eba57, 0x0c67d0f1, 0x809701a1, 0xed5723c4, 0x4f2d8871);
+  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x18556b1c, 0x7825e5c0, 0xf218f3a8, 0xef5898bb, 0xe3167b05, 0x04726854, 0xbb5cb44b, 0xffca00e4);
+  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2eae6fc0, 0x51237495, 0xf2c9d498, 0x1b9a0446, 0xa1de8d70, 0x41693ffb, 0x9e53b3d5, 0x4944d650);
+  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x255227fb, 0x7605288b, 0x8f18bd82, 0x23b3e73a, 0x6c2ac926, 0xfdc281b8, 0x6e67667e, 0xf1c551cb);
+  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x1, 0x05cb1617, 0x6819b4b5, 0x29c208c0, 0x3610af0d);
+
   TEST_CASE("Big number subtraction 1")
   {
     test_mont_kernel<WORDS>(sub, a, b, [](u32 *r, const u32 *a, const u32 *b)
@@ -342,21 +344,23 @@ namespace instance1
 }
 
 namespace instance2
-{ // 21614655952834921457016191407777979025428180395005350954076529249519191920543
-  const u32 a[WORDS] = BIG_INTEGER_CHUNKS8(0x2fc97634, 0x0d6f2ef0, 0xf6d392cb, 0x72108b39, 0x58342771, 0xda355afe, 0x49eacd22, 0xeceb0f9f);
-  // 14916816494250498795815920831287468076482586307060395802685550524019546555211
-  const u32 b[WORDS] = BIG_INTEGER_CHUNKS8(0x20fa9e72, 0xe43908f3, 0x00627591, 0x4c4b288f, 0x0e291038, 0x4d2b5d6a, 0xb3a36f24, 0xb438834b);
-  const u32 sum[WORDS] = BIG_INTEGER_CHUNKS8(0x50c414a6, 0xf1a837e3, 0xf736085c, 0xbe5bb3c8, 0x665d37aa, 0x2760b868, 0xfd8e3c47, 0xa12392ea);
-  const u32 sum_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x205fc634, 0x107697ba, 0x3ee5c2a6, 0x3cda5b6a, 0xcedbcd18, 0xbeeeeddb, 0xc16db030, 0xc8a695a3);
-  const u32 sub[WORDS] = BIG_INTEGER_CHUNKS8(0xeced7c1, 0x293625fd, 0xf6711d3a, 0x25c562aa, 0x4a0b1739, 0x8d09fd93, 0x96475dfe, 0x38b28c54);
-  const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS8(0xeced7c1, 0x293625fd, 0xf6711d3a, 0x25c562aa, 0x4a0b1739, 0x8d09fd93, 0x96475dfe, 0x38b28c54);
-  const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x627f717, 0xb9c7dab7, 0xe6345511, 0x038997b6, 0x932eddeb, 0xd17673a5, 0x497a67f6, 0x18ce45dd, 0xee540c42, 0x11c70613, 0xa06b647b, 0x5c4fc659, 0x5a14d6e8, 0x1c5d79fc, 0x990d363a, 0xe8a3f095);
-  const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x20938ba8, 0xb245dc2b, 0xe4fa53ec, 0x5951491d, 0xbb1675b4, 0x8bbb457a, 0x4bdf9617, 0x8304a559);
-  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x8eb97f1, 0xf13ff2cc, 0x262af8a0, 0xbf4564cc, 0xfef354e8, 0x56f52db0, 0xaac7c748, 0x774b49d3, 0x4490caaa, 0x000a242a, 0x3c5a8dd0, 0x5be57f36, 0xb6580c8a, 0x409cec59, 0x7d6308de, 0xd6de04c1);
-  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x1c53376, 0x556cdbf4, 0x5bf47b95, 0x25a7bbab, 0x2d2a34dd, 0xba31603d, 0x641f7760, 0x6ad8a20f);
-  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2614df2c, 0x4e6462b9, 0x7e15c29c, 0x162826fb, 0x928b9dd8, 0xdb0e6ad3, 0x239a1389, 0xa36392a9);
-  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x2332a25, 0x7c6e9948, 0x823de74d, 0x2ee06219, 0x670daf76, 0xd138b4ea, 0x412edb53, 0x3a394b82);
-  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x1, 0x7e4bb1a0, 0x6b797787, 0xb69c965b, 0x908459ca);
+{
+  // 1340112579788283211323377730335072378553403695737973290727418574213178170393
+  const u32 a[WORDS] = BIG_INTEGER_CHUNKS8(0x2f67a12, 0x3c531777, 0xeba1d665, 0xa77ff67f, 0x386a2378, 0x07e174b1, 0xedd8e224, 0x9bdb9c19);
+  // 13637549481470042546599681774196962665467303419919163662308042186955339835302
+  const u32 b[WORDS] = BIG_INTEGER_CHUNKS8(0x1e269458, 0x2b734095, 0x2c401491, 0xfcd8f52b, 0x1d78d889, 0x279ad499, 0x7fca3082, 0x283fa7a6);
+  const u32 sum[WORDS] = BIG_INTEGER_CHUNKS8(0x211d0e6a, 0x67c6580d, 0x17e1eaf7, 0xa458ebaa, 0x55e2fc01, 0x2f7c494b, 0x6da312a6, 0xc41b43bf);
+  const u32 sum_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x211d0e6a, 0x67c6580d, 0x17e1eaf7, 0xa458ebaa, 0x55e2fc01, 0x2f7c494b, 0x6da312a6, 0xc41b43bf);
+  const u32 sub[WORDS] = BIG_INTEGER_CHUNKS8(0xe4cfe5ba, 0x10dfd6e2, 0xbf61c1d3, 0xaaa70154, 0x1af14aee, 0xe046a018, 0x6e0eb1a2, 0x739bf473);
+  const u32 sub_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x1534342c, 0xf211770c, 0x77b2078a, 0x2c2859b1, 0x43253337, 0x5a0010a9, 0xb1f0a736, 0x639bf474);
+  const u32 prod[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x59549b, 0xc593ee33, 0x8e5b1b65, 0x76f910e4, 0x844b62b4, 0x2f5e719b, 0x8d9b6752, 0xd2e39bc5, 0xb1bcbbdf, 0x47296730, 0x553d24fe, 0x88c91554, 0x021bad2e, 0x7a92c9b8, 0xfb09258a, 0xa5628736);
+  const u32 prod_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x80113a3, 0xa26fad56, 0x3a55196d, 0x46b1079f, 0x1aac1c6c, 0x08da138c, 0xb599e184, 0x2f022266);
+  const u32 a_square[WORDS * 2] = BIG_INTEGER_CHUNKS16(0x8c737, 0x1e329eda, 0xb66c09cd, 0x75745fad, 0xe89eb541, 0x54ac2548, 0xfb730edd, 0xb1f1b7f0, 0xeb87f6de, 0x2e6c6398, 0xda1ae077, 0xd755c6b9, 0x33fa5656, 0x7b36cc9b, 0xa873b672, 0xb7f47a71);
+  const u32 a_square_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x143448fe, 0xc7827a99, 0xdbd36c44, 0x522d5d26, 0xeb40cab9, 0x401b822e, 0x03c9dde8, 0xe152ae69);
+  const u32 pow_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x14fdd058, 0x822cdb78, 0xbed1b37b, 0x2f2dd7e8, 0x120a1894, 0x6a0f5710, 0xdc6e186b, 0xb4db4a0c);
+  const u32 a_inv_mont[WORDS] = BIG_INTEGER_CHUNKS8(0xb0e8de0, 0x565c86a3, 0xe394b20e, 0x076c44f4, 0x7ffd13b0, 0x0a3ac42e, 0xe3509394, 0x02623b92);
+  const u32 a_slr125[WORDS] = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x17b3d091, 0xe298bbbf, 0x5d0eb32d, 0x3bffb3f9);
+
   TEST_CASE("Big number addition 2")
   {
     test_mont_kernel<WORDS>(sum, a, b, [](u32 *r, const u32 *a, const u32 *b)
@@ -473,8 +477,7 @@ namespace instance2
 TEST_CASE("Convert to and from Montgomery")
 {
   const u32 x[WORDS] = BIG_INTEGER_CHUNKS8(0x14021876, 0x4dbe5ba4, 0xabcc4ca3, 0x4be34308, 0x508480a4, 0xcb5d23b7, 0xdd6e0720, 0xb40134fb);
-  const u32 x_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x31b695, 0x97ad5cd7, 0x1ad2620f, 0xd05f08cd, 0x52bf5551, 0x785f15bd, 0xecfe190a, 0x6128e2ff
-);
+  const u32 x_mont[WORDS] = BIG_INTEGER_CHUNKS8(0x14ea7d56, 0xb86c7f42, 0xc5fbb651, 0xe30ef1c5, 0xa93ab5ae, 0xa99221ab, 0xe00c9f14, 0xb594b3f0);
 
   test_mont_kernel<WORDS>(x_mont, x, x, [](u32 *r, const u32 *a, const u32 *b)
                           { convert_to_mont<<<1, 1>>>(r, a, b); });
@@ -491,6 +494,7 @@ TEST_CASE("Fp negation")
 
 TEST_CASE("Convert to and from Montgomery (host)")
 {
+  std::srand(std::time(nullptr));
   auto e = Element::host_random();
   auto n = e.to_number();
   auto e1 = Element::from_number(n);
