@@ -71,8 +71,8 @@ fn compare_with_halo2() {
         println!("gpu time: {time2}, {}x faster", time1 as f32 / time2 as f32);
 
         vec_data_cuda
-            .par_iter()
-            .zip(vec_poly_rust.par_iter())
+            .iter()
+            .zip(vec_poly_rust.iter())
             .for_each(|(a, b)| {
                 a.par_iter().zip(b.par_iter()).for_each(|(a, b)| {
                     assert_eq!(a, b);

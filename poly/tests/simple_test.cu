@@ -48,6 +48,10 @@ TEST_CASE("naive poly add") {
     for (u64 i = 0; i < len; i++) {
         CHECK(dst[i] == a[i] + a[i]);
     }
+
+    delete[] a;
+    delete[] dst;
+    cudaFree(a_d);
 }
 
 TEST_CASE("poly add") {
@@ -85,6 +89,10 @@ TEST_CASE("poly add") {
     for (u64 i = 0; i < len; i++) {
         CHECK(dst[i] == a[i] + a[i]);
     }
+
+    delete[] a;
+    delete[] dst;
+    cudaFree(a_d);
 }
 
 TEST_CASE("naive poly mul") {
@@ -123,6 +131,10 @@ TEST_CASE("naive poly mul") {
     for (u64 i = 0; i < len; i++) {
         CHECK(dst[i] == a[i] * a[i]);
     }
+
+    delete[] a;
+    delete[] dst;
+    cudaFree(a_d);
 }
 
 TEST_CASE("poly mul") {
@@ -160,4 +172,8 @@ TEST_CASE("poly mul") {
     for (u64 i = 0; i < len; i++) {
         CHECK(dst[i] == a[i] * a[i]);
     }
+
+    delete[] a;
+    delete[] dst;
+    cudaFree(a_d);
 }
