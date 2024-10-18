@@ -33,11 +33,10 @@ namespace ntt {
     class best_ntt {
         protected:
         std::counting_semaphore<MAX_NTT_INSTANCES> sem;
-        std::binary_semaphore sem_kernel;
         std::shared_mutex mtx; // lock for on_gpu data
         public:
         bool on_gpu = false;
-        best_ntt(u32 max_instance = 1) : sem(std::min(max_instance, MAX_NTT_INSTANCES)), sem_kernel(1) {}
+        best_ntt(u32 max_instance = 1) : sem(std::min(max_instance, MAX_NTT_INSTANCES)) {}
         virtual cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) = 0;
         virtual ~best_ntt() = default;
         virtual cudaError_t to_gpu(cudaStream_t stream = 0) = 0;
