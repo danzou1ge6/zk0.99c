@@ -8,14 +8,16 @@
 #include <set>
 #include <future>
 #include <cuda_runtime.h>
+#include "basic_types.h"
 
 namespace runtime {
-    
+
     struct RunInfo {
-        int mem_size;
+        usize mem_size;
         float compute_intensity;
         RunInfo() = default;
         RunInfo(const nlohmann::json& j);
+        RunInfo(usize mem_size, float compute_intensity) : mem_size(mem_size), compute_intensity(compute_intensity) {}
         friend auto operator < (const RunInfo& a, const RunInfo& b) -> bool;
     };
 
@@ -36,15 +38,15 @@ namespace runtime {
 
         struct MemInfo {
             MemType type;
-            size_t size;
-            unsigned int register_id;
+            usize size;
+            u32 register_id;
             MemInfo() = default;
             MemInfo(const nlohmann::json& j);
         };
 
         struct CopyInfo {
             cudaMemcpyKind type;
-            size_t size;
+            usize size;
             CopyInfo() = default;
             CopyInfo(const nlohmann::json& j);
         };
@@ -58,7 +60,7 @@ namespace runtime {
             };
             NttType type;
             FieldType field;
-            unsigned int logn;
+            u32 logn;
             NttInfo() = default;
             NttInfo(const nlohmann::json& j);
         };

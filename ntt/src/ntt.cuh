@@ -16,7 +16,7 @@
 {                                                                                                                    \
     cudaError_t err = call;                                                                                          \
     if (err != cudaSuccess) {                                                                                        \
-        if (success) first_err = err;                                                                                \
+        first_err = err;                                                                                \
         std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " << cudaGetErrorString(err) << std::endl; \
         success = false;                                                                                             \
     }                                                                                                                \
@@ -90,16 +90,16 @@ namespace ntt {
             Field input[num_ranges] = {Field::one(), unit}; // {one, unit}
 
             Field * input_d;
-            if (success) CUDA_CHECK(cudaMalloc(&input_d, num_ranges * sizeof(Field)));
-            if (success) CUDA_CHECK(cudaMemcpy(input_d, input, num_ranges * sizeof(Field), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMalloc(&input_d, num_ranges * sizeof(Field)));
+            CUDA_CHECK(cudaMemcpy(input_d, input, num_ranges * sizeof(Field), cudaMemcpyHostToDevice));
 
             u32 offset[] = {0, 1, len};
             u32 * offset_d;
-            if (success) CUDA_CHECK(cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32)));
-            if (success) CUDA_CHECK(cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32)));
+            CUDA_CHECK(cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice));
 
             Field * output_d;
-            if (success) CUDA_CHECK(cudaMalloc(&output_d, len * sizeof(Field)));
+            CUDA_CHECK(cudaMalloc(&output_d, len * sizeof(Field)));
 
             // Returns a constant iterator to the element of the i-th run
             thrust::counting_iterator<u32> iota(0);
@@ -115,14 +115,14 @@ namespace ntt {
             void *tmp_storage_d = nullptr;
             size_t temp_storage_bytes = 0;
 
-            if (success) CUDA_CHECK(cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges));
+            CUDA_CHECK(cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges));
 
             // Allocate temporary storage
-            if (success) CUDA_CHECK(cudaMalloc(&tmp_storage_d, temp_storage_bytes));
+            CUDA_CHECK(cudaMalloc(&tmp_storage_d, temp_storage_bytes));
 
             // Run batched copy algorithm (used to perform runlength decoding)
             // output_d       <-- [one, unit, unit, ... , unit]
-            if (success) CUDA_CHECK(cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges));
+            CUDA_CHECK(cub::DeviceCopy::Batched(tmp_storage_d, temp_storage_bytes, iterators_in, ptrs_out, sizes, num_ranges));
 
             CUDA_CHECK(cudaFree(tmp_storage_d));
             CUDA_CHECK(cudaFree(input_d));
@@ -133,11 +133,11 @@ namespace ntt {
 
             mont_mul op;
 
-            if (success) CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
-            if (success) CUDA_CHECK(cudaMalloc(&tmp_storage_d, temp_storage_bytes));
-            if (success) CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
+            CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
+            CUDA_CHECK(cudaMalloc(&tmp_storage_d, temp_storage_bytes));
+            CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
 
-            if (success) CUDA_CHECK(cudaMemcpy(roots, output_d, len * sizeof(Field), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(roots, output_d, len * sizeof(Field), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaFree(output_d));
             CUDA_CHECK(cudaFree(tmp_storage_d));
             

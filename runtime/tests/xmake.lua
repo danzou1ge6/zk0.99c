@@ -12,5 +12,7 @@ target("test-graph")
     end
     
     add_files("test_graph.cpp")
-    add_files("../src/graph.cu")
-    add_headerfiles("../src/graph.cuh")
+    add_files("../src/*.cu")
+    add_files("../src/*.cpp")
+    add_headerfiles("../src/*.cuh")
+    add_headerfiles("../src/*.h")
