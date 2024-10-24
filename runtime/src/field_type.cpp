@@ -11,4 +11,18 @@ namespace runtime {
             throw std::invalid_argument("Invalid field type: " + field_type);
         }
     }
+
+    auto operator<<(std::ostream &os, const FieldType &field_type) -> std::ostream & {
+        switch (field_type) {
+            case FieldType::BN256_FR:
+                os << std::string("bn256_fr");
+                break;
+            case FieldType::PASTA_FP:
+                os << std::string("pasta_fp");
+                break;
+            default:
+                throw std::invalid_argument("Invalid field type");
+        }
+        return os;
+    }
 }

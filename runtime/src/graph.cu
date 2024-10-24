@@ -2,6 +2,9 @@
 #include "field_type.h"
 #include "graph.cuh"
 #include "error.cuh"
+#include "memory.h"
+#include <cassert>
+#include <ostream>
 
 namespace runtime {
 
@@ -17,38 +20,142 @@ namespace runtime {
         return a.mem_size > b.mem_size;
     }
 
+    auto operator << (std::ostream& os, const Node::KernelInfo& info) -> std::ostream& {
+        os << "KernelInfo(kernel_name=" << info.kernel_name << ", targets=[";
+        for (auto& target : info.targets) {
+            os << target << ", ";
+        }
+        os << "])";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node::MemInfo& info) -> std::ostream& {
+        os << "MemInfo(type=" << info.type << ", size=" << info.size << ", target=" << info.target << ")";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node::CopyInfo& info) -> std::ostream& {
+        os << "CopyInfo(type=" << info.type << ", size=" << info.size << ", src=" << info.src << ", dst=" << info.dst << ")";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node::NttInfo& info) -> std::ostream& {
+        os << "NttInfo(type=" << info.type << ", field=" << info.field << ", logn=" << info.logn << ", target=" << info.target << ")";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node::NttInfo::NttType& type) -> std::ostream& {
+        switch (type) {
+            case Node::NttInfo::NttType::NTT:
+                os << "NTT";
+                break;
+            case Node::NttInfo::NttType::INVERSE:
+                os << "INVERSE";
+                break;
+            case Node::NttInfo::NttType::COEFF_TO_EXT:
+                os << "COEFF_TO_EXT";
+                break;
+            case Node::NttInfo::NttType::EXT_TO_COEFF:
+                os << "EXT_TO_COEFF";
+                break;
+        }
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const RunInfo& info) -> std::ostream& {
+        os << "RunInfo(mem_size=" << info.mem_size << ", compute_intensity=" << info.compute_intensity << ")";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node::Status& status) -> std::ostream& {
+        switch (status) {
+            case Node::Status::WAITING:
+                os << "WAITING";
+                break;
+            case Node::Status::RUNNING:
+                os << "RUNNING";
+                break;
+            case Node::Status::FINISHED:
+                os << "FINISHED";
+                break;
+        }
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const Node& node) -> std::ostream& {
+        os << "Node(id=" << node.id << ", type=";
+        if (std::holds_alternative<Node::KernelInfo>(node.info)) {
+            os << "kernel, info=" << std::get<Node::KernelInfo>(node.info);
+        } else if (std::holds_alternative<Node::MemInfo>(node.info)) {
+            os << "mem, info=" << std::get<Node::MemInfo>(node.info);
+        } else if (std::holds_alternative<Node::CopyInfo>(node.info)) {
+            os << "copy, info=" << std::get<Node::CopyInfo>(node.info);
+        } else if (std::holds_alternative<Node::NttInfo>(node.info)) {
+            os << "ntt, info=" << std::get<Node::NttInfo>(node.info);
+        }
+        os << ", is_cuda=" << node.is_cuda << ", last=[";
+        for (auto& last : node.last) {
+            os << last << ", ";
+        }
+        os << "], next=[";
+        for (auto& next : node.next) {
+            os << next << ", ";
+        }
+        os << "], status=" << node.status;
+        os << ", wait_for=[";
+        for (auto& wait_for : node.wait_for) {
+            os << wait_for << ", ";
+        }
+        os << "], run_info=" << node.run_info << ")";
+        return os;
+    }
+
+    auto operator << (std::ostream& os, const ComputeGraph& graph) -> std::ostream& {
+        os << "ComputeGraph(nodes=[" << std::endl;
+        for (auto& node : graph.nodes) {
+            os << node << std::endl;
+        }
+        os << "]," << std::endl << "available_nodes=[";
+        for (auto& available_node : graph.available_nodes) {
+            os << available_node.first << " -> " << available_node.second << ", ";
+        }
+        os << "])";
+        return os;
+    }
+
     Node::KernelInfo::KernelInfo(const nlohmann::json& j) {
         kernel_name = j["kernel_name"].template get<std::string>();
-        input_num = j["input_num"].template get<int>();
-        inputs = j["inputs"].template get<std::vector<int>>();
+        targets = j["targets"].template get<std::vector<int>>();
     }
 
     Node::MemInfo::MemInfo(const nlohmann::json& j) {
         size = j["size"].template get<size_t>();
-        register_id = j["register_id"].template get<unsigned int>();
-        auto mem_typ_str = j["type"].template get<std::string>();
+        target = j["target"].template get<unsigned int>();
+        auto mem_typ_str = j["mem_type"].template get<std::string>();
         type = get_mem_type(mem_typ_str);
     }
 
     Node::CopyInfo::CopyInfo(const nlohmann::json& j) {
         size = j["size"].template get<size_t>();
-        auto type_str = j["type"].template get<std::string>();
+        auto type_str = j["copy_type"].template get<std::string>();
         if (type_str == "host_to_device") {
-            type = cudaMemcpyHostToDevice;
+            type = CopyType::H2D;
         } else if (type_str == "device_to_host") {
-            type = cudaMemcpyDeviceToHost;
+            type = CopyType::D2H;
         } else if (type_str == "device_to_device") {
-            type = cudaMemcpyDeviceToDevice;
+            type = CopyType::D2D;
         } else if (type_str == "host_to_host") {
-            type = cudaMemcpyHostToHost;
+            type = CopyType::H2H;
         } else {
             throw std::runtime_error("Unknown copy type");
         }
+        src = j["src"].template get<u32>();
+        dst = j["dst"].template get<u32>();
     }
 
     Node::NttInfo::NttInfo(const nlohmann::json& j) {
         logn = j["logn"].template get<unsigned int>();
-        auto type_str = j["type"].template get<std::string>();
+        auto type_str = j["ntt_type"].template get<std::string>();
         if (type_str == "ntt") {
             type = NttType::NTT;
         } else if (type_str == "inverse") {
@@ -62,10 +169,11 @@ namespace runtime {
         }
         auto field_str = j["field"].template get<std::string>();
         field = get_field_type(field_str);
+        target = j["target"].template get<u32>();
     }
 
     Node::Node(const nlohmann::json& j)
-    : is_cuda(j["is_cuda"]), last(j["last"].template get<std::vector<int>>()), run_info(j),
+    : is_cuda(j["is_cuda"]), last(j["last"].template get<std::vector<int>>()), run_info(j), id(j["id"]),
     next(j["next"].template get<std::vector<int>>()), wait_for(last.begin(), last.end())
     , status(Node::Status::WAITING) {
         if (j["type"] == "kernel") {
@@ -90,6 +198,7 @@ namespace runtime {
     ComputeGraph::ComputeGraph(const nlohmann::json& j) {
         nodes.reserve(j.size());
         for (auto &node : j) {
+            assert(node["id"] == nodes.size());
             nodes.push_back(Node(node));
         }
         available_nodes.insert(std::make_pair(nodes[0].run_info, 0));

@@ -8,4 +8,6 @@ namespace runtime {
     };
 
     auto get_field_type(const std::string &field_type) -> FieldType;
+
+    auto operator<<(std::ostream &os, const FieldType &field_type) -> std::ostream &;
 }

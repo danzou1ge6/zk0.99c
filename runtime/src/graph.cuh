@@ -9,6 +9,7 @@
 #include <future>
 #include <cuda_runtime.h>
 #include "basic_types.h"
+#include <iostream>
 
 namespace runtime {
 
@@ -19,6 +20,7 @@ namespace runtime {
         RunInfo(const nlohmann::json& j);
         RunInfo(usize mem_size, float compute_intensity) : mem_size(mem_size), compute_intensity(compute_intensity) {}
         friend auto operator < (const RunInfo& a, const RunInfo& b) -> bool;
+        friend auto operator << (std::ostream& os, const RunInfo& info) -> std::ostream&;
     };
 
     struct Node {
@@ -30,25 +32,28 @@ namespace runtime {
 
         struct KernelInfo {
             std::string kernel_name;
-            int input_num;
-            std::vector<int> inputs;
+            std::vector<int> targets;
             KernelInfo() = default;
             KernelInfo(const nlohmann::json& j);
+            friend auto operator << (std::ostream& os, const KernelInfo& info) -> std::ostream&;
         };
 
         struct MemInfo {
             MemType type;
             usize size;
-            u32 register_id;
+            u32 target;
             MemInfo() = default;
             MemInfo(const nlohmann::json& j);
+            friend auto operator << (std::ostream& os, const MemInfo& info) -> std::ostream&;
         };
 
         struct CopyInfo {
-            cudaMemcpyKind type;
+            CopyType type;
             usize size;
+            u32 src, dst;
             CopyInfo() = default;
             CopyInfo(const nlohmann::json& j);
+            friend auto operator << (std::ostream& os, const CopyInfo& info) -> std::ostream&;
         };
 
         struct NttInfo {
@@ -61,8 +66,10 @@ namespace runtime {
             NttType type;
             FieldType field;
             u32 logn;
+            u32 target;
             NttInfo() = default;
             NttInfo(const nlohmann::json& j);
+            friend auto operator << (std::ostream& os, const NttInfo& info) -> std::ostream&;
         };
 
         std::variant<KernelInfo, MemInfo, CopyInfo, NttInfo> info; // the information of the node
@@ -72,10 +79,11 @@ namespace runtime {
         std::variant<std::future<void>, cudaStream_t> stream; // the stream of the node
         Status status;
         RunInfo run_info;
+        u32 id;
 
         Node(const nlohmann::json& j);
         void sync();
-    
+        friend auto operator << (std::ostream& os, const Node& node) -> std::ostream&;
     };
 
     class ComputeGraph {
@@ -89,5 +97,6 @@ namespace runtime {
             auto get_next(int memory, float compute_intensity) -> int const;
             auto run_node(int id) -> void;
             auto finish() -> bool const;
+            friend auto operator << (std::ostream& os, const ComputeGraph& graph) -> std::ostream&;
     };
 }

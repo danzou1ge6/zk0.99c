@@ -7,11 +7,18 @@ namespace runtime {
     enum MemType {
         HOST,
         DEVICE,
-        MANAGED,
-        PINNED
+        MANAGED
     };
-
+    auto operator<<(std::ostream &os, const MemType &mem_type) -> std::ostream &;
     auto get_mem_type(const std::string &mem_type) -> MemType;
+
+    enum CopyType {
+        H2H,
+        H2D,
+        D2H,
+        D2D
+    };
+    auto operator<<(std::ostream &os, const CopyType &copy_type) -> std::ostream &;
     
     struct Buffer {
         void *p, *p_d; // pointer to the buffer, p for cpu, p_d for gpu
