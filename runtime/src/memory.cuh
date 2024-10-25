@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <vector>
 #include <string>
 #include "basic_types.h"
@@ -32,5 +33,9 @@ namespace runtime {
     // used to manage all the buffers
     struct Instance {
         std::vector<Buffer> buffers;
+    };
+
+    class MemoryPool {
+        public:
     };
 }

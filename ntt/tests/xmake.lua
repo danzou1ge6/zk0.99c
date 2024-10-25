@@ -8,6 +8,16 @@ target("test-ntt-int")
     add_files("../../ntt/tests/test-int.cu")
     add_cugencodes("native")
 
+target("test-ntt-recompute")
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_headerfiles("../../mont/src/*.cuh")
+    add_headerfiles("../../ntt/src/*.cuh")
+    add_files("../../ntt/tests/test-recompute.cu")
+    add_cugencodes("native")
+
 target("test-ntt-big")
     local project_root = os.projectdir()
     set_languages(("c++20"))

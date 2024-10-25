@@ -1,7 +1,7 @@
 #pragma once
 #include "../include/nlohmann/json.hpp"
 #include "field_type.h"
-#include "memory.h"
+#include "memory.cuh"
 #include <map>
 #include <vector>
 #include <variant>

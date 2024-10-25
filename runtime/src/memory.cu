@@ -1,4 +1,4 @@
-#include "memory.h"
+#include "memory.cuh"
 #include <stdexcept>
 #include <string>
 
