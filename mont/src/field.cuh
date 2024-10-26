@@ -534,9 +534,21 @@ namespace mont
         load(const u32 *p, u32 stride = 1)
     {
       Number r;
-#pragma unroll
-      for (usize i = 0; i < LIMBS; i++)
-        r.limbs[i] = p[i * stride];
+      if (stride == 1 && LIMBS % 4 == 0) {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS / 4; i++) {
+          reinterpret_cast<uint4*>(r.limbs)[i] = reinterpret_cast<const uint4*>(p)[i];
+        }
+      } else if (stride == 1 && LIMBS % 2 == 0) {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS / 2; i++) {
+          reinterpret_cast<uint2*>(r.limbs)[i] = reinterpret_cast<const uint2*>(p)[i];
+        }
+      } else {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS; i++)
+          r.limbs[i] = p[i * stride];
+      }
       return r;
     }
 
