@@ -48,12 +48,17 @@ target("test-msm")
     set_languages(("c++17"))
     add_files("msm/tests/msm.cu")
 
+target("test-poly")
+    add_files("poly/tests/simple_test.cu")
+    add_packages("doctest")
+    add_headerfiles("poly/src/*.cuh")
+
 target("test-ntt-int")
     set_languages(("c++20"))
     if is_mode("debug") then 
         set_symbols("debug")
     end
-    add_deps("mont.cuh")
+    add_headerfiles("mont/src/*.cuh")
     add_headerfiles("ntt/src/*.cuh")
     add_files("ntt/tests/test-int.cu")
     add_cugencodes("native")
@@ -64,7 +69,7 @@ target("test-ntt-big")
     if is_mode("debug") then 
         set_symbols("debug")
     end
-    add_deps("mont.cuh")
+    add_headerfiles("mont/src/*.cuh")
     add_files("ntt/tests/test-big.cu")
     add_headerfiles("ntt/src/*.cuh")
     add_cugencodes("native")
@@ -76,7 +81,7 @@ target("test-ntt-parallel")
     if is_mode("debug") then 
         set_symbols("debug")
     end
-    add_deps("mont.cuh")
+    add_headerfiles("mont/src/*.cuh")
     add_headerfiles("ntt/src/*.cuh")
     add_files("ntt/tests/test-parallel.cu")
     add_cugencodes("native")
@@ -89,7 +94,7 @@ target("cuda_ntt")
     end
 
     set_languages(("c++20"))
-    add_deps("mont.cuh")
+    add_headerfiles("mont/src/*.cuh")
     
     add_files("wrapper/ntt/c_api/ntt_c_api.cu")
     add_headerfiles("wrapper/ntt/c_api/*.h")

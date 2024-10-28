@@ -223,7 +223,6 @@ where
     F: WithSmallOrderMulGroup<3>,
 {
     let start_len = values.len();
-    println!("start_len: {}", start_len);
     values.resize(extended_len, F::ZERO);
     match type_name::<F>() {
         "pasta_curves::fields::fp::Fp" => {

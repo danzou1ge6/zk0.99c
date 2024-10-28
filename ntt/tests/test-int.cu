@@ -3,17 +3,18 @@
 #include "../src/naive_ntt.cuh"
 #include "../src/bellperson_ntt.cuh"
 #include "../src/self_sort_in_place_ntt.cuh"
+#include "small_field.cuh"
 
 #define P (3221225473   )
 #define root (5)
 
-// 3221225473
-const auto params = mont256::Params {
-  .m = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0000001),
-  .r_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9fc05273),
-  .r2_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9c229677),
-  .m_prime = 3221225471
-};
+// // 3221225473
+// const auto params = mont256::Params {
+//   .m = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0000001),
+//   .r_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9fc05273),
+//   .r2_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9c229677),
+//   .m_prime = 3221225471
+// };
 
 inline unsigned long long qpow(unsigned long long x, unsigned long long y) {
     unsigned long long base = 1ll;
@@ -109,7 +110,7 @@ int main() {
         data_gpu[i * WORDS] = data_copy[i];
     }
 
-    ntt::naive_ntt<WORDS> naive(params, unit, bits, true);
+    ntt::naive_ntt<small_field::Element> naive(unit, bits, true);
     naive.ntt(data_gpu);
     printf("naive: %fms\n", naive.milliseconds);
 
@@ -125,7 +126,7 @@ int main() {
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-    ntt::bellperson_ntt<WORDS> bellperson(params, unit, bits, true);
+    ntt::bellperson_ntt<small_field::Element> bellperson(unit, bits, true);
     bellperson.ntt(data_gpu);
     printf("bellperson: %fms\n", bellperson.milliseconds);
 
@@ -141,7 +142,7 @@ int main() {
     for (int i = 0; i < length; i++) {
         data_gpu[i * WORDS] = data_copy[i];
     }
-    ntt::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true);
+    ntt::self_sort_in_place_ntt<small_field::Element> SSIP(unit, bits, true);
     SSIP.ntt(data_gpu);
     printf("SSIP: %fms\n", SSIP.milliseconds);
 

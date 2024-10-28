@@ -1,6 +1,7 @@
 #pragma once
 
-#include "../../mont/src/mont.cuh"
+// #include "../../mont/src/mont.cuh"
+#include "../../mont/src/field.cuh"
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>
 #include <thrust/iterator/transform_iterator.h>
@@ -22,10 +23,11 @@
 }
 
 namespace ntt {
-    typedef uint u32;
-    typedef unsigned long long u64;
-    typedef uint u32_E;
-    typedef uint u32_N;
+    using mont::u32;
+    using mont::u64;
+    using mont::usize;
+    typedef u32 u32_E;
+    typedef u32 u32_N;
     const u32 MAX_NTT_INSTANCES = 1024; // 1024 should be big enough for typically there will be only 64 threads
 
     class best_ntt {
@@ -42,24 +44,21 @@ namespace ntt {
         virtual cudaError_t clean_gpu(cudaStream_t stream = 0) = 0;
     };
 
-    template <u32 WORDS>
+    template <typename Field>
     class gen_roots_cub {
         public:
-        struct element_pack {
-            u32 data[WORDS];
-        };
         struct get_iterator_to_range {
             __host__ __device__ __forceinline__ auto operator()(u32 index) {
                 return thrust::make_constant_iterator(input_d[index]);
             }
-            element_pack *input_d;
+            Field *input_d;
         };
 
         struct get_ptr_to_range {
             __host__ __device__ __forceinline__ auto operator()(u32 index) {
                 return output_d + offsets_d[index];
             }
-            element_pack *output_d;
+            Field *output_d;
             u32 *offsets_d;
         };
 
@@ -69,46 +68,42 @@ namespace ntt {
             }
             uint32_t *offsets_d;
         };
+
         struct mont_mul {
-            __device__ __forceinline__ element_pack operator()(const element_pack &a, const element_pack &b) {
-                auto env = mont256::Env(*param_d);
-                element_pack res;
-                auto a_ = mont256::Element::load(a.data);
-                auto b_ = mont256::Element::load(b.data);
-                auto c_ = env.mul(a_, b_);
-                c_.store(res.data);
-                return res;
+            __device__ __forceinline__ Field operator()(const Field &a, const Field &b) {
+                return a * b;
             }
-            mont256::Params* param_d;
         };
 
 
-        __host__ __forceinline__ cudaError_t operator() (u32_E * roots, u32 len, mont256::Element &unit, const mont256::Params &param) {
+        __host__ __forceinline__ cudaError_t operator() (u32_E * roots, u32 len, Field &unit) {
             bool success = true;
             cudaError_t first_err = cudaSuccess;
-            
-            auto env_host = mont256::Env::host_new(param);
 
+            if (len == 0) return first_err;
+            if (len == 1) {
+                Field::one().store(roots);
+                return first_err;
+            }
+            
             const u32 num_ranges = 2;
 
-            element_pack input[num_ranges]; // {one, unit}
-            env_host.one().store(input[0].data);
-            unit.store(input[1].data);
-            
-            element_pack * input_d;
-            if (success) CUDA_CHECK(cudaMalloc(&input_d, num_ranges * sizeof(element_pack)));
-            if (success) CUDA_CHECK(cudaMemcpy(input_d, input, num_ranges * sizeof(element_pack), cudaMemcpyHostToDevice));
+            Field input[num_ranges] = {Field::one(), unit}; // {one, unit}
+
+            Field * input_d;
+            if (success) CUDA_CHECK(cudaMalloc(&input_d, num_ranges * sizeof(Field)));
+            if (success) CUDA_CHECK(cudaMemcpy(input_d, input, num_ranges * sizeof(Field), cudaMemcpyHostToDevice));
 
             u32 offset[] = {0, 1, len};
             u32 * offset_d;
             if (success) CUDA_CHECK(cudaMalloc(&offset_d, (num_ranges + 1) * sizeof(u32)));
             if (success) CUDA_CHECK(cudaMemcpy(offset_d, offset, (num_ranges + 1) * sizeof(u32), cudaMemcpyHostToDevice));
 
-            element_pack * output_d;
-            if (success) CUDA_CHECK(cudaMalloc(&output_d, len * sizeof(element_pack)));
+            Field * output_d;
+            if (success) CUDA_CHECK(cudaMalloc(&output_d, len * sizeof(Field)));
 
             // Returns a constant iterator to the element of the i-th run
-            thrust::counting_iterator<uint32_t> iota(0);
+            thrust::counting_iterator<u32> iota(0);
             auto iterators_in = thrust::make_transform_iterator(iota, get_iterator_to_range{input_d});
 
             // Returns the run length of the i-th run
@@ -137,47 +132,41 @@ namespace ntt {
             tmp_storage_d = nullptr;
             temp_storage_bytes = 0;
 
-            mont256::Params *param_d;
-            if (success) CUDA_CHECK(cudaMalloc(&param_d, sizeof(mont256::Params)));
-            if (success) CUDA_CHECK(cudaMemcpy(param_d, &param, sizeof(mont256::Params), cudaMemcpyHostToDevice));
-
-            auto op = mont_mul{param_d};
+            mont_mul op;
 
             if (success) CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
             if (success) CUDA_CHECK(cudaMalloc(&tmp_storage_d, temp_storage_bytes));
             if (success) CUDA_CHECK(cub::DeviceScan::InclusiveScan(tmp_storage_d, temp_storage_bytes, output_d, op, len));
 
-            if (success) CUDA_CHECK(cudaMemcpy(roots, output_d, len * sizeof(element_pack), cudaMemcpyDeviceToHost));
+            if (success) CUDA_CHECK(cudaMemcpy(roots, output_d, len * sizeof(Field), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaFree(output_d));
             CUDA_CHECK(cudaFree(tmp_storage_d));
-            CUDA_CHECK(cudaFree(param_d));
             
             return first_err;
         }
     };
 
-    template<u32 WORDS>
-    __global__ void element_to_number(u32* data, u32 len, mont256::Params* param) {
-        auto env = mont256::Env(*param);
+    template<typename Field>
+    __global__ void element_to_number(u32* data, u32 len) {
         u64 index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= len) return;
-        env.to_number(mont256::Element::load(data + index * WORDS)).store(data + index * WORDS);
+        Field::load(data + index * Field::LIMBS).to_number().store(data + index * Field::LIMBS);
     }
 
-    template<u32 WORDS>
-    __global__ void number_to_element(u32* data, u32 len, mont256::Params* param) {
-        auto env = mont256::Env(*param);
+    template<typename Field>
+    __global__ void number_to_element(u32* data, u32 len) {
+        using Number = mont::Number<Field::LIMBS>;
         u64 index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= len) return;
-        env.from_number(mont256::Number::load(data + index * WORDS)).store(data + index * WORDS);
+        Field::from_number(Number::load(data + index * Field::LIMBS)).store(data + index * Field::LIMBS);
     }
     
-    template<u64 WORDS>
+    template<usize WORDS>
     __global__ void rearrange(u32_E * data, u32 log_len) {
-        u32 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
+        u64 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
         u32 word = threadIdx.x & (WORDS - 1);
         if (index >= 1 << log_len) return;
-        u32 rindex = (__brev(index) >> (32 - log_len));
+        u64 rindex = (__brev(index) >> (32 - log_len));
         
         if (rindex >= index) return;
 
@@ -186,13 +175,14 @@ namespace ntt {
         data[rindex * WORDS + word] = tmp;
     }
 
-    template <u32 WORDS>
-    __forceinline__ __device__ mont256::Element pow_lookup_constant(u32 exponent, mont256::Env &env, const u32_E *omegas) {
-        auto res = env.one();
+    template <typename Field>
+    __forceinline__ __device__ Field pow_lookup_constant(u32 exponent, const u32_E *omegas) {
+        static const usize WORDS = Field::LIMBS;
+        auto res = Field::one();
         u32 i = 0;
         while(exponent > 0) {
             if (exponent & 1) {
-                res = env.mul(res, mont256::Element::load(omegas + (i * WORDS)));
+                res = res * Field::load(omegas + (i * WORDS));
             }
             exponent = exponent >> 1;
             i++;

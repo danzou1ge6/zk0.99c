@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <tuple>
 #include <random>
+#include <cub/cub.cuh>
 
 #define BIG_INTEGER_CHUNKS8(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
 #define BIG_INTEGER_CHUNKS16(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
@@ -451,20 +452,23 @@ namespace mont
     template <usize N>
     __device__ __forceinline__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
     {
+      __align__(16) u32 carries[2 * N] = {0};
 #pragma unroll
       for (usize i = 0; i < N - 1; i += 1)
       {
         u32 u = a[i] * m_prime;
         mac_n_1_even<N, false, false>(&a[i], m, u);
-        a[i + N] = ptx::addc(a[i + N], 0);
+        carries[i + N] = ptx::addc(carries[i + N], 0);
         mac_n_1_even<N, false, false>(&a[i + 1], &m[1], u);
-        a[i + N + 1] = ptx::addc(a[i + N + 1], 0);
+        carries[i + N + 1] = ptx::addc(carries[i + N + 1], 0);
       }
 
       u32 u = a[N - 1] * m_prime;
       mac_n_1_even<N, false, false>(&a[N - 1], m, u);
-      a[2 * N - 1] = ptx::addc(a[2 * N - 1], 0);
+      carries[2 * N - 1] = ptx::addc(carries[2 * N - 1], 0);
       mac_n_1_even<N, false, false>(&a[N], &m[1], u);
+
+      add<2 * N>(a, a, carries);
     }
 
     // Computes `r = a - b mod m`.
@@ -527,20 +531,20 @@ namespace mont
 
     static __device__ __host__ __forceinline__
         Number
-        load(const u32 *p)
+        load(const u32 *p, u32 stride = 1)
     {
       Number r;
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
-        r.limbs[i] = p[i];
+        r.limbs[i] = p[i * stride];
       return r;
     }
 
-    __device__ __host__ __forceinline__ void store(u32 * p) const &
+    __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
     {
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
-        p[i] = limbs[i];
+        p[i * stride] = limbs[i];
     }
 
     static __device__ __host__ __forceinline__
@@ -682,6 +686,7 @@ namespace mont
   template <class Params>
   struct Element
   {
+    using ParamsType = Params;
     static const usize LIMBS = Params::LIMBS;
 
     Number<LIMBS> n;
@@ -691,16 +696,16 @@ namespace mont
 
     static __host__ __device__ __forceinline__
         Element
-        load(const u32 *p)
+        load(const u32 *p, u32 stride = 1)
     {
       Element r;
-      r.n = Number<LIMBS>::load(p);
+      r.n = Number<LIMBS>::load(p, stride);
       return r;
     }
 
-    __host__ __device__ __forceinline__ void store(u32 *p)
+    __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1) const &
     {
-      n.store(p);
+      n.store(p, stride);
     }
 
     // Addition identity on field
@@ -925,7 +930,46 @@ namespace mont
     auto n = e.to_number();
     os << n;
     return os;
+    }
+  
+  template <typename Field, u32 io_group>
+  __forceinline__ __device__ auto load_exchange(u32 * data, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field {
+    using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
+    const static usize WORDS = Field::LIMBS;
+    const u32 io_id = threadIdx.x & (io_group - 1);
+    const u32 lid_start = threadIdx.x - io_id;
+    const int warp_id = static_cast<int>(threadIdx.x) / io_group;
+    u32 thread_data[io_group];
+    #pragma unroll
+    for (u64 i = lid_start; i != lid_start + io_group; i ++) {
+      if (io_id < WORDS) {
+        thread_data[i - lid_start] = data[i * WORDS + io_id];
+      }
+    }
+    WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+    __syncwarp();
+    return Field::load(thread_data);
+  }
+  template <typename Field, u32 io_group>
+  __forceinline__ __device__ void store_exchange(Field ans, u32 * dst, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) {
+    using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
+    const static usize WORDS = Field::LIMBS;
+    const u32 io_id = threadIdx.x & (io_group - 1);
+    const u32 lid_start = threadIdx.x - io_id;
+    const int warp_id = static_cast<int>(threadIdx.x) / io_group;
+    u32 thread_data[io_group];
+    ans.store(thread_data);
+    WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+    __syncwarp();
+    #pragma unroll
+    for (u64 i = lid_start; i != lid_start + io_group; i ++) {
+      if (io_id < WORDS) {
+        dst[i * WORDS + io_id] = thread_data[i - lid_start];
+      }
+    }
   }
 }
+
+
 
 #endif

@@ -1,20 +1,11 @@
 #include <random>
 #include <ctime>
-#include "../src/naive_ntt.cuh"
-#include "../src/bellperson_ntt.cuh"
 #include "../src/self_sort_in_place_ntt.cuh"
 #include <thread>
+#include "small_field.cuh"
 
 #define P (3221225473   )
 #define root (5)
-
-// 3221225473
-const auto params = mont256::Params {
-  .m = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0xc0000001),
-  .r_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9fc05273),
-  .r2_mod = BIG_INTEGER_CHUNKS8(0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x9c229677),
-  .m_prime = 3221225471
-};
 
 inline unsigned long long qpow(unsigned long long x, unsigned long long y) {
     unsigned long long base = 1ll;
@@ -123,7 +114,7 @@ int main() {
     for (int i = 0; i < NUM_THREADS; i++) {
         cudaStreamCreate(&stream[i]);
     }
-    ntt::self_sort_in_place_ntt<WORDS> SSIP(params, unit, bits, true, 100);
+    ntt::self_sort_in_place_ntt<small_field::Element> SSIP(unit, bits, true, 100);
     SSIP.to_gpu();
 
     // for (int i = 0; i < NUM_THREADS; i++) {

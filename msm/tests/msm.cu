@@ -62,8 +62,26 @@ int main(int argc, char *argv[])
   MsmProblem msm;
 
   rf >> msm;
+
+  cudaEvent_t start, stop;
+  float elapsedTime = 0.0;
+
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, 0);
+
   Point r;
   msm::run<msm::MsmConfig>((u32*)msm.scalers, (u32*)msm.points, msm.len, r);
-  std::cout << r.to_affine();
+
+  cudaEventRecord(stop, 0);
+  cudaEventSynchronize(stop);
+  cudaEventElapsedTime(&elapsedTime, start, stop);
+
+  std::cout << r.to_affine() << std::endl;
+
+  std::cout << "Total cost time:" << elapsedTime << std::endl;
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+
   return 0;
 }
