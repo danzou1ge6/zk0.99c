@@ -534,6 +534,7 @@ namespace mont
         load(const u32 *p, u32 stride = 1)
     {
       Number r;
+      #ifdef __CUDA_ARCH__
       if (stride == 1 && LIMBS % 4 == 0) {
         #pragma unroll
         for (usize i = 0; i < LIMBS / 4; i++) {
@@ -544,7 +545,9 @@ namespace mont
         for (usize i = 0; i < LIMBS / 2; i++) {
           reinterpret_cast<uint2*>(r.limbs)[i] = reinterpret_cast<const uint2*>(p)[i];
         }
-      } else {
+      } else 
+      #endif
+      {
         #pragma unroll
         for (usize i = 0; i < LIMBS; i++)
           r.limbs[i] = p[i * stride];
@@ -554,9 +557,24 @@ namespace mont
 
     __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
     {
-#pragma unroll
-      for (usize i = 0; i < LIMBS; i++)
-        p[i * stride] = limbs[i];
+      #ifdef __CUDA_ARCH__
+      if (stride == 1 && LIMBS % 4 == 0) {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS / 4; i++) {
+          reinterpret_cast<uint4*>(p)[i] = reinterpret_cast<const uint4*>(limbs)[i];
+        }
+      } else if (stride == 1 && LIMBS % 2 == 0) {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS / 2; i++) {
+          reinterpret_cast<uint2*>(p)[i] = reinterpret_cast<const uint2*>(limbs)[i];
+        }
+      } else 
+      #endif
+      {
+        #pragma unroll
+        for (usize i = 0; i < LIMBS; i++)
+          p[i * stride] = limbs[i];
+      }
     }
 
     static __device__ __host__ __forceinline__
