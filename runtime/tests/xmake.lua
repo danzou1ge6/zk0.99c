@@ -2,10 +2,11 @@ target("test-json")
     if is_mode("debug") then 
         set_symbols("debug")
     end
-    
+    add_includedirs("../include")
     add_files("simple_json.cpp")
 
 target("test-graph")
+    add_includedirs("../include")
     local project_root = os.projectdir()
     set_languages("c++20")
     if is_mode("debug") then 

@@ -1,5 +1,5 @@
 #pragma once
-#include "../include/nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 #include "field_type.h"
 #include "memory.cuh"
 #include <map>

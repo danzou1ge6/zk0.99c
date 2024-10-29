@@ -2,7 +2,7 @@
 #include <fstream>
 #include <string>
 #include "../src/graph.cuh"
-#include "../include/nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 
 int main() {
     nlohmann::json j;
