@@ -393,7 +393,6 @@ namespace ntt {
             const u32 * zeta = nullptr) 
         : best_ntt(max_instance), log_len(log_len), len(1ll << log_len), debug(debug)
         , inverse(inverse), process(process){
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             u32 deg_stage1 = (log_len + 1) / 2;
@@ -453,7 +452,7 @@ namespace ntt {
                 CUDA_CHECK(cudaMemcpy(this->zeta, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
             }
 
-            if (!success) {
+            if (first_err != cudaSuccess) {
                 std::cerr << "error occurred during gen_roots" << std::endl;
                 throw cudaGetErrorString(first_err);
             }
@@ -469,7 +468,6 @@ namespace ntt {
 
         cudaError_t to_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             CUDA_CHECK(cudaMallocAsync(&pq_d, (1 << max_deg >> 1) * sizeof(u32_E) * WORDS, stream))
@@ -488,7 +486,7 @@ namespace ntt {
                 CUDA_CHECK(cudaMemcpyAsync(zeta_d, zeta, 2 * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
             }
 
-            if (!success) {
+            if (first_err != cudaSuccess) {
                 CUDA_CHECK(cudaFreeAsync(pq_d, stream));
                 CUDA_CHECK(cudaFreeAsync(omegas_d, stream));
                 if (inverse) CUDA_CHECK(cudaFreeAsync(inv_n_d, stream));
@@ -502,7 +500,6 @@ namespace ntt {
         cudaError_t clean_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             CUDA_CHECK(cudaFreeAsync(pq_d, stream));
@@ -516,7 +513,6 @@ namespace ntt {
         }
 
         cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             if (log_len == 0) return first_err;
@@ -616,7 +612,7 @@ namespace ntt {
 
             rlock.unlock();
 
-            if (success && dev_ptr == nullptr) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+            if ((first_err == cudaSuccess) && dev_ptr == nullptr) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
             if (dev_ptr == nullptr)CUDA_CHECK(cudaFreeAsync(x, stream));
 

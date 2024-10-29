@@ -43,7 +43,6 @@ namespace ntt {
         float milliseconds = 0;
 
         naive_ntt(const u32* omega, u32 log_len, bool debug) : log_len(log_len), len(1 << log_len), debug(debug) {
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
             
             if (debug) {
@@ -62,7 +61,7 @@ namespace ntt {
             gen_roots_cub<Field> gen;
             CUDA_CHECK(gen(roots, len / 2, unit));
 
-            if (!success) {
+            if (first_err != cudaSuccess) {
                 std::cerr << "error occurred during gen_roots" << std::endl;
                 throw cudaGetErrorString(first_err);
             }
@@ -77,13 +76,12 @@ namespace ntt {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (this->on_gpu) return cudaSuccess;
 
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             CUDA_CHECK(cudaMalloc(&roots_d, len / 2 * WORDS * sizeof(u32)));
             CUDA_CHECK(cudaMemcpy(roots_d, roots, ((u64)len / 2) * WORDS * sizeof(u32_E), cudaMemcpyHostToDevice));
 
-            if (!success) {
+            if (first_err != cudaSuccess) {
                 CUDA_CHECK(cudaFree(roots_d));
             } else {
                 this->on_gpu = true;
@@ -94,7 +92,6 @@ namespace ntt {
         cudaError_t clean_gpu(cudaStream_t stream = 0) override {
             std::unique_lock<std::shared_mutex> wlock(this->mtx);
             if (!this->on_gpu) return cudaSuccess;
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
             CUDA_CHECK(cudaFree(roots_d));
             this->on_gpu = false;
@@ -102,15 +99,14 @@ namespace ntt {
         }
 
         cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             cudaEvent_t start, end;
-            if (success) CUDA_CHECK(cudaEventCreate(&start));
-            if (success) CUDA_CHECK(cudaEventCreate(&end));
+            CUDA_CHECK(cudaEventCreate(&start));
+            CUDA_CHECK(cudaEventCreate(&end));
 
             std::shared_lock<std::shared_mutex> rlock(this->mtx);
-            if (success) {
+            {
                 while(!this->on_gpu) {
                     rlock.unlock();
                     CUDA_CHECK(to_gpu());
@@ -119,43 +115,43 @@ namespace ntt {
             }
 
             u32_E *data_d;
-            if (success) CUDA_CHECK(cudaMalloc(&data_d, len * WORDS * sizeof(u32)));
-            if (success) CUDA_CHECK(cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMalloc(&data_d, len * WORDS * sizeof(u32)));
+            CUDA_CHECK(cudaMemcpy(data_d, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice));
 
             if (debug) {
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) number_to_element <Field> <<< grid, block >>> (data_d, len);
-                if (success) CUDA_CHECK(cudaGetLastError());
-                if (success) CUDA_CHECK(cudaEventRecord(start));
+                number_to_element <Field> <<< grid, block >>> (data_d, len);
+                CUDA_CHECK(cudaGetLastError());
+                CUDA_CHECK(cudaEventRecord(start));
             }
 
             dim3 block(1024);
             dim3 grid((((u64) len) * WORDS - 1) / block.x + 1);
-            if (success) rearrange<WORDS> <<<grid, block >>> (data_d, log_len);
-            if (success) CUDA_CHECK(cudaGetLastError());
+            rearrange<WORDS> <<<grid, block >>> (data_d, log_len);
+            CUDA_CHECK(cudaGetLastError());
 
             dim3 ntt_block(768);
             dim3 ntt_grid(((len >> 1) - 1) / ntt_block.x + 1);
 
             for (u32 stride = 1; stride < len; stride <<= 1) {
-                if (success) naive <Field> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride);
-                if (success) CUDA_CHECK(cudaGetLastError());
+                naive <Field> <<<ntt_grid, ntt_block>>> (data_d, len, roots_d, stride);
+                CUDA_CHECK(cudaGetLastError());
             }
 
             if (debug) {
-                if (success) CUDA_CHECK(cudaEventRecord(end));
-                if (success) CUDA_CHECK(cudaEventSynchronize(end));
-                if (success) CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
+                CUDA_CHECK(cudaEventRecord(end));
+                CUDA_CHECK(cudaEventSynchronize(end));
+                CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
                 dim3 block(768);
                 dim3 grid((len - 1) / block.x + 1);
-                if (success) element_to_number <Field> <<< grid, block >>> (data_d, len);
-                if (success) CUDA_CHECK(cudaGetLastError());
+                element_to_number <Field> <<< grid, block >>> (data_d, len);
+                CUDA_CHECK(cudaGetLastError());
             }
 
             rlock.unlock();
 
-            if (success) CUDA_CHECK(cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(data, data_d, ((u64)len) * WORDS * sizeof(u32), cudaMemcpyDeviceToHost));
 
             CUDA_CHECK(cudaFree(data_d));
 

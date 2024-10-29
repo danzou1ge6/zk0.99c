@@ -16,9 +16,8 @@
 {                                                                                                                    \
     cudaError_t err = call;                                                                                          \
     if (err != cudaSuccess) {                                                                                        \
-        first_err = err;                                                                                \
+        if (first_err == cudaSuccess) first_err = err;                                                                                \
         std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: " << cudaGetErrorString(err) << std::endl; \
-        success = false;                                                                                             \
     }                                                                                                                \
 }
 
@@ -76,7 +75,6 @@ namespace ntt {
 
 
         __host__ __forceinline__ cudaError_t operator() (u32_E * roots, u32 len, Field &unit) {
-            bool success = true;
             cudaError_t first_err = cudaSuccess;
 
             if (len == 0) return first_err;
