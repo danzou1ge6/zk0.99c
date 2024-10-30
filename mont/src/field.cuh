@@ -962,13 +962,13 @@ namespace mont
     return os;
     }
   
-  template <typename Field, u32 io_group>
-  __forceinline__ __device__ auto load_exchange(u32 * data, auto gpos(u32 lid) -> u64, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field {
+  template <typename Field, u32 io_group, typename GetId>
+  __forceinline__ __device__ auto load_exchange(u32 * data, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field {
     using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
     const static usize WORDS = Field::LIMBS;
     const u32 io_id = threadIdx.x & (io_group - 1);
     const u32 lid_start = threadIdx.x - io_id;
-    const int warp_id = static_cast<int>(threadIdx.x) / io_group;
+    const int warp_id = static_cast<int>(threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y) / io_group;
     u32 thread_data[io_group];
     #pragma unroll
     for (u32 i = lid_start; i != lid_start + io_group; i ++) {
@@ -980,13 +980,13 @@ namespace mont
     __syncwarp();
     return Field::load(thread_data);
   }
-  template <typename Field, u32 io_group>
-  __forceinline__ __device__ void store_exchange(Field ans, u32 * dst, auto gpos(u32 lid) -> u64, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) {
+  template <typename Field, u32 io_group, typename GetId>
+  __forceinline__ __device__ void store_exchange(Field &ans, u32 * dst, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) {
     using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
     const static usize WORDS = Field::LIMBS;
     const u32 io_id = threadIdx.x & (io_group - 1);
     const u32 lid_start = threadIdx.x - io_id;
-    const int warp_id = static_cast<int>(threadIdx.x) / io_group;
+    const int warp_id = static_cast<int>(threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y) / io_group;
     u32 thread_data[io_group];
     ans.store(thread_data);
     WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
