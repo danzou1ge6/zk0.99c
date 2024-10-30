@@ -187,7 +187,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
+        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, bool data_on_gpu = false) override {
             cudaError_t first_err = cudaSuccess;
 
             cudaEvent_t start, end;

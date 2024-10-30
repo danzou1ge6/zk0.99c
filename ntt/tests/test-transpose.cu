@@ -2,19 +2,8 @@
 #include <cstring>
 #include <cuda_runtime.h>
 #define IDX(i, j, n) ((i) * (n) + (j))
-struct chunk {
+struct __align__(16) chunk {
     int data[8];
-    __device__ __host__ __forceinline__ chunk& operator=(const chunk& other) {
-        #ifdef __CUDA_ARCH__
-            reinterpret_cast<uint4*>(data)[0] = reinterpret_cast<const uint4*>(other.data)[0];
-            reinterpret_cast<uint4*>(data)[1] = reinterpret_cast<const uint4*>(other.data)[1];
-        #else
-        for (int i = 0; i < 8; i++) {
-            data[i] = other.data[i];
-        }
-        #endif
-        return *this;
-    }
 };
 
 int main() {

@@ -46,12 +46,12 @@ namespace poly {
 
         Field a_val, b_val;
 
-        a_val = load_exchange<Field, io_group>(a, temp_storage);
-        b_val = load_exchange<Field, io_group>(b, temp_storage);
+        a_val = load_exchange<Field, io_group>(a, [] (u32 lid) -> u64 {return lid;}, temp_storage);
+        b_val = load_exchange<Field, io_group>(b, [] (u32 lid) -> u64 {return lid;}, temp_storage);
 
         auto res = a_val + b_val;
 
-        store_exchange<Field, io_group>(res, dst, temp_storage);
+        store_exchange<Field, io_group>(res, dst, [] (u32 lid) -> u64 {return lid;}, temp_storage);
     }
 
     template <typename Field, u32 io_group>
@@ -70,11 +70,11 @@ namespace poly {
 
         Field a_val, b_val;
 
-        a_val = load_exchange<Field, io_group>(a, temp_storage);
-        b_val = load_exchange<Field, io_group>(b, temp_storage);
+        a_val = load_exchange<Field, io_group>(a, [] (u32 lid) -> u64 {return lid;}, temp_storage);
+        b_val = load_exchange<Field, io_group>(b, [] (u32 lid) -> u64 {return lid;}, temp_storage);
 
         auto res = a_val * b_val;
 
-        store_exchange<Field, io_group>(res, dst, temp_storage);
+        store_exchange<Field, io_group>(res, dst, [] (u32 lid) -> u64 {return lid;}, temp_storage);
     }
 };

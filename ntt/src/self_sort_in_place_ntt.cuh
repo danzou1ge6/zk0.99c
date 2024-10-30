@@ -3063,6 +3063,18 @@ namespace ntt {
     }
 
     template <typename Field>
+    __global__ void post_process_len_2(u32 *data, bool inverse, bool process, u32 *inv_n, u32 *zeta) {
+        const static usize WORDS = Field::LIMBS;
+        if (inverse) {
+            (Field::load(data) * Field::load(inv_n)).store(data);
+            (Field::load(data + WORDS) * Field::load(inv_n)).store(data + WORDS);
+            if (process) {
+                (Field::load(data + WORDS) * Field::load(zeta)).store(data + WORDS);
+            }
+        }
+    }
+
+    template <typename Field>
     class self_sort_in_place_ntt : public best_ntt {
         const static usize WORDS = Field::LIMBS;
         using Number = mont::Number<WORDS>;
@@ -3285,7 +3297,7 @@ namespace ntt {
             return first_err;
         }
 
-        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) override {
+        cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, bool data_on_gpu = false) override {
             cudaError_t first_err = cudaSuccess;
 
             if (log_len == 0) return first_err;
@@ -3306,13 +3318,16 @@ namespace ntt {
             }
 
             u32 * x;
-            CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
-            if (process && !inverse) {
-                CUDA_CHECK(cudaMemcpyAsync(x, data, start_n * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+            if (data_on_gpu) {
+                x = data;
             } else {
-                CUDA_CHECK(cudaMemcpyAsync(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+                CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
+                if (process && !inverse) {
+                    CUDA_CHECK(cudaMemcpyAsync(x, data, start_n * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+                } else {
+                    CUDA_CHECK(cudaMemcpyAsync(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+                }
             }
-            if (dev_ptr != nullptr) *dev_ptr = x;
 
             if (debug) {
                 dim3 block(768);
@@ -3572,6 +3587,11 @@ namespace ntt {
                 log_stride -= deg;
             }
 
+            // manually tackle log_len == 1 case because the stage2 kernel won't run
+            if (log_len == 1) {
+                post_process_len_2<Field><<< 1, 1, 0, stream >>>(x, inverse, process, inv_n_d, zeta_d);
+            }
+
             if (debug) {
                 CUDA_CHECK(cudaEventRecord(end));
                 CUDA_CHECK(cudaEventSynchronize(end));
@@ -3587,22 +3607,12 @@ namespace ntt {
 
             rlock.unlock();
 
-            if (first_err == cudaSuccess && dev_ptr == nullptr) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+            if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
-            if (dev_ptr == nullptr)CUDA_CHECK(cudaFreeAsync(x, stream));
+            if (!data_on_gpu) CUDA_CHECK(cudaFreeAsync(x, stream));
 
-            if (dev_ptr == nullptr) CUDA_CHECK(cudaStreamSynchronize(stream));
+            if (!data_on_gpu) CUDA_CHECK(cudaStreamSynchronize(stream));
 
-            // manually tackle log_len == 1 case because the stage2 kernel won't run
-            if (log_len == 1) {
-                if (inverse) {
-                    (Field::load(data) * Field::load(inv_n)).store(data);
-                    (Field::load(data + WORDS) * Field::load(inv_n)).store(data + WORDS);
-                    if (process) {
-                        (Field::load(data + WORDS) * Field::load(zeta)).store(data + WORDS);
-                    }
-                }
-            }
             this->sem.release();
 
             if (debug) CUDA_CHECK(clean_gpu(stream));

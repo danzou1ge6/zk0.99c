@@ -36,7 +36,7 @@ namespace ntt {
         public:
         bool on_gpu = false;
         best_ntt(u32 max_instance = 1) : sem(std::min(max_instance, MAX_NTT_INSTANCES)) {}
-        virtual cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, u32 **dev_ptr = nullptr) = 0;
+        virtual cudaError_t ntt(u32 * data, cudaStream_t stream = 0, u32 start_n = 0, bool data_on_gpu = false) = 0;
         virtual ~best_ntt() = default;
         virtual cudaError_t to_gpu(cudaStream_t stream = 0) = 0;
         virtual cudaError_t clean_gpu(cudaStream_t stream = 0) = 0;
