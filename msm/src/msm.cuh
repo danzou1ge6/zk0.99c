@@ -606,7 +606,7 @@ namespace msm
     // Do bucket sum
     block_size = 8 * THREADS_PER_WARP;
     grid_size = 256;
-    bucket_sum<Config, 2><<<grid_size, block_size>>>(
+    bucket_sum<Config, 8><<<grid_size, block_size>>>(
         buckets_buffer,
         buckets_offset,
         counts,

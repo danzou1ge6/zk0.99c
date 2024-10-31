@@ -48,6 +48,20 @@ target("test-msm")
     set_languages(("c++17"))
     add_files("msm/tests/msm.cu")
 
+target("cuda_msm")
+    set_kind("static")
+    add_values("cuda.build.devlink", true)
+
+    add_options("-lineinfo")
+    set_languages(("c++17"))
+    
+    add_files("wrapper/msm/c_api/msm_c_api.cu")
+    add_headerfiles("wrapper/msm/c_api/*.h")
+    add_cugencodes("native")
+
+    set_targetdir("lib")
+
+
 target("test-poly")
     add_files("poly/tests/simple_test.cu")
     add_packages("doctest")
