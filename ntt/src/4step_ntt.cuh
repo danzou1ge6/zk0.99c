@@ -87,14 +87,17 @@ namespace ntt {
 
     template<typename Field>
     void offchip_ntt(u32 *input, u32 *output, int logn, const u32 *omega) {
-        constexpr u32 WORDS = Field::LIMBS;
+        constexpr usize WORDS = Field::LIMBS;
 
         usize avail, total;
         cudaMemGetInfo(&avail, &total);
-        u32 lgp = 2;
+
+        // avail = 8ll * 1024 * 1024 * 1024;
+        
+        u32 lgp = 1;
         u32 lgq = logn - lgp;
 
-        while (((1 << lgq) + std::max(1 << lgp, 1 << (lgq - lgp))) * WORDS * sizeof(u32) + 1100 * sizeof(Field) > avail) {
+        while (((1ll << lgq) + std::max(1ll << lgp, 1ll << (lgq - lgp))) * WORDS * sizeof(u32) + 1100ll * sizeof(Field) > avail) {
             lgq--;
             lgp++;
             if (lgp > logn) {
@@ -139,13 +142,6 @@ namespace ntt {
         cudaMalloc(&unit0_d, sizeof(Field));
         cudaMemcpy(unit0_d, &unit0, sizeof(Field), cudaMemcpyHostToDevice);
 
-        // for (int i = 0; i < (1 << lgp); i++) {
-        //     for (int j = 0; j < (1 << lgq); j++) {
-        //         printf("%d ", input[(i * (1 << lgq) + j) * WORDS]);
-        //     }
-        //     printf("\n");
-        // }
-
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
@@ -178,31 +174,16 @@ namespace ntt {
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
 
-        // for (int i = 0; i < (1 << lgp); i++) {
-        //     for (int j = 0; j < (1 << lgq); j++) {
-        //         printf("%u ", input[(i * (1 << lgq) + j) * WORDS]);
-        //     }
-        //     printf("\n");
-        // }
+        cudaFree(roots_d);
+        cudaFree(unit0_d);
 
         ntt->to_gpu();
 
         for (u32 i = 0, id = 0; i < (1 << lgp); i++, id ^= 1) {
             auto src = input + i * WORDS * (1 << lgq);
             cudaMemcpyAsync(buffer_d[id], src, sizeof(u32) * WORDS * (1 << lgq), cudaMemcpyHostToDevice, stream[id]);
-
             ntt->ntt(buffer_d[id], stream[id], 1 << lgq, true);
-
-
             cudaMemcpyAsync(src, buffer_d[id], sizeof(u32) * WORDS * (1 << lgq), cudaMemcpyDeviceToHost, stream[id]);
-
-            // inplace::transpose(true, (Field *)buffer_d[id], len_per_line, 1 << lgp);
-
-            // for (u32 j = 0; j < (1 << lgp); j++) {
-            //     auto src = buffer_d[id] + j * WORDS * len_per_line;
-            //     auto dst = input +  i * WORDS * len_per_line + j * WORDS * (1 << lgq);
-            //     cudaMemcpyAsync(dst, src, sizeof(u32) * WORDS * len_per_line, cudaMemcpyDeviceToHost, stream[id]);
-            // }
         }
 
         cudaStreamSynchronize(stream[0]);
@@ -226,29 +207,12 @@ namespace ntt {
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
 
-
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
         printf("gpu: %fms\n", milliseconds);
 
-        // for (int i = 0; i < (1 << lgp); i++) {
-        //     for (int j = 0; j < (1 << lgq); j++) {
-        //         for (int k = 0; k < WORDS; k++) {
-        //             output[(j * (1 << lgp) + i) * WORDS + k] = input[(i * (1 << lgq) + j) * WORDS + k];
-        //         }
-        //     }
-        // }
-
-        // cudaEventRecord(stop);
-        // cudaEventSynchronize(stop);
-        // milliseconds = 0;
-        // cudaEventElapsedTime(&milliseconds, start, stop);
-        // printf("gpu: %fms\n", milliseconds);
-
-        cudaStreamSynchronize(stream[0]);
-        cudaStreamSynchronize(stream[1]);
         ntt->clean_gpu();
         cudaFree(buffer_d[0]);
         cudaFree(buffer_d[1]);
