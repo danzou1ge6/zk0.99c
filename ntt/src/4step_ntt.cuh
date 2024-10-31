@@ -205,7 +205,27 @@ namespace ntt {
             // }
         }
 
-        cudaDeviceSynchronize();
+        cudaStreamSynchronize(stream[0]);
+        cudaStreamSynchronize(stream[1]);
+
+        ntt->clean_gpu();
+
+        for (int i = 0, id = 0; i < (1 << lgq); i += len_per_line, id ^= 1) {
+            for (int j = 0; j < (1 << lgp); j++) {
+                auto dst = buffer_d[id] + j * WORDS * len_per_line;
+                auto src = input + j * WORDS * (1 << lgq) + i * WORDS;
+                cudaMemcpyAsync(dst, src, sizeof(Field) * len_per_line, cudaMemcpyHostToDevice, stream[id]);
+            }
+            
+            inplace::transpose(true, (Field *)buffer_d[id], 1 << lgp, len_per_line);
+
+            auto src = buffer_d[id];
+            auto dst = output + i * WORDS * (1 << lgp);
+            cudaMemcpyAsync(dst, src, sizeof(u32) * WORDS * (1 << lgq), cudaMemcpyDeviceToHost, stream[id]);
+        }
+        cudaStreamSynchronize(stream[0]);
+        cudaStreamSynchronize(stream[1]);
+
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
@@ -213,19 +233,19 @@ namespace ntt {
         cudaEventElapsedTime(&milliseconds, start, stop);
         printf("gpu: %fms\n", milliseconds);
 
-        for (int i = 0; i < (1 << lgp); i++) {
-            for (int j = 0; j < (1 << lgq); j++) {
-                for (int k = 0; k < WORDS; k++) {
-                    output[(j * (1 << lgp) + i) * WORDS + k] = input[(i * (1 << lgq) + j) * WORDS + k];
-                }
-            }
-        }
+        // for (int i = 0; i < (1 << lgp); i++) {
+        //     for (int j = 0; j < (1 << lgq); j++) {
+        //         for (int k = 0; k < WORDS; k++) {
+        //             output[(j * (1 << lgp) + i) * WORDS + k] = input[(i * (1 << lgq) + j) * WORDS + k];
+        //         }
+        //     }
+        // }
 
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, start, stop);
-        printf("gpu: %fms\n", milliseconds);
+        // cudaEventRecord(stop);
+        // cudaEventSynchronize(stop);
+        // milliseconds = 0;
+        // cudaEventElapsedTime(&milliseconds, start, stop);
+        // printf("gpu: %fms\n", milliseconds);
 
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
