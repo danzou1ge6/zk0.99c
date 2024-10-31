@@ -11,6 +11,7 @@
 #include <iostream>
 #include <shared_mutex>
 #include <semaphore>
+#include <bit>
 
 #define CUDA_CHECK(call)                                                                                             \
 {                                                                                                                    \
@@ -185,5 +186,9 @@ namespace ntt {
             i++;
         }
         return res;
+    }
+
+    static constexpr u32 log2_int(u32 x) {
+        return 31 - std::countl_zero(x);
     }
 }

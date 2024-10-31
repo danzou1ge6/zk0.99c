@@ -2,97 +2,37 @@
 #include "inplace_transpose/cuda/transpose.cuh"
 #include "recompute_ntt.cuh"
 #include "self_sort_in_place_ntt.cuh"
-#include <__clang_cuda_builtin_vars.h>
 #include <memory>
 
 namespace ntt {
 
     template <typename Field, u32 io_group>
-    void __global__ batched_ntt_with_stride (u32 *data, u32 logn, u32 *twiddle, Field *unit, u32 offset) {
-        const u32 WORDS = Field::LIMBS;
-        data += offset * WORDS + blockDim.y * blockIdx.x * WORDS + threadIdx.y * WORDS;    
+    void __global__ batched_ntt_with_stride (u32 *data, u32 logn, u64 stride, u32 *roots, Field *unit, u32 offset) {
+        const usize WORDS = Field::LIMBS;
 
-        constexpr int warp_threads = io_group;
-        constexpr int items_per_thread = io_group;
-        const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
-        u32 thread_data[io_group];
+        // printf("offset: %d blockx: %d blocky: %d threadx: %d thready: %d\n", offset, blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y);
+        data += blockDim.y * blockIdx.x * WORDS + threadIdx.y * WORDS; // previous ntts
 
-        // Specialize WarpExchange for a virtual warp of a threads owning b integer items each
-        using WarpExchangeT = cub::WarpExchange<u32, items_per_thread, warp_threads>;
-
-        // Allocate shared memory for WarpExchange
+        using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
         extern __shared__ typename WarpExchangeT::TempStorage temp_storage[];
 
-        const u32 lid = threadIdx.x & (group_sz - 1);
-        const u32 lsize = group_sz;
-        const u32 group_id = threadIdx.x / group_sz;
-        const u32 group_num = blockDim.x / group_sz;
-        const u32 index = blockIdx.x * group_num + group_id;
-
-        const u32 lgp = log_stride - deg + 1;
-        const u32 end_stride = 1 << lgp; //stride of the last butterfly
-
-        // each segment is independent
-        const u32 segment_start = (index >> lgp) << (lgp + deg);
-        const u32 segment_id = index & (end_stride - 1);
-        
-        const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
-
-        data += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
-
-        const u32 io_id = lid & (io_group - 1);
-        const u32 lid_start = lid - io_id;
-        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
+        const u32 lid = threadIdx.x;
 
         Field a, b;
 
         // Read data
-        if (cur_io_group == io_group) {
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
-                    u32 group_id = i & (subblock_sz - 1);
-                    u64 gpos = group_id << (lgp);
-
-                    thread_data[i - lid_start] = data[(gpos) * WORDS + io_id];
-                }
-            }
-
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = Field::load(thread_data);
-            __syncwarp();
-
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
-                    u32 group_id = i & (subblock_sz - 1);
-                    u64 gpos = group_id << (lgp);
-
-                    thread_data[i - lid_start] = data[(gpos+ (end_stride << (deg - 1))) * WORDS + io_id];
-                }
-            }
-
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = Field::load(thread_data);
-            __syncwarp();
-
-        } else {
-            u32 group_id = lid & (subblock_sz - 1);
-            u64 gpos = group_id << (lgp);
-
-            a = Field::load(data + (gpos) * WORDS);
-            b = Field::load(data + (gpos + (end_stride << (deg - 1))) * WORDS);
-        }
-
-        // printf("threadid: %d, a: %d, b: %d\n", threadIdx.x, a.n.c0, b.n.c0);
-        
+        a = Field::load(data + lid * stride * WORDS);
+        b = Field::load(data + (lid * stride + stride  * (1 << (logn - 1))) * WORDS);
+        // printf("a: %u b: %u\n", a.n.limbs[0], b.n.limbs[0]);
 
 
-        barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
+        // TODO: use exchange
+        // a = mont::load_exchange<Field, io_group>(data, [&](int id)->u64{return lid * stride;}, temp_storage);
+        // b = mont::load_exchange<Field, io_group>(data, [&](int id)->u64{return lid * stride + stride  * (1 << (logn - 1));}, temp_storage);
 
-        const u32 pqshift = log_len - 1 - log_stride;
-
-        for (u32 i = 0; i < deg; i++) {
+        for (u32 i = 0; i < logn; i++) {
             if (i != 0) {
-                u32 lanemask = 1 << (deg - i - 1);
+                u32 lanemask = 1 << (logn - i - 1);
                 Field tmp;
                 tmp = ((lid / lanemask) & 1) ? a : b;
 
@@ -106,59 +46,36 @@ namespace ntt {
             }
 
             auto tmp = a;
-
             a = a + b;
             b = tmp - b;
 
-            u32 bit = subblock_sz >> i;
-            u64 di = (lid & (bit - 1)) * end_stride + segment_id;
+            u32 bit = (1 << (logn - 1)) >> i;
+            u64 di = (lid & (bit - 1));
 
             if (di != 0) {
-                auto w = Field::load(roots + (di << i << pqshift) * WORDS);
+                auto w = Field::load(roots + (di << i) * WORDS);
                 b = b * w;
             }
         }
+
+        u32 ida = __brev(lid << 1) >> (32 - logn);
+        u32 idb = __brev((lid << 1) + 1) >> (32 - logn);
+
+        // printf("%u %u\n", (offset + blockDim.y * blockIdx.x + threadIdx.y) * ida, (offset + blockDim.y * blockIdx.x + threadIdx.y) * idb);
         
-        bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
+        a = a * (*unit).pow((offset + blockDim.y * blockIdx.x + threadIdx.y) * ida);
+        b = b * (*unit).pow((offset + blockDim.y * blockIdx.x + threadIdx.y) * idb);
 
         // Write back
-        if (cur_io_group == io_group) {
-            a.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
-            __syncwarp();
-
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
-                u32 group_id = ti & (subblock_sz - 1);
-                u64 gpos = group_id << (lgp + 1);
-                
-                if (io_id < WORDS) {
-                    data[(gpos) * WORDS + io_id] = thread_data[ti - lid_start];
-                }
-            }
-
-            b.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
-
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
-                u32 group_id = ti & (subblock_sz - 1);
-                u64 gpos = group_id << (lgp + 1);
-                
-                if (io_id < WORDS) {
-                    data[(gpos + end_stride) * WORDS + io_id] = thread_data[ti - lid_start];
-                }
-            }
-
-        } else {
-            u32 group_id = lid & (subblock_sz - 1);
-            u64 gpos = group_id << (lgp + 1);
-            
-            a.store(data + (gpos) * WORDS);
-            b.store(data + (gpos + end_stride) * WORDS);
-        }
+        a.store(data + ida * stride * WORDS);
+        b.store(data + idb * stride * WORDS);
+        
+        // mont::store_exchange<Field, io_group>(a, data, [&](u32 id)->u64{return id << 1;}, temp_storage);
+        // mont::store_exchange<Field, io_group>(b, data, [&](u32 id)->u64{return (id << 1) + 1;}, temp_storage);
     }
 
     template <typename Field>
-    Field inline get_unit(u32 *omega, u32 logn) {
+    Field inline get_unit(const u32 *omega, u32 logn) {
         using Number = mont::Number<Field::LIMBS>;
         auto unit = Field::from_number(Number::load(omega));
         auto one = Number::zero();
@@ -202,11 +119,11 @@ namespace ntt {
         std::unique_ptr<ntt::best_ntt> ntt;
         if (recompute) {
             ntt = std::make_unique<ntt::recompute_ntt<Field>>(unit2.n.limbs, lgq, false);
-        } else {
+        } 
+        else {
             ntt = std::make_unique<ntt::self_sort_in_place_ntt<Field>>(unit2.n.limbs, lgq, false);
         }
 
-        // begin
         cudaStream_t stream[2];
         cudaStreamCreate(&stream[0]);
         cudaStreamCreate(&stream[1]);
@@ -218,21 +135,39 @@ namespace ntt {
         cudaMallocAsync(&buffer_d[0], sizeof(Field) * (1 << lgq), stream[0]);
         cudaMallocAsync(&buffer_d[1], sizeof(Field) * (1 << lgq), stream[1]);
         
-        u32 *unit0_d;
+        Field *unit0_d;
         cudaMalloc(&unit0_d, sizeof(Field));
         cudaMemcpy(unit0_d, &unit0, sizeof(Field), cudaMemcpyHostToDevice);
+
+        // for (int i = 0; i < (1 << lgp); i++) {
+        //     for (int j = 0; j < (1 << lgq); j++) {
+        //         printf("%d ", input[(i * (1 << lgq) + j) * WORDS]);
+        //     }
+        //     printf("\n");
+        // }
+
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start);
 
         for (int i = 0, id = 0; i < (1 << lgq); i += len_per_line, id ^= 1) {
             for (int j = 0; j < (1 << lgp); j++) {
                 auto dst = buffer_d[id] + j * WORDS * len_per_line;
                 auto src = input + j * WORDS * (1 << lgq) + i * WORDS;
-                cudaMemcpyAsync(dst, src, sizeof(u32) * WORDS * len_per_line, cudaMemcpyHostToDevice, stream[id]);
+                cudaMemcpyAsync(dst, src, sizeof(Field) * len_per_line, cudaMemcpyHostToDevice, stream[id]);
             }
             // kernel call
             dim3 block(1 << (lgp - 1));
-            block.y = 256 / block.x;
-            dim3 grid(((1 << (lgq -1)) - 1) / block.x + 1);
-            batched_ntt_with_stride<<<grid, block, 0, stream[id]>>>(buffer_d[id], lgq, roots_d, unit0_d, i);
+            block.y = std::min(256 / block.x, len_per_line);
+            dim3 grid(std::max(1u, len_per_line / block.y));
+
+            const u32 io_group = 1 << log2_int(WORDS);
+
+            using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
+            usize shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x * block.y / io_group));
+
+            batched_ntt_with_stride<Field, io_group> <<<grid, block, shared_size, stream[id]>>>(buffer_d[id], lgp, len_per_line, roots_d, unit0_d, i);
             
             for (int j = 0; j < (1 << lgp); j++) {
                 auto src = buffer_d[id] + j * WORDS * len_per_line;
@@ -243,6 +178,13 @@ namespace ntt {
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
 
+        // for (int i = 0; i < (1 << lgp); i++) {
+        //     for (int j = 0; j < (1 << lgq); j++) {
+        //         printf("%u ", input[(i * (1 << lgq) + j) * WORDS]);
+        //     }
+        //     printf("\n");
+        // }
+
         ntt->to_gpu();
 
         for (u32 i = 0, id = 0; i < (1 << lgp); i++, id ^= 1) {
@@ -251,14 +193,39 @@ namespace ntt {
 
             ntt->ntt(buffer_d[id], stream[id], 1 << lgq, true);
 
-            inplace::transpose(true, (Field *)buffer_d[id], 1 << lgp, len_per_line);
 
-            for (u32 j = 0; j < (1 << lgp); j++) {
-                auto src = buffer_d[id] + j * WORDS * len_per_line;
-                auto dst = output +  i * WORDS * len_per_line + j * WORDS * (1 << lgq);
-                cudaMemcpyAsync(dst, src, sizeof(u32) * WORDS * len_per_line, cudaMemcpyDeviceToHost, stream[id]);
+            cudaMemcpyAsync(src, buffer_d[id], sizeof(u32) * WORDS * (1 << lgq), cudaMemcpyDeviceToHost, stream[id]);
+
+            // inplace::transpose(true, (Field *)buffer_d[id], len_per_line, 1 << lgp);
+
+            // for (u32 j = 0; j < (1 << lgp); j++) {
+            //     auto src = buffer_d[id] + j * WORDS * len_per_line;
+            //     auto dst = input +  i * WORDS * len_per_line + j * WORDS * (1 << lgq);
+            //     cudaMemcpyAsync(dst, src, sizeof(u32) * WORDS * len_per_line, cudaMemcpyDeviceToHost, stream[id]);
+            // }
+        }
+
+        cudaDeviceSynchronize();
+
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        printf("gpu: %fms\n", milliseconds);
+
+        for (int i = 0; i < (1 << lgp); i++) {
+            for (int j = 0; j < (1 << lgq); j++) {
+                for (int k = 0; k < WORDS; k++) {
+                    output[(j * (1 << lgp) + i) * WORDS + k] = input[(i * (1 << lgq) + j) * WORDS + k];
+                }
             }
         }
+
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        printf("gpu: %fms\n", milliseconds);
 
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);

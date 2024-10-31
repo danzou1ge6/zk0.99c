@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include "ntt.cuh"
 #include <cassert>
 #include <cstdio>
@@ -3100,10 +3099,6 @@ namespace ntt {
                 if (deg_per_round <= max_deg_stage) break;
             }
             return deg_per_round;
-        }
-
-        static constexpr u32 log2_int(u32 x) {
-            return 31 - std::countl_zero(x);
         }
 
         public:
