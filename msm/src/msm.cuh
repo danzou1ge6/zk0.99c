@@ -566,8 +566,6 @@ namespace msm
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
     std::cout << "MSM scatter time:" << elapsedTime << std::endl;
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     // space for counts is reused
     PROPAGATE_CUDA_ERROR(cudaFree(scalers));
     // print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
@@ -577,6 +575,11 @@ namespace msm
       // print_lengths<Config><<<1, 1>>>(counts);
       print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
     }
+
+    elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
 
     // Prepare for bucket sum
     Point *buckets_sum_buf;
@@ -601,14 +604,20 @@ namespace msm
     PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
 
     // Do bucket sum
-    block_size = 2 * THREADS_PER_WARP;
-    grid_size = deviceProp.multiProcessorCount;
+    block_size = 8 * THREADS_PER_WARP;
+    grid_size = 256;
     bucket_sum<Config, 2><<<grid_size, block_size>>>(
         buckets_buffer,
         buckets_offset,
         counts,
         points,
         buckets_sum);
+
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
+
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
@@ -620,6 +629,11 @@ namespace msm
     {
       print_sums<Config>(buckets_sum);
     }
+
+    elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
 
     // Bucket reduction and window reduction
     Point *reduced;
@@ -636,6 +650,13 @@ namespace msm
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
+
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM bucket reduce time:" << elapsedTime << std::endl;
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 
     PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
 
