@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "wrapper/ntt/rust_api",  # ntt
     "wrapper/cuda_api/rust_api",  # cuda_api
+    "wrapper/msm/rust_api",  # msm
 ]
 
 [workspace.package]
