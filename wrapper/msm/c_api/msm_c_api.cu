@@ -1,16 +1,6 @@
-#include "../../../msm/src/bn254.cuh"
-#include "../../../msm/src/msm.cuh"
-#include "../../../mont/src/bn254_scalar.cuh"
+#include "./msm_c_api.h"
 
-#include <iostream>
-#include <fstream>
-
-using bn254::Point;
-using bn254::PointAffine;
-using bn254_scalar::Element;
-using bn254_scalar::Number;
 using mont::u32;
-using mont::u64;
 
 struct MsmProblem
 {
@@ -19,30 +9,6 @@ struct MsmProblem
   Element *scalers;
 };
 
-std::istream &
-operator>>(std::istream &is, MsmProblem &msm)
-{
-  is >> msm.len;
-  msm.scalers = new Element[msm.len];
-  msm.points = new PointAffine[msm.len];
-  for (u32 i = 0; i < msm.len; i++)
-  {
-    char _;
-    is >> msm.scalers[i].n >> _ >> msm.points[i];
-  }
-  return is;
-}
-
-std::ostream &
-operator<<(std::ostream &os, const MsmProblem &msm)
-{
-
-  for (u32 i = 0; i < msm.len; i++)
-  {
-    os << msm.scalers[i].n << '|' << msm.points[i] << std::endl;
-  }
-  return os;
-}
 
 bool cuda_msm(unsigned int len, Element* scalers, PointAffine* points, Point& res) {
 
