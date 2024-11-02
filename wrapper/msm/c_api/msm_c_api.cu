@@ -1,4 +1,5 @@
 #include "./msm_c_api.h"
+#include <cuda_runtime.h>
 
 using mont::u32;
 

@@ -6,7 +6,7 @@
 
 #include <iostream>
 #include <fstream>
-#include <cuda_runtime.h>
+
 
 using bn254::Point;
 using bn254::PointAffine;
