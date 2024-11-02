@@ -1,11 +1,7 @@
-#pragma once
-
 #include "../../../msm/src/bn254.cuh"
-#include "../../../msm/src/msm.cuh"
 #include "../../../mont/src/bn254_scalar.cuh"
 
 #include <iostream>
-#include <fstream>
 
 
 using bn254::Point;
