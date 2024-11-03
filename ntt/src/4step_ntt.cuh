@@ -3,6 +3,12 @@
 #include "recompute_ntt.cuh"
 #include "self_sort_in_place_ntt.cuh"
 #include <memory>
+#include <pybind11/embed.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <pybind11/pytypes.h>
+
+// #define CPU_TRANSPOSE
 
 namespace ntt {
 
@@ -94,7 +100,7 @@ namespace ntt {
 
         // avail = 8ll * 1024 * 1024 * 1024;
         
-        u32 lgp = 1;
+        u32 lgp = 4;
         u32 lgq = logn - lgp;
 
         while (((1ll << lgq) + std::max(1ll << lgp, 1ll << (lgq - lgp))) * WORDS * sizeof(u32) + 1100ll * sizeof(Field) > avail) {
@@ -191,6 +197,35 @@ namespace ntt {
 
         ntt->clean_gpu();
 
+
+        #ifdef CPU_TRANSPOSE
+
+        pybind11::scoped_interpreter guard{};
+
+        auto src = pybind11::memoryview::from_buffer(input, {(1 << lgp), (1 << lgq), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgq), sizeof(u32) * WORDS, sizeof(u32)});
+        auto dst = pybind11::memoryview::from_buffer(output, {(1 << lgq), (1 << lgp), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgp), sizeof(u32) * WORDS, sizeof(u32)});
+
+
+        pybind11::exec(R"(
+            import numpy as np
+            def transpose(src, dst, a, b, c):
+                x = np.frombuffer(src, dtype=np.uint32)
+                x = x.reshape(a,b,c)
+                y = np.frombuffer(dst, dtype=np.uint32)
+                y = y.reshape(b,a,c)
+                np.copyto(y, np.transpose(x, (1, 0, 2)))
+                
+        )");
+
+
+        // 获取 Python 中的 transpose 函数
+        pybind11::object transpose_func = pybind11::module::import("__main__").attr("transpose");
+
+        transpose_func(src, dst, 1ll << lgp, 1ll << lgq, WORDS);
+
+
+        #else
+
         for (int i = 0, id = 0; i < (1 << lgq); i += len_per_line, id ^= 1) {
             for (int j = 0; j < (1 << lgp); j++) {
                 auto dst = buffer_d[id] + j * WORDS * len_per_line;
@@ -206,6 +241,8 @@ namespace ntt {
         }
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
+
+        #endif
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
