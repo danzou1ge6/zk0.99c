@@ -2,7 +2,8 @@
 #include "../../../mont/src/bn254_scalar.cuh"
 
 #include <iostream>
-
+#include <cuda_runtime.h>
+#include <cub/cub.cuh>
 
 using bn254::Point;
 using bn254::PointAffine;
