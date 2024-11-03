@@ -116,11 +116,11 @@ fn compare_with_halo2() {
 
         let mut gpu_result = Point::identity();
 
-        gpu_msm(n as u32, scalars.as_ptr(), points.as_ptr(), &mut gpu_result).unwrap();
+        gpu_msm(n as u32, coeffs, basess, &mut gpu_result).unwrap();
 
         let start2 = Instant::now();
 
-        match gpu_msm(n as u32, scalars.as_ptr(), points.as_ptr(), &mut gpu_result) {
+        match gpu_msm(n as u32, coeffs, basess, &mut gpu_result) {
             Ok(_) => {}
             Err(e) => panic!("{e}"),
         };
