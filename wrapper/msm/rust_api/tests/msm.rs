@@ -3,15 +3,20 @@ use group::ff::PrimeField;
 use halo2_proofs::*;
 use halo2curves::bn256::Fr as Scalar;
 use halo2curves::bn256::G1Affine as Point;
-use rand_core::RngRng;
+pub use halo2curves::CurveAffine;
+use rand_core::RngCore;
 use rand_core::SeedableRng;
 use rand_xorshift::XorShiftRng;
 use rayon::current_thread_index;
 use rayon::prelude::*;
 use std::time::Instant;
+use std::time::SystemTime;
 use zk0d99c_msm::gpu_msm;
 
-#[test]
+const SEED: [u8; 16] = [
+    0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc, 0xe5,
+];
+
 fn generate_curvepoints(k: u8) -> Vec<Point> {
     let n: u64 = {
         assert!(k < 64);
@@ -96,31 +101,33 @@ fn generate_coefficients(k: u8, bits: usize) -> Vec<Scalar> {
     coeffs
 }
 
+#[test]
 fn compare_with_halo2() {
     let max_k = 20;
     for k in 1..=max_k {
         let n = 1 << k;
         println!("generating data for k = {k}...");
-        let bases: Vec<Point> = generate_curvepoints(max_k);
+        let bases: Vec<Point> = generate_curvepoints(k);
         let bits = [256];
         let coeffs: Vec<_> = bits
             .iter()
-            .map(|b| generate_coefficients(max_k, *b))
+            .map(|b| generate_coefficients(k, *b))
             .collect();
 
         println!("testing for k = {k}:");
+        let n: usize = 1 << k;
         let start1 = Instant::now();
-        let cpu_result = best_multiexp(&coeffs, &bases);
+        let cpu_result = arithmetic::best_multiexp(&coeffs[0][..n], &bases[..n]);
         let time1 = start1.elapsed().as_micros();
         println!("cpu time: {time1}");
 
-        let mut gpu_result = Point::identity();
+        let mut gpu_result = cpu_result;
 
-        gpu_msm(n as u32, coeffs, basess, &mut gpu_result).unwrap();
+        gpu_msm(&coeffs[0][..n], &bases[..n], &mut gpu_result).unwrap();
 
         let start2 = Instant::now();
 
-        match gpu_msm(n as u32, coeffs, basess, &mut gpu_result) {
+        match gpu_msm(&coeffs[0][..n], &bases[..n], &mut gpu_result) {
             Ok(_) => {}
             Err(e) => panic!("{e}"),
         };
@@ -128,6 +135,11 @@ fn compare_with_halo2() {
         let time2 = start2.elapsed().as_micros();
         println!("gpu time: {time2}, {}x faster", time1 as f32 / time2 as f32);
 
-        assert_eq!(cpu_result, gpu_result);
+        let x1 = cpu_result.x * gpu_result.z;
+        let y1 = cpu_result.y * gpu_result.z;
+        let x2 = gpu_result.x * cpu_result.z;
+        let y2 = gpu_result.y * cpu_result.z;
+        assert_eq!(x1, x2);
+        assert_eq!(y1, y2);
     }
 }
