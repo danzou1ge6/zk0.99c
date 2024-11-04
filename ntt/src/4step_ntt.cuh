@@ -95,6 +95,23 @@ namespace ntt {
     void offchip_ntt(u32 *input, u32 *output, int logn, const u32 *omega) {
         constexpr usize WORDS = Field::LIMBS;
 
+        pybind11::scoped_interpreter guard{};
+
+        pybind11::exec(R"(
+            import numpy as np
+            def transpose(src, dst, a, b, c):
+                x = np.frombuffer(src, dtype=np.uint32)
+                x = x.reshape(a,b,c)
+                y = np.frombuffer(dst, dtype=np.uint32)
+                y = y.reshape(b,a,c)
+                np.copyto(y, np.transpose(x, (1, 0, 2)))
+                
+        )");
+
+
+        // 获取 Python 中的 transpose 函数
+        pybind11::object transpose_func = pybind11::module::import("__main__").attr("transpose");
+
         usize avail, total;
         cudaMemGetInfo(&avail, &total);
 
@@ -200,26 +217,10 @@ namespace ntt {
 
         #ifdef CPU_TRANSPOSE
 
-        pybind11::scoped_interpreter guard{};
 
         auto src = pybind11::memoryview::from_buffer(input, {(1 << lgp), (1 << lgq), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgq), sizeof(u32) * WORDS, sizeof(u32)});
         auto dst = pybind11::memoryview::from_buffer(output, {(1 << lgq), (1 << lgp), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgp), sizeof(u32) * WORDS, sizeof(u32)});
 
-
-        pybind11::exec(R"(
-            import numpy as np
-            def transpose(src, dst, a, b, c):
-                x = np.frombuffer(src, dtype=np.uint32)
-                x = x.reshape(a,b,c)
-                y = np.frombuffer(dst, dtype=np.uint32)
-                y = y.reshape(b,a,c)
-                np.copyto(y, np.transpose(x, (1, 0, 2)))
-                
-        )");
-
-
-        // 获取 Python 中的 transpose 函数
-        pybind11::object transpose_func = pybind11::module::import("__main__").attr("transpose");
 
         transpose_func(src, dst, 1ll << lgp, 1ll << lgq, WORDS);
 
