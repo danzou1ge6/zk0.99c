@@ -7,8 +7,13 @@
 - [Benchmark](benchmark.md)
 
 - [Rust Bind](bind.md)
-  - [创建c api](bind/c_api.md)
-  - [xmake编译](bind/xmake.md)
-  - [编写build.rs](bind/build.rs.md)
+  - [create c api](bind/c_api.md)
+  - [compile with xmake](bind/xmake.md)
+  - [write build.rs](bind/build.rs.md)
 
 - [Memory Layout](memory_layout.md)
+
+- [NTT](ntt.md)
+  - [Survey](ntt/survey.md)
+  - [Implement](ntt/implement.md)
+  - [API](ntt/api.md)

@@ -956,5 +956,4 @@ dependencies = [
  "rand_core",
  "rand_xorshift",
  "rayon",
- "zk0d99c_cuda_api",
 ]

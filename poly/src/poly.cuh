@@ -7,6 +7,9 @@ namespace poly {
     using mont::u32;
     using mont::u64;
     using mont::usize;
+    using mont::load_exchange;
+    using mont::store_exchange;
+    
     static const u32 warp_size = 32;
 
     template <typename Field>
@@ -28,48 +31,6 @@ namespace poly {
     }
 
     template <typename Field, u32 io_group>
-    __forceinline__ __device__ auto load_exchange(u32 * data, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field {
-        using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
-
-        const static usize WORDS = Field::LIMBS;
-        const u32 io_id = threadIdx.x & (io_group - 1);
-        const u32 lid_start = threadIdx.x - io_id;
-        const int warp_id = static_cast<int>(threadIdx.x) / io_group;
-
-        u32 thread_data[io_group];
-        #pragma unroll
-        for (u64 i = lid_start; i != lid_start + io_group; i ++) {
-            if (io_id < WORDS) {
-                thread_data[i - lid_start] = data[i * WORDS + io_id];
-            }
-        }
-        WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-        __syncwarp();
-        return Field::load(thread_data);
-    }
-
-    template <typename Field, u32 io_group>
-    __forceinline__ __device__ void store_exchange(Field ans, u32 * dst, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) {
-        using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
-
-        const static usize WORDS = Field::LIMBS;
-        const u32 io_id = threadIdx.x & (io_group - 1);
-        const u32 lid_start = threadIdx.x - io_id;
-        const int warp_id = static_cast<int>(threadIdx.x) / io_group;
-
-        u32 thread_data[io_group];
-        ans.store(thread_data);
-        WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
-        __syncwarp();
-        #pragma unroll
-        for (u64 i = lid_start; i != lid_start + io_group; i ++) {
-            if (io_id < WORDS) {
-                dst[i * WORDS + io_id] = thread_data[i - lid_start];
-            }
-        }
-    }
-
-    template <typename Field, u32 io_group>
     __global__ void Add(u32 * a, u32 * b, u32 * dst, u32 len) {       
         using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
         extern __shared__ typename WarpExchangeT::TempStorage temp_storage[];
@@ -85,12 +46,12 @@ namespace poly {
 
         Field a_val, b_val;
 
-        a_val = load_exchange<Field, io_group>(a, temp_storage);
-        b_val = load_exchange<Field, io_group>(b, temp_storage);
+        a_val = load_exchange<Field, io_group>(a, [] (u32 lid) -> u64 {return lid;}, temp_storage);
+        b_val = load_exchange<Field, io_group>(b, [] (u32 lid) -> u64 {return lid;}, temp_storage);
 
         auto res = a_val + b_val;
 
-        store_exchange<Field, io_group>(res, dst, temp_storage);
+        store_exchange<Field, io_group>(res, dst, [] (u32 lid) -> u64 {return lid;}, temp_storage);
     }
 
     template <typename Field, u32 io_group>
@@ -109,11 +70,11 @@ namespace poly {
 
         Field a_val, b_val;
 
-        a_val = load_exchange<Field, io_group>(a, temp_storage);
-        b_val = load_exchange<Field, io_group>(b, temp_storage);
+        a_val = load_exchange<Field, io_group>(a, [] (u32 lid) -> u64 {return lid;}, temp_storage);
+        b_val = load_exchange<Field, io_group>(b, [] (u32 lid) -> u64 {return lid;}, temp_storage);
 
         auto res = a_val * b_val;
 
-        store_exchange<Field, io_group>(res, dst, temp_storage);
+        store_exchange<Field, io_group>(res, dst, [] (u32 lid) -> u64 {return lid;}, temp_storage);
     }
 };

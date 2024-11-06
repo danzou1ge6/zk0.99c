@@ -1,0 +1,92 @@
+{
+    "page_size": 512,
+    "inputs": [
+        {
+            "target": 0,
+            "size": 4
+        },
+        {
+            "target": 1,
+            "size": 512
+        },
+        {
+            "target": 2,
+            "size": 512
+        }
+    ],
+    "nodes": [
+        {
+            "id": 0,
+            "type": "kernel",
+            "is_cuda": true,
+            "gpu_mem": 0,
+            "compute_intensity": -0.5,
+            "kernel_name": "add",
+            "targets": [1, 2, 1],
+            "next": [1, 2],
+            "last": []
+        },
+        {
+            "id": 1,
+            "type": "ntt",
+            "is_cuda": true,
+            "gpu_mem": 0,
+            "compute_intensity": 0.2,
+            "ntt_type": "ntt",
+            "logn": 4,
+            "field": "bn256_fr",
+            "target": 1,
+            "next": [3],
+            "last": [0]
+        },
+        {
+            "id": 2,
+            "type": "ntt",
+            "is_cuda": true,
+            "compute_intensity": 0.2,
+            "gpu_mem": 0,
+            "ntt_type": "ntt",
+            "field": "bn256_fr",
+            "logn": 4,
+            "target": 2,
+            "next": [3],
+            "last": [0]
+        },
+        {
+            "id": 3,
+            "type": "kernel",
+            "is_cuda": true,
+            "compute_intensity": -0.5,
+            "gpu_mem": 0,
+            "kernel_name": "mul",
+            "targets": [1, 2, 1],
+            "next": [4],
+            "last": [1, 2]
+        },
+        {
+            "id": 4,
+            "type": "mem",
+            "is_cuda": false,
+            "gpu_mem": 0,
+            "compute_intensity": -0.5,
+            "mem_type": "host",
+            "target": 3,
+            "size": 512,
+            "next": [5],
+            "last": [3]
+        },
+        {
+            "id": 5,
+            "type": "copy",
+            "is_cuda": false,
+            "gpu_mem": 0,
+            "compute_intensity": 0.0,
+            "copy_type": "host_to_host",
+            "size": 512,
+            "src": 1,
+            "dst": 3,
+            "next": [],
+            "last": [4]
+        }
+    ]
+}
