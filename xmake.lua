@@ -23,6 +23,13 @@ target("test-mont")
     add_files("mont/tests/main.cu")
     add_packages("doctest")
 
+target("fuzz-mont")
+    set_languages(("c++17"))
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
+    add_files("mont/tests/fuzz.cu")
+
 target("bench-mont")
     set_languages(("c++17"))
     add_cugencodes("native")
