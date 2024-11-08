@@ -188,7 +188,10 @@ namespace ntt {
         return res;
     }
 
-    static constexpr u32 log2_int(u32 x) {
-        return 31 - std::countl_zero(x);
+    static __host__ __device__ __forceinline__ constexpr u32 log2_int(u32 x) {
+        u32 ans = 0;
+        while (x >>= 1) ans++;
+        return ans;
+        // return 31 - std::countl_zero(x);
     }
 }

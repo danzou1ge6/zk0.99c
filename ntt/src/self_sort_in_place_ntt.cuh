@@ -2429,9 +2429,10 @@ namespace ntt {
         }
     }
 
-    template <typename Field, u32 io_group, bool process>
+    template <typename Field, bool process>
     __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots, const u32 * zeta, u32 start_len) {
-        const static usize WORDS = Field::LIMBS;
+        constexpr usize WORDS = Field::LIMBS;
+        constexpr u32 io_group = 1 << (log2_int(WORDS - 1) - 1);
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -2478,18 +2479,25 @@ namespace ntt {
                 if (io < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_id << (lgp + 1);
+                    uint4 a, b;
                     if (!process) {
-                        u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
-                        u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                        a = reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
+                        b = reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
                     } else {
-                        u[(i << 1) + io * shared_read_stride] = gpos >= start_len ? 0 : x[gpos * WORDS + io];
-                        u[(i << 1) + 1 + io * shared_read_stride] = gpos + end_stride >= start_len ? 0 : x[(gpos + end_stride) * WORDS + io];
+                        a = gpos >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
+                        b = gpos + end_stride >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
                     }
+                    u[(i << 1) + (0 + io * 4) * shared_read_stride] = a.x;
+                    u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride] = b.x;
+                    u[(i << 1) + (1 + io * 4) * shared_read_stride] = a.y;
+                    u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride] = b.y;
+                    u[(i << 1) + (2 + io * 4) * shared_read_stride] = a.z;
+                    u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride] = b.z;
+                    u[(i << 1) + (3 + io * 4) * shared_read_stride] = a.w;
+                    u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride] = b.w;
                 }
             }
         }
-
-
 
         __syncthreads();
 
@@ -2570,8 +2578,10 @@ namespace ntt {
                 if (io < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_id << (lgp + 1);
-                    x[gpos * WORDS + io] = u[(i << 1) + io * shared_read_stride];
-                    x[(gpos + end_stride) * WORDS + io] = u[(i << 1) + 1 + io * shared_read_stride];
+                    uint4 a = make_uint4(u[(i << 1) + (0 + io * 4) * shared_read_stride], u[(i << 1) + (1 + io * 4) * shared_read_stride], u[(i << 1) + (2 + io * 4) * shared_read_stride], u[(i << 1) + (3 + io * 4) * shared_read_stride]);
+                    uint4 b = make_uint4(u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride]);
+                    reinterpret_cast<uint4*> (x + gpos * WORDS)[io] = a;
+                    reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io] = b;
                 }
             }
         }
@@ -3382,7 +3392,7 @@ namespace ntt {
                         CUDA_CHECK(cudaGetLastError());
                     } else {
                         auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
-                        SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, false>;
+                        SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
