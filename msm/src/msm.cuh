@@ -636,6 +636,11 @@ namespace msm
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
 
+    PROPAGATE_CUDA_ERROR(cudaFree(points));
+    PROPAGATE_CUDA_ERROR(cudaFree(counts_buf));
+    PROPAGATE_CUDA_ERROR(cudaFree(buckets_buffer));
+    PROPAGATE_CUDA_ERROR(cudaFree(buckets_offset_buf));
+
     if (Config::debug)
     {
       print_sums<Config>(buckets_sum);
@@ -661,6 +666,7 @@ namespace msm
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
+    PROPAGATE_CUDA_ERROR(cudaFree(buckets_sum_buf));
 
     // cudaEventRecord(stop, 0);
     // cudaEventSynchronize(stop);
@@ -670,6 +676,7 @@ namespace msm
     // cudaEventDestroy(stop);
 
     PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
+    PROPAGATE_CUDA_ERROR(cudaFree(reduced));
 
     return cudaSuccess;
   }
