@@ -590,12 +590,6 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
 
-    cudaEvent_t start, stop;
-    float elapsedTime = 0.0;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-
     // Count items in buckets
     u32 *scalers;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::LIMBS * len));
@@ -604,6 +598,11 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
     auto counts = Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size>(counts_buf);
 
+    cudaEvent_t start, stop;
+    float elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
 
     initialize_counts<Config><<<Config::grid_size, Config::n_windows>>>(counts);
     err = cudaDeviceSynchronize();
@@ -626,68 +625,87 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     }
 
     // print_counts_buf<Config><<<1,1>>>(counts_buf);
-    
 
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM count time:" << elapsedTime << std::endl;   
+    
     // Initialize bucket offsets
     u32 *buckets_offset_buf;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_offset_buf, sizeof(u32) * Config::n_windows * Config::n_buckets * Config::grid_size));
     
-    // initialize_offsets<Config><<<Config::n_windows*Config::n_buckets,Config::grid_size>>>(counts_buf, buckets_offset_buf);
-    // err = cudaDeviceSynchronize();
-    // if (err != cudaSuccess)
-    // {
-    //   std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
-    //             << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
-    // }
-
-    // int n = Config::n_windows * Config::n_buckets * Config::grid_size;
-    // int numBlocks = 8192, blockSize = 1024;
-
-    // for (int step = 1; step < n; step *= 2) {
-    //     numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
-    //     upsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
-    //     cudaDeviceSynchronize();
-    // }
+    elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
     
-    // // 将最后一个元素置为 0，开始 Downsweep 阶段
-    // err = cudaMemset(&buckets_offset_buf[n - 1], 0, sizeof(int));
-    // if (err != cudaSuccess)
-    // {
-    //   std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
-    //             << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
-    // }
-    
-    // // Downsweep 阶段
-    // for (int step = n / 2; step > 0; step /= 2) {
-    //     numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
-    //     downsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
-    //     cudaDeviceSynchronize();
-    // }
+    initialize_offsets<Config><<<Config::n_windows*Config::n_buckets,Config::grid_size>>>(counts_buf, buckets_offset_buf);
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess)
+    {
+      std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
+                << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
 
-    void *d_temp_storage = nullptr;
-    size_t temp_storage_bytes = 0;
-    cub::DeviceScan::ExclusiveSum(
-        d_temp_storage, temp_storage_bytes,
-        counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
-    // Allocate temporary storage
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    // Run exclusive prefix sum
-    cub::DeviceScan::ExclusiveSum(
-        d_temp_storage, temp_storage_bytes,
-        counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
-    PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage));
+    int n = Config::n_windows * Config::n_buckets * Config::grid_size;
+    int numBlocks = 8192, blockSize = 1024;
+
+    for (int step = 1; step < n; step *= 2) {
+        numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
+        upsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
+        cudaDeviceSynchronize();
+    }
+    
+    // 将最后一个元素置为 0，开始 Downsweep 阶段
+    err = cudaMemset(&buckets_offset_buf[n - 1], 0, sizeof(int));
+    if (err != cudaSuccess)
+    {
+      std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
+                << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
+    }
+    
+    // Downsweep 阶段
+    for (int step = n / 2; step > 0; step /= 2) {
+        numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
+        downsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
+        cudaDeviceSynchronize();
+    }
+
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM ExclusiveSum time:" << elapsedTime << std::endl;
+
+    // void *d_temp_storage = nullptr;
+    // size_t temp_storage_bytes = 0;
+    // cub::DeviceScan::ExclusiveSum(
+    //     d_temp_storage, temp_storage_bytes,
+    //     counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
+    // // Allocate temporary storage
+    // PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+    // // Run exclusive prefix sum
+    // cub::DeviceScan::ExclusiveSum(
+    //     d_temp_storage, temp_storage_bytes,
+    //     counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
+    // PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage));
     auto buckets_offset = Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size>(buckets_offset_buf);
     // print_offsets<Config><<<1, 1>>>(buckets_offset);
 
-    if (Config::debug)
-    {
-      print_offsets<Config><<<1, 1>>>(buckets_offset);
-    }
+    // if (Config::debug)
+    // {
+    //   print_offsets<Config><<<1, 1>>>(buckets_offset);
+    // }
 
     // Allocate space for buckets buffer
     // Space for PoindId's
     PointId *buckets_buffer;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_buffer, sizeof(PointId) * len * Config::n_windows));
+
+    elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
     
     // Scatter
     initialize_buckets_len<Config><<<Config::grid_size, Config::n_windows>>>(counts);
@@ -740,9 +758,9 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
 
     // Do bucket sum
-    u32 block_size = 2 * THREADS_PER_WARP;
-    u32 grid_size = deviceProp.multiProcessorCount;
-    bucket_sum<Config, 2><<<grid_size, block_size>>>(
+    u32 block_size = 8 * THREADS_PER_WARP;
+    u32 grid_size = 256;
+    bucket_sum<Config, 8><<<grid_size, block_size>>>(
         buckets_buffer,
         buckets_offset,
         counts,

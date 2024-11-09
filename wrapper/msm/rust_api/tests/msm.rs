@@ -116,6 +116,7 @@ fn compare_with_halo2() {
 
         println!("testing for k = {k}:");
         let n: usize = 1 << k;
+
         let start1 = Instant::now();
         let cpu_result = arithmetic::best_multiexp(&coeffs[0][..n], &bases[..n]);
         let time1 = start1.elapsed().as_micros();
@@ -139,6 +140,12 @@ fn compare_with_halo2() {
         let y1 = cpu_result.y * gpu_result.z;
         let x2 = gpu_result.x * cpu_result.z;
         let y2 = gpu_result.y * cpu_result.z;
+        // let cpu_z = cpu_result.z.invert().unwrap();
+        // let x1 = cpu_result.x * cpu_z;
+        // let y1 = cpu_result.y * cpu_z;
+        // let gpu_z = gpu_result.z.invert().unwrap();
+        // let x2 = gpu_result.x * gpu_z;
+        // let y2 = gpu_result.y * gpu_z;
         assert_eq!(x1, x2);
         assert_eq!(y1, y2);
     }

@@ -25,7 +25,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     MsmProblem msm;
 
-    msm.len = len;
+    msm.len = len;    
 
     Point result;
 

@@ -489,12 +489,6 @@ namespace msm
     cudaDeviceProp deviceProp;
     cudaGetDeviceProperties(&deviceProp, 0);
 
-    // cudaEvent_t start, stop;
-    // float elapsedTime = 0.0;
-    // cudaEventCreate(&start);
-    // cudaEventCreate(&stop);
-    // cudaEventRecord(start, 0);
-
     // Count items in buckets
     u32 *scalers;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::LIMBS * len));
@@ -502,18 +496,25 @@ namespace msm
     PROPAGATE_CUDA_ERROR(cudaMalloc(&counts_buf, sizeof(u32) * Config::n_windows * Config::n_buckets));
     PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
     auto counts = Array2D<u32, Config::n_windows, Config::n_buckets>(counts_buf);
-
+    // cudaEvent_t start, stop;
+    // float elapsedTime = 0.0;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start, 0);
     u32 block_size = 96;
     u32 grid_size = 128;
     initialize_counts<Config><<<1, block_size>>>(counts);
-    count_buckets<Config><<<grid_size, block_size>>>(scalers, len, counts);
+    count_buckets<Config><<<grid_size, block_size>>>(scalers, len, counts); 
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
-
+    // cudaEventRecord(stop, 0);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&elapsedTime, start, stop);
+    // std::cout << "MSM count time:" << elapsedTime << std::endl;
     if (Config::debug)
     {
       print_counts<Config><<<1, 1>>>(counts);
@@ -527,25 +528,36 @@ namespace msm
     // Initialize bucket offsets
     u32 *buckets_offset_buf;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_offset_buf, sizeof(u32) * Config::n_windows * Config::n_buckets));
+    // elapsedTime = 0.0;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start, 0);
     void *d_temp_storage = nullptr;
     size_t temp_storage_bytes = 0;
     cub::DeviceScan::ExclusiveSum(
         d_temp_storage, temp_storage_bytes,
-        counts_buf, buckets_offset_buf, Config::n_buckets * Config::n_buckets);
+        counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets);
     // Allocate temporary storage
     PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
     // Run exclusive prefix sum
     cub::DeviceScan::ExclusiveSum(
         d_temp_storage, temp_storage_bytes,
-        counts_buf, buckets_offset_buf, Config::n_buckets * Config::n_buckets);
+        counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets);
+    // cudaEventRecord(stop, 0);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&elapsedTime, start, stop);
+    // std::cout << "MSM exclusiveSum time:" << elapsedTime << std::endl;
     PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage));
     auto buckets_offset = Array2D<u32, Config::n_windows, Config::n_buckets>(buckets_offset_buf);
-
+    
     if (Config::debug)
     {
       print_offsets<Config><<<1, 1>>>(buckets_offset);
     }
-
+    // elapsedTime = 0.0;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start, 0);
     // Scatter
     block_size = 96;
     grid_size = 128;
@@ -574,18 +586,22 @@ namespace msm
     {
       // print_lengths<Config><<<1, 1>>>(counts);
       print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
-    }
-
-    // elapsedTime = 0.0;
-    // cudaEventCreate(&start);
-    // cudaEventCreate(&stop);
-    // cudaEventRecord(start, 0);
+    }  
 
     // Prepare for bucket sum
     Point *buckets_sum_buf;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_sum_buf, sizeof(Point) * Config::n_windows * Config::n_buckets));
     auto buckets_sum = Array2D<Point, Config::n_buckets, Config::n_windows>(buckets_sum_buf);
 
+    // TODO: Cut into chunks to support len at 2^30
+    u32 *points;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
+    PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));   
+
+    // elapsedTime = 0.0;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // cudaEventRecord(start, 0);
     block_size = 96;
     grid_size = 128;
     initalize_sum<Config><<<grid_size, block_size>>>(
@@ -597,11 +613,6 @@ namespace msm
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
     // check_sum<Config><<<1, 1>>>(buckets_sum);
-
-    // TODO: Cut into chunks to support len at 2^30
-    u32 *points;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
-    PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
 
     // Do bucket sum
     block_size = 8 * THREADS_PER_WARP;
@@ -630,14 +641,14 @@ namespace msm
       print_sums<Config>(buckets_sum);
     }
 
+    // Bucket reduction and window reduction
+    Point *reduced;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&reduced, sizeof(Point)));
+
     // elapsedTime = 0.0;
     // cudaEventCreate(&start);
     // cudaEventCreate(&stop);
     // cudaEventRecord(start, 0);
-
-    // Bucket reduction and window reduction
-    Point *reduced;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&reduced, sizeof(Point)));
 
     block_size = Config::n_windows;
     grid_size = 1;
