@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ntt.cuh"
+#include <algorithm>
 
 namespace ntt {
     template<typename Field>
@@ -127,8 +128,12 @@ namespace ntt {
             }
 
             dim3 block(1024);
-            dim3 grid((((u64) len) * WORDS - 1) / block.x + 1);
-            rearrange<WORDS> <<<grid, block >>> (data_d, log_len);
+            dim3 grid(std::min(1024ul, (((u64) len) * WORDS / 4 - 1) / block.x + 1));
+            rearrange<WORDS / 4> <<<grid, block >>> (data_d, log_len);
+            CUDA_CHECK(cudaEventRecord(end));
+            CUDA_CHECK(cudaEventSynchronize(end));
+            CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
+            printf("rearrange: %f\n", milliseconds);
             CUDA_CHECK(cudaGetLastError());
 
             dim3 ntt_block(768);

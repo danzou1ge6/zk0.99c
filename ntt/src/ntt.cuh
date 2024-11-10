@@ -161,16 +161,19 @@ namespace ntt {
     
     template<usize WORDS>
     __global__ void rearrange(u32_E * data, u32 log_len) {
-        u64 index = blockIdx.x * (blockDim.x / WORDS) + threadIdx.x / WORDS;
-        u32 word = threadIdx.x & (WORDS - 1);
-        if (index >= 1 << log_len) return;
-        u64 rindex = (__brev(index) >> (32 - log_len));
-        
-        if (rindex >= index) return;
+        auto max_grid = ((1ll << log_len) * WORDS - 1) / blockDim.x + 1;
+        for (int bid = blockIdx.x; bid < max_grid; bid += gridDim.x) {
+            u64 index = bid * (blockDim.x / WORDS) + threadIdx.x / WORDS;
+            u32 word = threadIdx.x & (WORDS - 1);
+            if (index >= 1 << log_len) continue;
+            u64 rindex = (__brev(index) >> (32 - log_len));
 
-        u32 tmp = data[index * WORDS + word];
-        data[index * WORDS + word] = data[rindex * WORDS + word];
-        data[rindex * WORDS + word] = tmp;
+            if (rindex >= index) continue;
+
+            uint4 tmp = reinterpret_cast<uint4*>(data)[index * WORDS + word];
+            reinterpret_cast<uint4*>(data)[index * WORDS + word] = reinterpret_cast<uint4*>(data)[rindex * WORDS + word];
+            reinterpret_cast<uint4*>(data)[rindex * WORDS + word] = tmp;
+        }
     }
 
     template <typename Field>
