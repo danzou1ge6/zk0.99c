@@ -7,6 +7,8 @@
 #include <random>
 #include <cub/cub.cuh>
 
+#include "./storage.cuh"
+
 #define BIG_INTEGER_CHUNKS8(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
 #define BIG_INTEGER_CHUNKS16(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
   {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15}
@@ -15,10 +17,6 @@
 
 namespace mont
 {
-
-  using u32 = u_int32_t;
-  using u64 = u_int64_t;
-  using usize = size_t;
 
   // Arithmatics on host, in raw pointer form
   namespace host_arith
@@ -534,21 +532,27 @@ namespace mont
         load(const u32 *p, u32 stride = 1)
     {
       Number r;
-      #ifdef __CUDA_ARCH__
-      if (stride == 1 && LIMBS % 4 == 0) {
-        #pragma unroll
-        for (usize i = 0; i < LIMBS / 4; i++) {
-          reinterpret_cast<uint4*>(r.limbs)[i] = reinterpret_cast<const uint4*>(p)[i];
-        }
-      } else if (stride == 1 && LIMBS % 2 == 0) {
-        #pragma unroll
-        for (usize i = 0; i < LIMBS / 2; i++) {
-          reinterpret_cast<uint2*>(r.limbs)[i] = reinterpret_cast<const uint2*>(p)[i];
-        }
-      } else 
-      #endif
+#ifdef __CUDA_ARCH__
+      if (stride == 1 && LIMBS % 4 == 0)
       {
-        #pragma unroll
+#pragma unroll
+        for (usize i = 0; i < LIMBS / 4; i++)
+        {
+          reinterpret_cast<uint4 *>(r.limbs)[i] = reinterpret_cast<const uint4 *>(p)[i];
+        }
+      }
+      else if (stride == 1 && LIMBS % 2 == 0)
+      {
+#pragma unroll
+        for (usize i = 0; i < LIMBS / 2; i++)
+        {
+          reinterpret_cast<uint2 *>(r.limbs)[i] = reinterpret_cast<const uint2 *>(p)[i];
+        }
+      }
+      else
+#endif
+      {
+#pragma unroll
         for (usize i = 0; i < LIMBS; i++)
           r.limbs[i] = p[i * stride];
       }
@@ -557,21 +561,27 @@ namespace mont
 
     __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
     {
-      #ifdef __CUDA_ARCH__
-      if (stride == 1 && LIMBS % 4 == 0) {
-        #pragma unroll
-        for (usize i = 0; i < LIMBS / 4; i++) {
-          reinterpret_cast<uint4*>(p)[i] = reinterpret_cast<const uint4*>(limbs)[i];
-        }
-      } else if (stride == 1 && LIMBS % 2 == 0) {
-        #pragma unroll
-        for (usize i = 0; i < LIMBS / 2; i++) {
-          reinterpret_cast<uint2*>(p)[i] = reinterpret_cast<const uint2*>(limbs)[i];
-        }
-      } else 
-      #endif
+#ifdef __CUDA_ARCH__
+      if (stride == 1 && LIMBS % 4 == 0)
       {
-        #pragma unroll
+#pragma unroll
+        for (usize i = 0; i < LIMBS / 4; i++)
+        {
+          reinterpret_cast<uint4 *>(p)[i] = reinterpret_cast<const uint4 *>(limbs)[i];
+        }
+      }
+      else if (stride == 1 && LIMBS % 2 == 0)
+      {
+#pragma unroll
+        for (usize i = 0; i < LIMBS / 2; i++)
+        {
+          reinterpret_cast<uint2 *>(p)[i] = reinterpret_cast<const uint2 *>(limbs)[i];
+        }
+      }
+      else
+#endif
+      {
+#pragma unroll
         for (usize i = 0; i < LIMBS; i++)
           p[i * stride] = limbs[i];
       }
@@ -748,9 +758,8 @@ namespace mont
       return r;
     }
 
-    __host__ __device__
-        bool
-        is_zero() const &
+    __host__ __device__ bool
+    is_zero() const &
     {
       return n.is_zero();
     }
@@ -960,46 +969,92 @@ namespace mont
     auto n = e.to_number();
     os << n;
     return os;
-    }
-  
-  template <typename Field, u32 io_group, typename GetId>
-  __forceinline__ __device__ auto load_exchange(u32 * data, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field {
+  }
+
+  constexpr u32 pow2_ceiling(u32 x)
+  {
+    u32 r = 2;
+    while (r < x)
+      r *= 2;
+    return r;
+  }
+
+  // For an array of field elements layouted like
+  // [0].0    [0].1    ...    [0].N
+  // [1].0    [1].1    ...    [1].N
+  // ...
+  // [M].0    [M].1    ...    [M].N
+  // where N is LIMBS of each element and M is blockSize.x,
+  // load the i-th scalar to i-th thread's `dst`
+  //
+  // Invariants:
+  // - `data` must be the same across each `io_group` threads
+  template <u32 WORDS, u32 io_group = pow2_ceiling(WORDS), typename GetId>
+  __forceinline__ __device__ void load_exchange_raw(
+      u32 dst[WORDS],
+      u32 *data,
+      GetId gpos,
+      typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
+  {
+
     using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
-    const static usize WORDS = Field::LIMBS;
     const u32 io_id = threadIdx.x & (io_group - 1);
     const u32 lid_start = threadIdx.x - io_id;
     const int warp_id = static_cast<int>(threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y) / io_group;
-    u32 thread_data[io_group];
-    #pragma unroll
-    for (u32 i = lid_start; i != lid_start + io_group; i ++) {
-      if (io_id < WORDS) {
-        thread_data[i - lid_start] = data[gpos(i) * WORDS + io_id];
+#pragma unroll
+    for (u32 i = lid_start; i != lid_start + io_group; i++)
+    {
+      if (io_id < WORDS)
+      {
+        dst[i - lid_start] = data[gpos(i) * WORDS + io_id];
       }
     }
-    WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
+    WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(dst, dst);
     __syncwarp();
+  }
+
+  template <typename Field, u32 io_group = pow2_ceiling(Field::LIMBS), typename GetId>
+  __forceinline__ __device__ auto load_exchange(u32 *data, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) -> Field
+  {
+    u32 thread_data[io_group];
+    load_exchange_raw(thread_data, data, gpos, temp_storage);
     return Field::load(thread_data);
   }
-  template <typename Field, u32 io_group, typename GetId>
-  __forceinline__ __device__ void store_exchange(Field &ans, u32 * dst, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[]) {
+
+  // The reversed effect of `load_exchange_raw`
+  template <u32 WORDS, u32 io_group = pow2_ceiling(WORDS), typename GetId>
+  __forceinline__ __device__ void store_exchange_raw(
+      u32 *dst,
+      u32 from[WORDS],
+      GetId gpos,
+      typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
+  {
     using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
     const static usize WORDS = Field::LIMBS;
     const u32 io_id = threadIdx.x & (io_group - 1);
     const u32 lid_start = threadIdx.x - io_id;
     const int warp_id = static_cast<int>(threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y) / io_group;
-    u32 thread_data[io_group];
-    ans.store(thread_data);
-    WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+    WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(from, from);
     __syncwarp();
-    #pragma unroll
-    for (u64 i = lid_start; i != lid_start + io_group; i ++) {
-      if (io_id < WORDS) {
-        dst[gpos(i) * WORDS + io_id] = thread_data[i - lid_start];
+#pragma unroll
+    for (u64 i = lid_start; i != lid_start + io_group; i++)
+    {
+      auto gpos = gpos(i);
+      if (io_id < WORDS && gpos < dst_len)
+      {
+        dst[gpos * WORDS + io_id] = from[i - lid_start];
       }
     }
   }
+
+  template <typename Field, u32 io_group = pow2_ceiling(Field::LIMBS), typename GetId>
+  __forceinline__ __device__ void store_exchange(Field &ans, u32 *dst, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
+  {
+    u32 thread_data[io_group];
+    ans.store(thread_data);
+    store_exchange_raw(dst, thread_data, gpos, temp_storage);
+  }
+
 }
-
-
 
 #endif
