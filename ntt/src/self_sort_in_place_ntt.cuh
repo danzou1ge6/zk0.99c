@@ -1997,9 +1997,12 @@ namespace ntt {
         }
     }    
 
-    template <typename Field, u32 io_group, bool inverse, bool process>
+    template <typename Field, bool inverse, bool process>
     __global__ void SSIP_NTT_stage2_warp_no_share_no_twiddle (u32_E * data, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots, const u32 * inv_n, const u32 * zeta) {
         const static usize WORDS = Field::LIMBS;
+        static_assert(WORDS % 4 == 0);
+        constexpr u32 io_group = 1 << (log2_int(WORDS - 1) - 1);
+
         using barrier = cuda::barrier<cuda::thread_scope_block>;
         #pragma nv_diag_suppress static_var_with_dynamic_init
         __shared__  barrier bar;
@@ -2009,16 +2012,15 @@ namespace ntt {
         }
         __syncthreads();
 
-        constexpr int warp_threads = io_group;
-        constexpr int items_per_thread = io_group;
-        const int warp_id = static_cast<int>(threadIdx.x) / warp_threads;
-        u32 thread_data[io_group];
+
+        const int warp_id = static_cast<int>(threadIdx.x) / io_group;
+        uint4 thread_data[io_group];
 
         // Specialize WarpExchange for a virtual warp of a threads owning b integer items each
-        using WarpExchangeT = cub::WarpExchange<u32, items_per_thread, warp_threads>;
+        using WarpExchangeT = cub::WarpExchange<uint4, io_group, io_group>;
 
         // Allocate shared memory for WarpExchange
-        extern __shared__ typename WarpExchangeT::TempStorage temp_storage[];
+        extern __shared__ typename WarpExchangeT::TempStorage temp_storage_uint4[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
         const u32 lsize = group_sz;
@@ -2052,60 +2054,67 @@ namespace ntt {
 
         // Read data
         if (cur_io_group == io_group) {
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
+            #pragma unroll
+            for (int tti = 0; tti < io_group; tti ++) {
+                int i = tti + lid_start;
+                if (io_id * 4 < WORDS) {
                     u32 group_offset = (i >> (deg - 1)) << (log_len - log_stride - 1);
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_offset + (group_id << (log_end_stride));
 
-                    thread_data[i - lid_start] = data[(gpos) * WORDS + io_id];
+                    thread_data[tti] = reinterpret_cast<uint4*>(data + gpos * WORDS)[io_id];
                 }
             }
-
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            a = Field::load(thread_data);
+            WarpExchangeT(temp_storage_uint4[warp_id]).StripedToBlocked(thread_data, thread_data);
+            a = Field::load(reinterpret_cast<u32*>(thread_data));
             __syncwarp();
 
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
+            #pragma unroll
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int i = tti + lid_start;
+                if (io_id * 4 < WORDS) {
                     u32 group_offset = (i >> (deg - 1)) << (log_len - log_stride - 1);
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_offset + (group_id << (log_end_stride));
 
-                    thread_data[i - lid_start] = data[(gpos+ (end_stride << (deg - 1))) * WORDS + io_id];
+                    thread_data[tti] = reinterpret_cast<uint4*>(data + (gpos+ (end_stride << (deg - 1))) * WORDS)[io_id];
                 }
             }
 
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            b = Field::load(thread_data);
+            WarpExchangeT(temp_storage_uint4[warp_id]).StripedToBlocked(thread_data, thread_data);
+            b = Field::load(reinterpret_cast<u32*>(thread_data));
             __syncwarp();
 
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int i = tti + lid_start;
+                if (io_id * 4 < WORDS) {
                     u32 group_offset = (i >> (deg - 1)) << (log_len - log_stride - 1);
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_offset + (group_id << (log_end_stride));
 
-                    thread_data[i - lid_start] = data[(gpos+ end_pair_stride) * WORDS + io_id];
+                    thread_data[tti] = reinterpret_cast<uint4*>(data + (gpos+ end_pair_stride) * WORDS)[io_id];
                 }
             }
 
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            c = Field::load(thread_data);
+            WarpExchangeT(temp_storage_uint4[warp_id]).StripedToBlocked(thread_data, thread_data);
+            c = Field::load(reinterpret_cast<u32*>(thread_data));
             __syncwarp();
 
-            for (int i = lid_start; i != lid_start + io_group; i ++) {
-                if (io_id < WORDS) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int i = tti + lid_start;
+                if (io_id * 4 < WORDS) {
                     u32 group_offset = (i >> (deg - 1)) << (log_len - log_stride - 1);
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_offset + (group_id << (log_end_stride));
 
-                    thread_data[i - lid_start] = data[(gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS + io_id];
+                    thread_data[tti] = reinterpret_cast<uint4*>(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS)[io_id];
                 }
             }
 
-            WarpExchangeT(temp_storage[warp_id]).StripedToBlocked(thread_data, thread_data);
-            d = Field::load(thread_data);
+            WarpExchangeT(temp_storage_uint4[warp_id]).StripedToBlocked(thread_data, thread_data);
+            d = Field::load(reinterpret_cast<u32*>(thread_data));
             __syncwarp();
         } else {
             u32 group_offset = (lid >> (deg - 1)) << (log_len - log_stride - 1);
@@ -2118,7 +2127,6 @@ namespace ntt {
             d = Field::load(data + (gpos + (end_stride << (deg - 1)) + end_pair_stride) * WORDS);
         }
         
-
 
         barrier::arrival_token token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
 
@@ -2252,11 +2260,13 @@ namespace ntt {
 
         // Write back
         if (cur_io_group == io_group) {
-            a.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+            a.store(reinterpret_cast<u32*>(thread_data));
+            WarpExchangeT(temp_storage_uint4[warp_id]).BlockedToStriped(thread_data, thread_data);
             __syncwarp();
 
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int ti = tti + lid_start;
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
@@ -2275,16 +2285,18 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                if (io_id < WORDS) {
-                    data[(gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS + io_id] = thread_data[ti - lid_start];
+                if (io_id * 4  < WORDS) {
+                    reinterpret_cast<uint4*>(data + (gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS)[io_id] = thread_data[tti];
                 }
             }
 
-            b.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+            b.store(reinterpret_cast<u32*>(thread_data));
+            WarpExchangeT(temp_storage_uint4[warp_id]).BlockedToStriped(thread_data, thread_data);
             __syncwarp();
 
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int ti = tti + lid_start;
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
@@ -2303,16 +2315,18 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                if (io_id < WORDS) {
-                    data[(gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS + io_id] = thread_data[ti - lid_start];
+                if (io_id * 4 < WORDS) {
+                    reinterpret_cast<uint4*>(data + (gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS)[io_id] = thread_data[tti];
                 }
             }
 
-            c.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+            c.store(reinterpret_cast<u32*>(thread_data));
+            WarpExchangeT(temp_storage_uint4[warp_id]).BlockedToStriped(thread_data, thread_data);
             __syncwarp();
 
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int ti = tti + lid_start;
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
@@ -2331,15 +2345,17 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                if (io_id < WORDS) {
-                    data[(gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS + io_id] = thread_data[ti - lid_start];
+                if (io_id * 4 < WORDS) {
+                    reinterpret_cast<uint4*>(data + (gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS)[io_id] = thread_data[tti];
                 }
             }
 
-            d.store(thread_data);
-            WarpExchangeT(temp_storage[warp_id]).BlockedToStriped(thread_data, thread_data);
+            d.store(reinterpret_cast<u32*>(thread_data));
+            WarpExchangeT(temp_storage_uint4[warp_id]).BlockedToStriped(thread_data, thread_data);
 
-            for (int ti = lid_start; ti != lid_start + io_group; ti ++) {
+            #pragma unroll 
+            for (int tti = 0; tti < io_group; tti ++) { 
+                int ti = tti + lid_start;
                 u32 p;
                 u32 second_half_l, gap;
                 u32 lid_l;
@@ -2358,8 +2374,8 @@ namespace ntt {
                 group_id = lid_l & (subblock_sz - 1);
                 gpos = group_offset + (group_id << (log_end_stride + 1));
                 
-                if (io_id < WORDS) {
-                    data[(gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS + io_id] = thread_data[ti - lid_start];
+                if (io_id * 4 < WORDS) {
+                    reinterpret_cast<uint4*>(data + (gpos + second_half_l * end_pair_stride + gap * end_stride) * WORDS)[io_id] = thread_data[tti];
                 }
             }
 
@@ -2429,9 +2445,11 @@ namespace ntt {
         }
     }
 
-    template <typename Field, u32 io_group, bool process>
+    template <typename Field, bool process>
     __global__ void SSIP_NTT_stage1_warp_no_twiddle (u32_E * x, u32 log_len, u32 log_stride, u32 deg, u32 group_sz, u32 * roots, const u32 * zeta, u32 start_len) {
-        const static usize WORDS = Field::LIMBS;
+        constexpr usize WORDS = Field::LIMBS;
+        static_assert(WORDS % 4 == 0);
+        constexpr u32 io_group = 1 << (log2_int(WORDS - 1) - 1);
         extern __shared__ u32_E s[];
 
         const u32 lid = threadIdx.x & (group_sz - 1);
@@ -2475,21 +2493,28 @@ namespace ntt {
         for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
-                if (io < WORDS) {
+                if (io * 4 < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_id << (lgp + 1);
+                    uint4 a, b;
                     if (!process) {
-                        u[(i << 1) + io * shared_read_stride] = x[gpos * WORDS + io];
-                        u[(i << 1) + 1 + io * shared_read_stride] = x[(gpos + end_stride) * WORDS + io];
+                        a = reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
+                        b = reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
                     } else {
-                        u[(i << 1) + io * shared_read_stride] = gpos >= start_len ? 0 : x[gpos * WORDS + io];
-                        u[(i << 1) + 1 + io * shared_read_stride] = gpos + end_stride >= start_len ? 0 : x[(gpos + end_stride) * WORDS + io];
+                        a = gpos >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
+                        b = gpos + end_stride >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
                     }
+                    u[(i << 1) + (0 + io * 4) * shared_read_stride] = a.x;
+                    u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride] = b.x;
+                    u[(i << 1) + (1 + io * 4) * shared_read_stride] = a.y;
+                    u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride] = b.y;
+                    u[(i << 1) + (2 + io * 4) * shared_read_stride] = a.z;
+                    u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride] = b.z;
+                    u[(i << 1) + (3 + io * 4) * shared_read_stride] = a.w;
+                    u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride] = b.w;
                 }
             }
         }
-
-
 
         __syncthreads();
 
@@ -2567,11 +2592,13 @@ namespace ntt {
         for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
-                if (io < WORDS) {
+                if (io * 4 < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
                     u64 gpos = group_id << (lgp + 1);
-                    x[gpos * WORDS + io] = u[(i << 1) + io * shared_read_stride];
-                    x[(gpos + end_stride) * WORDS + io] = u[(i << 1) + 1 + io * shared_read_stride];
+                    uint4 a = make_uint4(u[(i << 1) + (0 + io * 4) * shared_read_stride], u[(i << 1) + (1 + io * 4) * shared_read_stride], u[(i << 1) + (2 + io * 4) * shared_read_stride], u[(i << 1) + (3 + io * 4) * shared_read_stride]);
+                    uint4 b = make_uint4(u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride]);
+                    reinterpret_cast<uint4*> (x + gpos * WORDS)[io] = a;
+                    reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io] = b;
                 }
             }
         }
@@ -3382,7 +3409,7 @@ namespace ntt {
                         CUDA_CHECK(cudaGetLastError());
                     } else {
                         auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
-                        SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, io_group, false>;
+                        SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
@@ -3560,12 +3587,14 @@ namespace ntt {
                     dim3 block(block_sz);
                     dim3 grid(block_num);
 
-                    u32 shared_size = (sizeof(typename WarpExchangeT::TempStorage) * (block.x / io_group)); 
+                    constexpr u32 io_group = 1 << (log2_int(WORDS - 1) - 1);
+
+                    u32 shared_size = (sizeof(typename cub::WarpExchange<uint4, io_group, io_group>::TempStorage) * (block.x / io_group)); 
 
                     auto kernel = inverse && (log_stride - (int)deg < 0) ?
-                    (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, true, true>
-                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, true, false>)
-                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, io_group, false, false>;
+                    (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, true>
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, false>)
+                    : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, false, false>;
 
                     kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
 
