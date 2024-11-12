@@ -3,6 +3,7 @@
 #include "../src/naive_ntt.cuh"
 #include "../src/bellperson_ntt.cuh"
 #include "../src/self_sort_in_place_ntt.cuh"
+#include "../src/cooley_turkey_ntt.cuh"
 #include "small_field.cuh"
 
 #define P (3221225473   )
@@ -145,6 +146,22 @@ int main() {
     ntt::self_sort_in_place_ntt<small_field::Element> SSIP(unit, bits, true);
     SSIP.ntt(data_gpu);
     printf("SSIP: %fms\n", SSIP.milliseconds);
+
+    for (long long i = 0; i < length; i++) {
+        if (data[i] != data_gpu[i * WORDS]) {
+            printf("%lld %u %lld\n", data[i], data_gpu[i * WORDS], i);
+            break;
+        }
+    }
+
+    // C-T optimized approach
+    memset(data_gpu, 0, sizeof(uint) * length * WORDS);
+    for (int i = 0; i < length; i++) {
+        data_gpu[i * WORDS] = data_copy[i];
+    }
+    ntt::cooley_turkey_ntt<small_field::Element> ct(unit, bits, true);
+    ct.ntt(data_gpu);
+    printf("ct: %fms\n", ct.milliseconds);
 
     for (long long i = 0; i < length; i++) {
         if (data[i] != data_gpu[i * WORDS]) {

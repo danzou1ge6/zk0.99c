@@ -20,17 +20,25 @@ def get_compute_time(TOPS, deg, mul_op, add_op, data_size):
 
 if __name__ == "__main__":
     max_deg = 24
-    words = 8
+    words = 24
+    frequency = 1410
+    sms = 108
+    global_bandwidth = 1555
+    shared_bandwidth = 128
+    int_tops = 19.5
     deg = [6,6,4,4,4]
 
     total_time = 0
     for i in deg:
         data_size = (2 ** max_deg)
-        global_mem_time = get_gmem_time(696, data_size * words * 4)
+        global_mem_time = get_gmem_time(global_bandwidth, data_size * words * 4)
+        print(global_mem_time * 1000)
         total_time += global_mem_time
-        share_mem_time = get_smem_time(128, data_size * words * 4, i, 1740, 84)
+        share_mem_time = get_smem_time(shared_bandwidth, data_size * words * 4, i, frequency, sms)
+        print(share_mem_time * 1000)
         total_time += share_mem_time
-        compute_time = get_compute_time(18.7, i, 100, 12, data_size)
+        compute_time = get_compute_time(int_tops, i, words * words * 2, words * 2, data_size)
+        print(compute_time * 1000)
         total_time += compute_time
 
     print(total_time * 1000)
