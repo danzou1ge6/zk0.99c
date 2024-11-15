@@ -105,23 +105,37 @@ namespace msm
 
     static constexpr bool debug = false;
 
-    static constexpr u32 grid_size = 128;
-    static constexpr u32 block_size = 96;
+    static constexpr u32 grid_size = 32768;
+    static constexpr u32 block_size = 64;
+  };
+
+  struct PointId
+  {
+    u32 x;
+
+    __device__ __forceinline__ PointId(u32 window_id, u32 scaler_id)
+    {
+      x = scaler_id;
+    }
+
+    __device__ __forceinline__ u32 scaler_id() const
+    {
+      return x;
+    }
   };
 
   // initialize the array 'counts'
   template <typename Config>
-  __global__ void initialize_counts(Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> counts)
+  __global__ void initialize_counts(Array2D<u32, Config::n_windows, Config::n_buckets> counts)
   {
-    if (blockIdx.x < Config::grid_size && threadIdx.x < Config::n_windows)
+    if (threadIdx.x < Config::n_windows)
     {
       u32 window_id = threadIdx.x;
       for (u32 i = 0; i < Config::n_buckets; i++)
       {
-        counts.get(window_id, i, blockIdx.x) = 0;
+        counts.get(window_id, i) = 0;
       }
     }
-
     __syncthreads();
 
     // for(u32 i=0; i < Config::n_windows; ++i)
@@ -154,7 +168,8 @@ namespace msm
   __global__ void count_buckets(
       const u32 *scalers,
       const u32 len,
-      Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> counts)
+      PointId* buckets_buffer,
+      Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len)
   {
     u32 i0_scaler = blockDim.x * blockIdx.x + threadIdx.x;
 
@@ -162,6 +177,7 @@ namespace msm
     u32 i_stride = n_threads;
 
     __shared__ u32 shm_counts[Config::n_windows][Config::n_buckets];
+    __shared__ u32 shm_cache[2048];
 
     if (threadIdx.x < Config::n_windows)
     {
@@ -188,130 +204,72 @@ namespace msm
 
     __syncthreads();
 
-    if (threadIdx.x < Config::n_windows && blockIdx.x < Config::grid_size)
-    {
-      u32 window_id = threadIdx.x;
-      for (u32 i = 0; i < Config::n_buckets; i++)
-      {
-        atomicAdd(&counts.get(window_id, i, blockIdx.x), shm_counts[window_id][i]);
-      }
-    }
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    //   printf("shm_counts:\n");
 
-    // for (u32 i = 0; i < Config::n_windows && blockIdx.x < Config::grid_size; i++)
+    // for (u32 i = 0; i < Config::n_windows && blockIdx.x == 0 && threadIdx.x == 0; i++)
     //   for (u32 j = 0; j < Config::n_buckets; j++)
     //   {
-    //     auto cnt = counts.get_const(i, j, blockIdx.x);
+    //     auto cnt = shm_counts[i][j];
     //     printf("Window %u, Bucket %x, Block %x: %u\n", i, j, blockIdx.x, cnt);
     //   }
-  }
 
-  __global__ void upsweep(u32* offsets, int n, int step) {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int offset = step * 2;
+    // __syncthreads();
     
-    if (idx < n / offset) {
-        int i = idx * offset + step - 1;
-        int j = i + step;
-        if (j < n) {
-            offsets[j] += offsets[i];
-        }
-    }
-}
-
-__global__ void downsweep(u32* offsets, int n, int step) {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-    int offset = step * 2;
-    
-    if (idx < n / offset) {
-        int i = idx * offset + step - 1;
-        int j = i + step;
-        if (j < n) {
-            int temp = offsets[i];
-            offsets[i] = offsets[j];
-            offsets[j] += temp;
-        }
-    }
-}
-
-  template <typename Config>
-  __global__ void initialize_offsets(
-      u32* counts,
-      u32* offsets)
-  {
-    u32 i0_scaler = blockDim.x * blockIdx.x + threadIdx.x;
-
-    u32 n_threads = gridDim.x * blockDim.x;
-    u32 i_stride = n_threads;
-
-    // Count into block-wide counter
-    for (u32 i = i0_scaler; i < Config::n_windows * Config::n_buckets * Config::grid_size; i += i_stride)
-    {
-      offsets[i] = counts[i];
-    }
-  }
-
-  struct PointId
-  {
-    u32 x;
-
-    __device__ __forceinline__ PointId(u32 window_id, u32 scaler_id)
-    {
-      x = scaler_id;
-    }
-
-    __device__ __forceinline__ u32 scaler_id() const
-    {
-      return x;
-    }
-  };
-
-  // initialize the array 'buckets_len'
-  template <typename Config>
-  __global__ void initialize_buckets_len(Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_len)
-  {
-    if (blockIdx.x < Config::grid_size && threadIdx.x < Config::n_windows)
-    {
-      for (u32 i = 0; i < Config::n_buckets; i++)
-        buckets_len.get(threadIdx.x, i, blockIdx.x) = 0;
-    }
-  }
-
-  // with n_windows = 32, scatter_batch_size = 2, launched 64 threads
-  //
-  //   scaler 0 = digit 0 | d1 | ... | d31
-  //               ^thread 0 ^t1        ^t31
-  //   scaler 1 = digit 0 | d1 | ... | d31
-  //               ^t0       ^t1        ^t31
-  //   scaler 2 = digit 0 | d1 | ... | d31
-  //               ^t32      ^t33       ^t63
-  //   scaler 3 = digit 0 | d1 | ... | d31
-  //               ^t32      ^t33       ^t63
-  //   ...
-  //
-  // blockDim.x better be multiple of n_windows, and total number threads must be mutiple of n_windows
-  template <typename Config>
-  __global__ void scatter(
-      const u32 *scalers,
-      const u32 len,
-      PointId *buckets_buffer,
-      const Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_offset)
-  {
-    u32 i0_scaler = blockDim.x * blockIdx.x + threadIdx.x;
-
-    u32 n_threads = gridDim.x * blockDim.x;
-    u32 i_stride = n_threads;
-
-    __shared__ u32 shm_lens[Config::n_windows][Config::n_buckets];
+    u32 local_lens[Config::n_buckets];
 
     if (threadIdx.x < Config::n_windows)
     {
-      u32 window_id = threadIdx.x;
-      for (u32 i = 0; i < Config::n_buckets; i++)
-      {
-        shm_lens[window_id][i] = 0;
-      }
-    }    
+      for(int i=0;i<Config::n_buckets;++i)
+        local_lens[i] = shm_counts[threadIdx.x][i];
+    }
+    else
+    {
+      for(int i=0;i<Config::n_buckets;++i)
+        local_lens[i] = 0;
+    }
+
     __syncthreads();
+
+    // 创建BlockScan实例
+    using BlockScan = cub::BlockScan<u32, 128>;
+    __shared__ typename BlockScan::TempStorage temp_storage;
+
+    // 使用ExclusiveSum计算每个桶的前缀和
+    BlockScan(temp_storage).ExclusiveSum(local_lens, local_lens);
+
+    __syncthreads();
+    
+    // if(blockIdx.x == 0 && threadIdx.x < 5)
+    // {
+    //   for(int i=0;i<Config::n_buckets;++i)
+    //     printf("window:%d bucket:%d offset:%d\n",threadIdx.x,i,local_lens[i]);
+    // }
+
+    // __syncthreads();
+
+    // 将前缀和结果写回共享内存
+    if (threadIdx.x < Config::n_windows)
+    {
+      for(int i=0;i<Config::n_buckets;++i)
+      {
+        shm_counts[threadIdx.x][i] = local_lens[i];
+      }  
+    }
+
+    __syncthreads();
+
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    //   printf("shm_offsets:\n");
+    // for(int i=0;blockIdx.x == 0 && threadIdx.x == 0 && i<Config::n_windows;++i)
+    // {
+    //   for(int j=0;j<Config::n_buckets;++j)
+    //   {
+    //     printf("Window:%d Bucket:%d offset:%d\n",i,j,shm_counts[i][j]);
+    //   }
+    // }
+
+    // __syncthreads();
 
     // Opt. Opportunity: First scatter to shared memory, then scatter to global, so as to reduce
     // global atomic operations.
@@ -323,17 +281,111 @@ __global__ void downsweep(u32* offsets, int n, int step) {
         auto scaler_window = scaler.bit_slice(j * Config::s, Config::s);
         if (scaler_window != 0)
         {
-          u32 old_count = atomicAdd(&shm_lens[j][scaler_window], 1);
-          if (buckets_offset.get_const(j, scaler_window, blockIdx.x) + old_count >= len * Config::n_windows)
+          u32 old_count = atomicAdd(&shm_counts[j][scaler_window], 1);
+          if (old_count >= 2048)
           {
-            printf("Assertion failed! window_id: %d, scaler_window: %d, old_count: %d, offset: %d\n",
-                   j, scaler_window, old_count, buckets_offset.get_const(j, scaler_window, blockIdx.x));
+            printf("Assertion failed! window_id: %d, scaler_window: %d, old_count: %d\n",
+                   j, scaler_window, old_count);
             assert(false);
           }
-          buckets_buffer[buckets_offset.get_const(j, scaler_window, blockIdx.x) + old_count] = PointId(j, i);
+          shm_cache[old_count] = i;
         }
       }        
     }
+
+    __syncthreads();
+
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    //   printf("after_shm_offsets:\n");
+    // for(int i=0;blockIdx.x == 0 && threadIdx.x == 0 && i<Config::n_windows;++i)
+    // {
+    //   for(int j=0;j<Config::n_buckets;++j)
+    //   {
+    //     printf("Window:%d Bucket:%d offset:%d\n",i,j,shm_counts[i][j]);
+    //   }
+    // }
+
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    // {
+    //   printf("shm cache:");
+    //   for(int i = 0; i < shm_counts[Config::n_windows-1][Config::n_buckets-1]; ++i)
+    //   {
+    //     printf("%d ", shm_cache[i]);
+    //   }
+    // }
+
+    // __syncthreads();
+
+    i_stride = Config::block_size;
+    for(u32 i = threadIdx.x; i < Config::n_windows * Config::n_buckets; i += i_stride)
+    {
+      int window_id = i / Config::n_buckets;
+      int bucket_id = i % Config::n_buckets;
+
+      u32 bucket_len = 0;
+      u32 in_block_offset_0 = 0;
+      if (window_id == 0 && bucket_id == 0)
+      {
+        bucket_len = shm_counts[window_id][bucket_id];
+      }  
+      else if(bucket_id == 0)
+      {
+        bucket_len = shm_counts[window_id][bucket_id] - shm_counts[window_id-1][Config::n_buckets-1];
+        in_block_offset_0 = shm_counts[window_id-1][Config::n_buckets-1];
+      }  
+      else
+      {
+        bucket_len = shm_counts[window_id][bucket_id] - shm_counts[window_id][bucket_id-1];
+        in_block_offset_0 = shm_counts[window_id][bucket_id-1];
+      }  
+    //   // if(blockIdx.x == 0)
+    //   //   printf("Window: %d, Bucket: %d, len: %d\n",window_id,bucket_id,len);
+      u32 old_count = atomicAdd(&buckets_len.get(window_id, bucket_id), bucket_len);
+      assert(old_count < len / 16);
+      if(old_count >= len / 16)
+      {
+        printf("Window: %d Bucket: %x count: %d\n",window_id,bucket_id,old_count);
+        assert(old_count < len / 16);
+      }
+      u32 buckets_buffer_offset_0 = len / 16 * i + old_count;     
+      
+      for(int j=0; j < bucket_len; ++j)
+      { 
+        assert(shm_cache[in_block_offset_0 + j] != 1073741824);       
+        buckets_buffer[buckets_buffer_offset_0 + j] = PointId(window_id, shm_cache[in_block_offset_0 + j]);
+        shm_cache[in_block_offset_0 + j] = 1073741824;
+      }
+    }
+
+    __syncthreads();
+
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    // {
+    //   printf("\nbuckets_len:\n");
+    //   for(int i=0;i<Config::n_windows;++i)
+    //   {
+    //     for(int j=0;j<Config::n_buckets;++j)
+    //     {
+    //       printf("Window:%d, Bucket:%x, len:%d\n",i,j,buckets_len.get_const(i,j));
+    //     }
+    //   }
+    // }
+
+    // if(blockIdx.x == 0 && threadIdx.x == 0)
+    // {
+    //   printf("\nbuckets_buffer:\n");
+    //   for(int i=0;i<Config::n_windows;++i)
+    //   {
+    //     for(int j=0;j<Config::n_buckets;++j)
+    //     {
+    //       printf("Window %d, Bucket %x: ",i,j);
+    //       int offset = len/16*(i*Config::n_buckets+j);
+    //       for(int k=0;k<buckets_len.get_const(i,j);++k)
+    //         printf("%d ",buckets_buffer[offset+k].scaler_id());
+    //       printf("\n");
+    //     }
+    //   }
+    // }
   }
 
   // blockDim.x better be multiple of n_windows, and total number threads must be mutiple of n_windows
@@ -375,9 +427,9 @@ __global__ void downsweep(u32* offsets, int n, int step) {
 
   template <typename Config, u32 WarpPerBlock>
   __global__ void bucket_sum(
+      u32 len,
       const PointId *buckets_buffer,
-      const Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_offset,
-      const Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_len,
+      const Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len,
       const u32 *points,
       Array2D<Point, Config::n_buckets, Config::n_windows> sum)
   {
@@ -403,17 +455,11 @@ __global__ void downsweep(u32* offsets, int n, int step) {
 
       // A warp works independently to sum up points in the bucket
       auto acc = Point::identity();
-      u32 len;
-      if(bucket_no+1 < Config::n_buckets)
-        len = buckets_offset.get_const(window_id, bucket_no+1, 0) - buckets_offset.get_const(window_id, bucket_no, 0);
-      else if(window_id+1 < Config::n_windows)
-        len = buckets_offset.get_const(window_id+1, 0, 0) - buckets_offset.get_const(window_id, bucket_no, 0);
-      else
-        len = buckets_len.get_const(Config::n_windows-1, Config::n_buckets-1, Config::grid_size-1) + buckets_offset.get_const(window_id, bucket_no, Config::grid_size-1) - buckets_offset.get_const(window_id, bucket_no, 0);
-      for (u32 j = in_warp_id; j < len; j += THREADS_PER_WARP)
+      u32 bucket_len = buckets_len.get_const(window_id, bucket_no);
+      for (u32 j = in_warp_id; j < bucket_len; j += THREADS_PER_WARP)
       {
         auto p = PointAffine::load(
-            points + buckets_buffer[buckets_offset.get_const(window_id, bucket_no, 0) + j].scaler_id() * PointAffine::N_WORDS);
+            points + buckets_buffer[len / 16 * (window_id * Config::n_buckets + bucket_no) + j].scaler_id() * PointAffine::N_WORDS);
         acc = acc + p;
       }
 
@@ -560,30 +606,19 @@ __global__ void downsweep(u32* offsets, int n, int step) {
 
   template <typename Config>
   __global__ void print_buckets(
+      u32 len,
       const PointId *buckets_buffer,
-      const Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_offset,
-      const Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size> buckets_len)
+      const Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len)
   {
-    printf("Buckets:\n");
     for (u32 i = 0; i < Config::n_windows; i++)
       for (u32 j = 0; j < Config::n_buckets; j++)
       {
         printf("Window %u, Bucket %x: ", i, j);
-        if(j + 1 < Config::n_buckets)
+        u32 start = len/16*(i*Config::n_buckets+j);
+        for (u32 k = start; k < start+buckets_len.get_const(i,j); k++)
         {
-          for (u32 k = buckets_offset.get_const(i, j, 0); k < buckets_offset.get_const(i, j+1, 0); k++)
-          {
-            PointId id = buckets_buffer[k];
-            printf("%u ", id.scaler_id());
-          }
-        }
-        else if(i + 1 < Config::n_windows)
-        {
-          for (u32 k = buckets_offset.get_const(i, j, 0); k < buckets_offset.get_const(i+1, 0, 0); k++)
-          {
-            PointId id = buckets_buffer[k];
-            printf("%u ", id.scaler_id());
-          }
+          PointId id = buckets_buffer[k];
+          printf("%u ", id.scaler_id());
         }
         printf("\n");
       }
@@ -604,10 +639,15 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     // Count items in buckets
     u32 *scalers;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::LIMBS * len));
-    u32 *counts_buf;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&counts_buf, sizeof(u32) * Config::n_windows * Config::n_buckets * Config::grid_size));
     PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
-    auto counts = Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size>(counts_buf);
+    
+    // Allocate space for buckets buffer
+    // Space for PoindId's
+    PointId *buckets_buffer;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_buffer, sizeof(PointId) * len / 16 * Config::n_windows * Config::n_buckets));
+    u32 *buckets_len_buf;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_len_buf, sizeof(u32) * Config::n_windows * Config::n_buckets));
+    auto buckets_len = Array2D<u32, Config::n_windows, Config::n_buckets>(buckets_len_buf);
 
     cudaEvent_t start, stop;
     float elapsedTime = 0.0;
@@ -615,142 +655,45 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    initialize_counts<Config><<<Config::grid_size, Config::n_windows>>>(counts);
+    initialize_counts<Config><<<Config::grid_size, Config::n_windows>>>(buckets_len);
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
-    count_buckets<Config><<<Config::grid_size, Config::block_size>>>(scalers, len, counts);
-    err = cudaDeviceSynchronize();
+    count_buckets<Config><<<Config::grid_size, Config::block_size>>>(scalers, len, buckets_buffer, buckets_len);
+    err = cudaGetLastError();
     if (err != cudaSuccess)
     {
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
 
-    if (Config::debug)
-    {
-      print_counts<Config><<<1, 1>>>(counts);
-    }
-
-    // print_counts_buf<Config><<<1,1>>>(counts_buf);
+    // print_buckets<Config><<<1, 1>>>(len, buckets_buffer, buckets_len);
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
-    std::cout << "MSM count time:" << elapsedTime << std::endl;   
-    
-    // Initialize bucket offsets
-    u32 *buckets_offset_buf;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_offset_buf, sizeof(u32) * Config::n_windows * Config::n_buckets * Config::grid_size));
-    
-    elapsedTime = 0.0;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-    
-    initialize_offsets<Config><<<Config::n_windows*Config::n_buckets,Config::grid_size>>>(counts_buf, buckets_offset_buf);
-    err = cudaDeviceSynchronize();
-    if (err != cudaSuccess)
-    {
-      std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
-                << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
-    }
-
-    int n = Config::n_windows * Config::n_buckets * Config::grid_size;
-    int numBlocks = 8192, blockSize = 1024;
-
-    for (int step = 1; step < n; step *= 2) {
-        numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
-        upsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
-        cudaDeviceSynchronize();
-    }
-    
-    // 将最后一个元素置为 0，开始 Downsweep 阶段
-    err = cudaMemset(&buckets_offset_buf[n - 1], 0, sizeof(int));
-    if (err != cudaSuccess)
-    {
-      std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
-                << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
-    }
-    
-    // Downsweep 阶段
-    for (int step = n / 2; step > 0; step /= 2) {
-        numBlocks = (n / (step * 2) + blockSize - 1) / blockSize;
-        downsweep<<<numBlocks, blockSize>>>(buckets_offset_buf, n, step);
-        cudaDeviceSynchronize();
-    }
-
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    std::cout << "MSM ExclusiveSum time:" << elapsedTime << std::endl;
-
-    // void *d_temp_storage = nullptr;
-    // size_t temp_storage_bytes = 0;
-    // cub::DeviceScan::ExclusiveSum(
-    //     d_temp_storage, temp_storage_bytes,
-    //     counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
-    // // Allocate temporary storage
-    // PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-    // // Run exclusive prefix sum
-    // cub::DeviceScan::ExclusiveSum(
-    //     d_temp_storage, temp_storage_bytes,
-    //     counts_buf, buckets_offset_buf, Config::n_windows * Config::n_buckets * Config::grid_size);
-    // PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage));
-    auto buckets_offset = Array3D<u32, Config::n_windows, Config::n_buckets, Config::grid_size>(buckets_offset_buf);
-    // print_offsets<Config><<<1, 1>>>(buckets_offset);
-
-    // if (Config::debug)
-    // {
-    //   print_offsets<Config><<<1, 1>>>(buckets_offset);
-    // }
-
-    // Allocate space for buckets buffer
-    // Space for PoindId's
-    PointId *buckets_buffer;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_buffer, sizeof(PointId) * len * Config::n_windows));
-
-    elapsedTime = 0.0;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-    
-    // Scatter
-    // initialize_buckets_len<Config><<<Config::grid_size, Config::n_windows>>>(counts);
-    scatter<Config><<<Config::grid_size, Config::block_size>>>(
-        scalers,
-        len,
-        buckets_buffer,
-        buckets_offset);
-    err = cudaDeviceSynchronize();
-    if (err != cudaSuccess)
-    {
-      std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
-                << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
-    }
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    std::cout << "MSM scatter time:" << elapsedTime << std::endl;
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    // space for counts is reused
+    std::cout << "MSM scatter time:" << elapsedTime << std::endl;   
+        
     PROPAGATE_CUDA_ERROR(cudaFree(scalers));
-    // print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
 
-    if (Config::debug)
-    {
-      // print_lengths<Config><<<1, 1>>>(counts);
-      print_buckets<Config><<<1, 1>>>(buckets_buffer, buckets_offset, counts);
-    }
 
     // Prepare for bucket sum
     Point *buckets_sum_buf;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_sum_buf, sizeof(Point) * Config::n_windows * Config::n_buckets));
     auto buckets_sum = Array2D<Point, Config::n_buckets, Config::n_windows>(buckets_sum_buf);
+
+    // TODO: Cut into chunks to support len at 2^30
+    u32 *points;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
+    PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
+
+    elapsedTime = 0.0;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
 
     initalize_sum<Config><<<Config::grid_size, Config::block_size>>>(
         buckets_sum);
@@ -762,31 +705,33 @@ __global__ void downsweep(u32* offsets, int n, int step) {
     }
     // check_sum<Config><<<1, 1>>>(buckets_sum);
 
-    // TODO: Cut into chunks to support len at 2^30
-    u32 *points;
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
-    PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));
-
     // Do bucket sum
     u32 block_size = 8 * THREADS_PER_WARP;
     u32 grid_size = 256;
     bucket_sum<Config, 8><<<grid_size, block_size>>>(
+        len,
         buckets_buffer,
-        buckets_offset,
-        counts,
+        buckets_len,
         points,
         buckets_sum);
-    err = cudaDeviceSynchronize();
+    err = cudaGetLastError();
     if (err != cudaSuccess)
     {
       std::cerr << "CUDA Error [" << __FILE__ << ":" << __LINE__ << "]: "
                 << cudaGetErrorString(err) << " (Error Code: " << err << ")" << std::endl;
     }
 
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM sum time:" << elapsedTime << std::endl;
+
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+
     PROPAGATE_CUDA_ERROR(cudaFree(points));
-    PROPAGATE_CUDA_ERROR(cudaFree(counts_buf));
     PROPAGATE_CUDA_ERROR(cudaFree(buckets_buffer));
-    PROPAGATE_CUDA_ERROR(cudaFree(buckets_offset_buf));
+    PROPAGATE_CUDA_ERROR(cudaFree(buckets_len_buf));
 
     if (Config::debug)
     {
