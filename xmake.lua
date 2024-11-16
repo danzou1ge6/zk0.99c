@@ -35,19 +35,6 @@ target("bench-mont0")
     add_options("-lineinfo")
     add_files("mont/tests/bench0.cu")
 
-target("test-bn254")
-    if is_mode("debug") then
-        set_symbols("debug")
-    end
-    set_languages(("c++17"))
-    add_files("msm/tests/bn254.cu")
-    add_packages("doctest")
-
-target("test-msm")
-    add_options("-lineinfo")
-    set_languages(("c++17"))
-    add_files("msm/tests/msm.cu")
-
 task("sync-epcc")
     on_run(function ()
         import ("core.base.option")
@@ -70,3 +57,4 @@ includes("runtime")
 includes("ntt")
 includes("wrapper")
 includes("poly")
+includes("msm")

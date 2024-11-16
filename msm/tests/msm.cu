@@ -1,5 +1,5 @@
 #include "../src/bn254.cuh"
-#include "../src/msm.cuh"
+#include "../src/msm_bay.cuh"
 #include "../../mont/src/bn254_scalar.cuh"
 
 #include <iostream>

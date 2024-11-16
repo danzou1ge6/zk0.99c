@@ -96,11 +96,11 @@ namespace runtime {
             auto raw = alloc_buffer();
             Chunk chunk = {raw.first, raw.second, false, mem_type, buffers.size(), this};
             std::list<Chunk> buffer = {chunk};
-            buffers.push_back(alloc_buffer());
+            buffers.push_back(buffer);
         } else {
             usize size = buffers.size();
             for (usize i = 0; i < size; i++) {
-                if (allocated_size >= max_pool_size) {
+                if (allocted_size >= max_pool_size) {
                     break;
                 }
                 auto raw = alloc_buffer();
