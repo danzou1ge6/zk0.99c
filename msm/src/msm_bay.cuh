@@ -4,6 +4,7 @@
 #include <cub/cub.cuh>
 #include <iostream>
 #include <cuda/std/tuple>
+#include <cuda/std/iterator>
 
 #define PROPAGATE_CUDA_ERROR(x)                                                                                    \
   {                                                                                                                \
@@ -333,8 +334,8 @@ namespace msm
         BayMetaData *bay_meta_data, // meta data for each bay
         u32 *points, // all points
         u32 *bay_allocator, // global atomic for allocating bays
-        Array2D<Point, Config::n_buckets, Config::n_windows> sum, // sum of each bucket
-        Array2D<unsigned short int, Config::n_buckets, Config::n_windows> mutex // mutex for each bucket
+        Array2D<Point, Config::n_windows, Config::n_buckets> sum, // sum of each bucket
+        Array2D<unsigned short int, Config::n_windows, Config::n_buckets> mutex // mutex for each bucket
     ) {
         using WarpReduce = cub::WarpReduce<Point>;
 
@@ -383,14 +384,14 @@ namespace msm
             Point bay_sum = WarpReduce(temp_storage[warp_id]).Reduce(thread_sum, [](const Point &a, const Point &b){ return a + b; });
             u32 new_bay_id;
             if (lane_id == 0) {
-                auto mutex_ptr = mutex.addr(meta_data.scalar_id, meta_data.window_id);
+                auto mutex_ptr = mutex.addr(meta_data.window_id, meta_data.scalar_id);
                 u32 time = 1;
                 while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
                     __nanosleep(time);
                     if (time < 64) time *= 2;
                 }
                 __threadfence();
-                sum.get(meta_data.scalar_id, meta_data.window_id) = sum.get(meta_data.scalar_id, meta_data.window_id) + bay_sum;
+                sum.get(meta_data.window_id, meta_data.scalar_id) = sum.get(meta_data.window_id, meta_data.scalar_id) + bay_sum;
                 __threadfence();
                 atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
 
@@ -460,8 +461,8 @@ namespace msm
 #endif
 
     template <typename Config, typename Point>
-    __global__ void initalize_sum(Array2D<Point, Config::n_buckets, Config::n_windows> sum, u32 *bay_allocator) {
-        u32 bucket_id = blockIdx.x + 1;
+    __global__ void initalize_sum(Array2D<Point, Config::n_windows, Config::n_buckets> sum, u32 *bay_allocator) {
+        u32 bucket_id = blockIdx.x;
         u32 window_id = threadIdx.x;
 
         if (threadIdx.x == 0 && blockIdx.x == 0) {
@@ -471,7 +472,26 @@ namespace msm
         if (bucket_id >= Config::n_buckets || window_id >= Config::n_windows)
             return;
 
-        sum.get(bucket_id, window_id) = Point::identity();
+        sum.get(window_id, bucket_id) = Point::identity();
+    }
+
+    template <typename Config, typename Point>
+    __global__ void naive_mul_points(Array2D<Point, Config::n_windows, Config::n_buckets> sum) {
+        u32 window_id = threadIdx.x;
+        u32 bucket_id = blockIdx.x + 1;
+
+        if (bucket_id >= Config::n_buckets || window_id >= Config::n_windows)
+            return;
+
+        auto point = sum.get(window_id, bucket_id);
+
+        point = point.multiple(bucket_id);
+
+        for (u32 i = 0; i < window_id * Config::s; i++) {
+            point = point.self_add();
+        }
+
+        sum.get(window_id, bucket_id) = point;
     }
 
     // check sum is all intialized
@@ -497,7 +517,7 @@ namespace msm
     // Opt. Opportunity: Perhaps this can be done faster by CPU; Or assign multiple threads to a window somehow
     template <typename Config>
     __global__ void bucket_reduction_and_window_reduction(
-        const Array2D<Point, Config::n_buckets, Config::n_windows> buckets_sum,
+        const Array2D<Point, Config::n_windows, Config::n_buckets> buckets_sum,
         Point *reduced)
     {
         u32 window_id = threadIdx.x;
@@ -509,7 +529,7 @@ namespace msm
         // Perhaps save an iteration here by initializing acc to buckets_sum[n_buckets - 1][...]
         for (u32 i = Config::n_buckets - 1; i >= 1; i--)
         {
-        acc = acc + buckets_sum.get_const(i, window_id);
+        acc = acc + buckets_sum.get_const(window_id, i);
         sum = sum + acc;
         }
 
@@ -728,7 +748,7 @@ namespace msm
         // Prepare for bucket sum
         Point *buckets_sum_buf;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_sum_buf, sizeof(Point) * Config::n_windows * Config::n_buckets));
-        auto buckets_sum = Array2D<Point, Config::n_buckets, Config::n_windows>(buckets_sum_buf);
+        auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets>(buckets_sum_buf);
 
         u32 *points;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
@@ -741,10 +761,9 @@ namespace msm
         unsigned short int *mutex_buf;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&mutex_buf, sizeof(unsigned short int) * Config::n_windows * Config::n_buckets));
         PROPAGATE_CUDA_ERROR(cudaMemset(mutex_buf, 0, sizeof(unsigned short int) * Config::n_windows * Config::n_buckets));
-        Array2D<unsigned short int, Config::n_buckets, Config::n_windows> mutex(mutex_buf);
+        Array2D<unsigned short int, Config::n_windows, Config::n_buckets> mutex(mutex_buf);
 
         cudaEventRecord(start);
-        // bucket_sum_test<Config, Point, 256 / THREADS_PER_WARP><<<div_ceil(bay_num , (256/THREADS_PER_WARP)), 256>>>(bay_num, bay_buffer, bay_meta_data, points, bay_allocator, buckets_sum, mutex);
         bucket_sum_new<Config, Point, 256 / THREADS_PER_WARP><<<grid, 256>>>(len, bay_num, bay_buffer, bay_meta_data, points, bay_allocator, buckets_sum, mutex);
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
         cudaEventRecord(end);
@@ -759,25 +778,56 @@ namespace msm
         PROPAGATE_CUDA_ERROR(cudaFree(mutex_buf));
 
 
-        // Bucket reduction and window reduction
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
+        
+        naive_mul_points<Config><<<Config::n_buckets - 1, Config::n_windows>>>(buckets_sum);
+
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
+        PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
+        PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
+        printf("Point multiply: %f ms\n", ms);
+
+        // ruduce all
+        void *d_temp_storage_reduce = nullptr;
+        usize temp_storage_bytes_reduce = 0;
+
         Point *reduced;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&reduced, sizeof(Point)));
 
-        float elapsedTime = 0.0;
-        cudaEventRecord(start, 0);
+        auto add_op = [] __device__ __host__(const Point &a, const Point &b) { return a + b; };
 
-        auto block_size = Config::n_windows;
-        auto grid_size = 1;
-        bucket_reduction_and_window_reduction<Config><<<grid_size, block_size>>>(
-            buckets_sum,
-            reduced);
-        PROPAGATE_CUDA_ERROR(cudaGetLastError());
-        PROPAGATE_CUDA_ERROR(cudaFree(buckets_sum_buf));
+        PROPAGATE_CUDA_ERROR(
+            cub::DeviceReduce::Reduce(
+                d_temp_storage_reduce, 
+                temp_storage_bytes_reduce, 
+                buckets_sum_buf, 
+                reduced, 
+                Config::n_windows * Config::n_buckets, 
+                add_op,
+                Point::identity()
+            )
+        );
 
-        cudaEventRecord(end, 0);
-        cudaEventSynchronize(end);
-        cudaEventElapsedTime(&elapsedTime, start, end);
-        std::cout << "MSM bucket reduce time:" << elapsedTime << std::endl;
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage_reduce, temp_storage_bytes_reduce));
+
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
+        PROPAGATE_CUDA_ERROR(
+            cub::DeviceReduce::Reduce(
+                d_temp_storage_reduce, 
+                temp_storage_bytes_reduce, 
+                buckets_sum_buf, 
+                reduced, 
+                Config::n_windows * Config::n_buckets, 
+                add_op,
+                Point::identity()
+            )
+        );
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
+        PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
+        PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
+        printf("reduce: %f ms\n", ms);
+
+        PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage_reduce));
 
         PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
         PROPAGATE_CUDA_ERROR(cudaFree(reduced));
