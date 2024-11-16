@@ -42,8 +42,8 @@ namespace mont
       return ret;
     }
 
-    template <usize N>
-    __host__ u32 sub(u32 *r, const u32 *a, const u32 *b)
+    template <usize N, typename StA, typename StB, typename StR>
+    __host__ u32 sub(StR r, const StA a, const StB b)
     {
       u32 carry = 0;
 #pragma unroll
@@ -52,8 +52,8 @@ namespace mont
       return carry;
     }
 
-    template <usize N>
-    __host__ u32 add(u32 *r, const u32 *a, const u32 *b)
+    template <usize N, typename StA, typename StB, typename StR>
+    __host__ u32 add(StR r, const StA a, const StB b)
     {
       u32 carry = 0;
 #pragma unroll
@@ -62,23 +62,23 @@ namespace mont
       return carry;
     }
 
-    template <usize N>
-    __host__ void sub_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    template <usize N, typename StA, typename StB, typename StR, typename StM>
+    __host__ void sub_modulo(StR r, const StA a, const StB b, const StM m)
     {
       u32 borrow = sub<N>(r, a, b);
       if (borrow)
         add<N>(r, r, m);
     }
 
-    template <usize N>
-    __host__ void add_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    template <usize N, typename StA, typename StB, typename StR, typename StM>
+    __host__ void add_modulo(StR r, const StA a, const StB b, const StM m)
     {
       add<N>(r, a, b);
       sub_modulo<N>(r, r, m, m);
     }
 
-    template <usize N>
-    __host__ void multiply(u32 *r, const u32 *a, const u32 *b)
+    template <usize N, typename StA, typename StB, typename StR>
+    __host__ void multiply(StR r, const StA a, const StB b)
     {
       u32 carry = 0;
 
@@ -99,8 +99,8 @@ namespace mont
       }
     }
 
-    template <usize N>
-    __host__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
+    template <usize N, typename StA, typename StM>
+    __host__ void montgomery_reduction(StA a, const StM m, const u32 m_prime)
     {
       u32 k, carry;
       u32 carry2 = 0;
@@ -118,18 +118,18 @@ namespace mont
       }
     }
 
-    template <usize N>
-    __host__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
+    template <usize N, typename StA, typename StB, typename StR, typename StM>
+    __host__ void montgomery_multiplication(StR r, const StA a, const StB b, const StM m, const u32 m_prime)
     {
       u32 product[2 * N];
       multiply<N>(product, a, b);
       montgomery_reduction<N>(product, m, m_prime);
-      memcpy(r, product + N, N * sizeof(u32));
+      storage_copy<N>(r, product + N);
       sub_modulo<N>(r, r, m, m);
     }
 
-    template <usize N>
-    __host__ void random(u32 *r, const u32 *m)
+    template <usize N, typename StR, typename StM>
+    __host__ void random(StR r, const StM m)
     {
       if constexpr (N == 0)
         return;
@@ -161,9 +161,9 @@ namespace mont
     // + | a2 * b          |
     //   -------------------------------------
     //   | r                                 |
-    template <usize N>
+    template <usize N, typename StR, typename StA>
     __device__ __forceinline__ void
-    multiply_n_1_even(u32 *r, const u32 *a, const u32 b)
+    multiply_n_1_even(StR r, const StA a, const u32 b)
     {
 #pragma unroll
       for (usize i = 0; i < N; i += 2)
@@ -186,8 +186,8 @@ namespace mont
     // + | c                                 |
     //   -------------------------------------
     //   | acc                               |
-    template <usize N, bool CARRY_IN = false, bool CARRY_OUT = false>
-    __device__ __forceinline__ u32 mad_n_1_even(u32 *acc, const u32 *a, const u32 b, const u32 *c, const u32 carry_in = 0)
+    template <usize N, bool CARRY_IN = false, bool CARRY_OUT = false, typename StAcc, typename StA, typename StB, typename StC>
+    __device__ __forceinline__ u32 mad_n_1_even(StAcc acc, const StA a, const StB b, const StC c, const u32 carry_in = 0)
     {
       if (CARRY_IN)
         ptx::add_cc(UINT32_MAX, carry_in);
@@ -207,10 +207,10 @@ namespace mont
     }
 
     // Like `mad_n_1_even`, but the result of multiplication is accumulated in `acc`.
-    template <usize N, bool CARRY_IN = false, bool CARRY_OUT = false>
+    template <usize N, bool CARRY_IN = false, bool CARRY_OUT = false, typename StAcc, typename StA, typename StB>
     __device__ __forceinline__
         u32
-        mac_n_1_even(u32 *acc, const u32 *a, const u32 b, const u32 carry_in = 0)
+        mac_n_1_even(StAcc acc, const StA a, const StB b, const u32 carry_in = 0)
     {
       return mad_n_1_even<N, CARRY_IN, CARRY_OUT>(acc, a, b, acc, carry_in);
     }
@@ -230,13 +230,13 @@ namespace mont
     //   | cr    | odd                           |
     //
     //   `even` is same as `mad_n_1_even`
-    template <usize N, bool CARRY_OUT = false, bool CARRY_IN = false>
+    template <usize N, bool CARRY_OUT = false, bool CARRY_IN = false, typename StOdd, typename StEven, typename StA>
     __device__ __forceinline__
         u32
         mad_row(
-            u32 *odd,
-            u32 *even,
-            const u32 *a,
+            StOdd odd,
+            StEven even,
+            const StA a,
             const u32 b,
             const u32 c = 0,
             const u32 d = 0,
@@ -259,13 +259,13 @@ namespace mont
     }
 
     // Similar to `mad_row`, but with c, d set to zero
-    template <usize N, bool CARRY_OUT = false, bool CARRY_IN = false>
+    template <usize N, bool CARRY_OUT = false, bool CARRY_IN = false, typename StOdd, typename StEven, typename StA>
     __device__ __forceinline__
         u32
         mac_row(
-            u32 *odd,
-            u32 *even,
-            const u32 *a,
+            StOdd &odd,
+            StEven &even,
+            const StA a,
             const u32 b,
             const u32 carry_for_high = 0,
             const u32 carry_for_low = 0)
@@ -286,21 +286,22 @@ namespace mont
     // Let `r` be `a` multiplied by `b`.
     // `a` and `b` both have `N` limbs and `r` has `2 * N` limbs.
     // Implements elementry school multiplication algorithm.
-    template <usize N>
-    __device__ __forceinline__ void multiply_naive(u32 *r, const u32 *a, const u32 *b)
+    template <usize N, typename StR, typename StA, typename StB>
+    __device__ __forceinline__ void multiply_naive(StR r, const StA a, const StB b)
     {
-      u32 *even = r;
+      StR even = r;
 
-      __align__(16) u32 odd[2 * N - 2];
+      ContinuousStorage<2 * N - 2> odd_arr;
+      auto odd = odd_arr.to_ref();
       multiply_n_1_even<N>(even, a, b[0]);
       multiply_n_1_even<N>(odd, a + 1, b[0]);
-      mad_row<N>(&even[2], &odd[0], a, b[1]);
+      mad_row<N>(even + 2, odd, a, b[1]);
 
 #pragma unroll
       for (usize i = 2; i < N - 1; i += 2)
       {
-        mad_row<N>(&odd[i], &even[i], a, b[i]);
-        mad_row<N>(&even[i + 2], &odd[i], a, b[i + 1]);
+        mad_row<N>(odd + i, even + i, a, b[i]);
+        mad_row<N>(even + (i + 2), odd + i, a, b[i + 1]);
       }
 
       even[1] = ptx::add_cc(even[1], odd[0]);
@@ -313,10 +314,10 @@ namespace mont
 
     // Let `r` be sum of `a` and `b`.
     // `a`, `b`, `r` all have `N` limbs.
-    template <usize N>
+    template <usize N, typename StR, typename StA, typename StB>
     __device__ __forceinline__
         u32
-        add(u32 *r, const u32 *a, const u32 *b)
+        add(StR r, const StA a, const StB b)
     {
       r[0] = ptx::add_cc(a[0], b[0]);
 #pragma unroll
@@ -327,10 +328,10 @@ namespace mont
 
     // Let `r` be difference of `a` and `b`.
     // `a`, `b`, `r` all have `N` limbs.
-    template <usize N>
+    template <usize N, typename StR, typename StA, typename StB>
     __device__ __forceinline__
         u32
-        sub(u32 *r, const u32 *a, const u32 *b)
+        sub(StR r, const StA a, const StB b)
     {
       r[0] = ptx::sub_cc(a[0], b[0]);
 #pragma unroll
@@ -341,24 +342,25 @@ namespace mont
 
     // Multiplies `a` and `b`, adding result to `in1` and `in2`.
     // `a` and `b` have `N / 2` limbs, while `in1` and `in2` have `N` limbs.
-    template <usize N>
-    __device__ __forceinline__ void mad2_rows(u32 *r, const u32 *a, const u32 *b, const u32 *in1, const u32 *in2)
+    template <usize N, typename StR, typename StA, typename StB, typename StIn1, typename StIn2>
+    __device__ __forceinline__ void mad2_rows(StR r, const StA a, const StB b, const StIn1 in1, const StIn2 in2)
     {
-      __align__(16) u32 odd[N - 2];
-      u32 *even = r;
+      ContinuousStorage<N - 2> odd_arr;
+      auto odd = odd_arr.to_ref();
+      StR even = r;
       u32 first_row_carry = mad_n_1_even<(N >> 1), false, true>(even, a, b[0], in1);
-      u32 carry = mad_n_1_even<(N >> 1), false, true>(odd, &a[1], b[0], &in2[1]);
+      u32 carry = mad_n_1_even<(N >> 1), false, true>(odd, a + 1, b[0], in2 + 1);
 
 #pragma unroll
       for (usize i = 2; i < ((N >> 1) - 1); i += 2)
       {
         carry = mad_row<(N >> 1), true, false>(
-            &even[i], &odd[i - 2], a, b[i - 1], in1[(N >> 1) + i - 2], in1[(N >> 1) + i - 1], carry);
+            even + i, odd + (i - 2), a, b[i - 1], in1[(N >> 1) + i - 2], in1[(N >> 1) + i - 1], carry);
         carry = mad_row<(N >> 1), true, false>(
-            &odd[i], &even[i], a, b[i], in2[(N >> 1) + i - 1], in2[(N >> 1) + i], carry);
+            odd + i, even + i, a, b[i], in2[(N >> 1) + i - 1], in2[(N >> 1) + i], carry);
       }
       mad_row<(N >> 1), false, true>(
-          &even[N >> 1], &odd[(N >> 1) - 2], a, b[(N >> 1) - 1], in1[N - 2], in1[N - 1], carry, first_row_carry);
+          even + (N >> 1), odd + ((N >> 1) - 2), a, b[(N >> 1) - 1], in1[N - 2], in1[N - 1], carry, first_row_carry);
 
       even[0] = ptx::add_cc(even[0], in2[0]);
       usize i;
@@ -370,23 +372,25 @@ namespace mont
 
     // Compute `r = a * b` where `r` has `N * 2` limbs while `a` and `b` have `N` limbs.
     // Implements 1-layer Kruskaba Algorithm.
-    template <usize N>
-    __device__ __forceinline__ void multiply(u32 *r, const u32 *a, const u32 *b)
+    template <usize N, typename StR, typename StA, typename StB>
+    __device__ __forceinline__ void multiply(StR r, const StA a, const StB b)
     {
       if (N > 2)
       {
         multiply_naive<(N >> 1)>(r, a, b);
-        multiply_naive<(N >> 1)>(&r[N], &a[N >> 1], &b[N >> 1]);
-        __align__(16) u32 middle_part[N];
-        __align__(16) u32 diffs[N];
-        u32 carry1 = sub<(N >> 1)>(diffs, &a[N >> 1], a);
-        u32 carry2 = sub<(N >> 1)>(&diffs[N >> 1], b, &b[N >> 1]);
-        mad2_rows<N>(middle_part, diffs, &diffs[N >> 1], r, &r[N]);
+        multiply_naive<(N >> 1)>(r + N, a + (N >> 1), b + (N >> 1));
+        ContinuousStorage<N> middle_part_arr;
+        ContinuousStorage<N> diffs_arr;
+        auto middle_part = middle_part_arr.to_ref();
+        auto diffs = diffs_arr.to_ref();
+        u32 carry1 = sub<(N >> 1)>(diffs, a + (N >> 1), a);
+        u32 carry2 = sub<(N >> 1)>(diffs + (N >> 1), b, b + (N >> 1));
+        mad2_rows<N>(middle_part, diffs, diffs + (N >> 1), r, r + N);
         if (carry1)
-          sub<(N >> 1)>(&middle_part[N >> 1], &middle_part[N >> 1], &diffs[N >> 1]);
+          sub<(N >> 1)>(middle_part + (N >> 1), middle_part + (N >> 1), diffs + (N >> 1));
         if (carry2)
-          sub<(N >> 1)>(&middle_part[N >> 1], &middle_part[N >> 1], diffs);
-        add<N>(&r[N >> 1], &r[N >> 1], middle_part);
+          sub<(N >> 1)>(middle_part + (N >> 1), middle_part + (N >> 1), diffs);
+        add<N>(r + (N >> 1), r + (N >> 1), middle_part);
 
 #pragma unroll
         for (usize i = N + (N >> 1); i < 2 * N; i++)
@@ -394,7 +398,8 @@ namespace mont
       }
       else if (N == 2)
       {
-        __align__(8) uint32_t odd[2];
+        __align__(8) ContinuousStorage<2> odd_arr;
+        auto odd = odd_arr.to_ref();
         r[0] = ptx::mul_lo(a[0], b[0]);
         r[1] = ptx::mul_hi(a[0], b[0]);
         r[2] = ptx::mul_lo(a[1], b[1]);
@@ -415,8 +420,8 @@ namespace mont
     }
 
     // Computes `r = x >> k` where `r` and `x` have `N` limbs.
-    template <usize N>
-    __host__ __device__ __forceinline__ void slr(u32 *r, const u32 *x, const u32 k)
+    template <usize N, typename StR, typename StX>
+    __host__ __device__ __forceinline__ void slr(StR r, const StX x, const u32 k)
     {
       if (k == 0)
       {
@@ -447,32 +452,34 @@ namespace mont
 
     // Apply Montgomery Reduction to `a`, with modulus `m` and `m_prime` satisfying
     //    m m_prime = -1 (mod 2^32)
-    template <usize N>
-    __device__ __forceinline__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
+    template <usize N, typename StA, typename StM>
+    __device__ __forceinline__ void montgomery_reduction(StA a, const StM m, const u32 m_prime)
     {
-      __align__(16) u32 carries[2 * N] = {0};
+      ContinuousStorage<2 * N> carries_arr;
+      carries_arr.template set_zero<2 * N>();
+      auto carries = carries_arr.to_ref();
 #pragma unroll
       for (usize i = 0; i < N - 1; i += 1)
       {
         u32 u = a[i] * m_prime;
-        mac_n_1_even<N, false, false>(&a[i], m, u);
+        mac_n_1_even<N, false, false>(a + i, m, u);
         carries[i + N] = ptx::addc(carries[i + N], 0);
-        mac_n_1_even<N, false, false>(&a[i + 1], &m[1], u);
+        mac_n_1_even<N, false, false>(a + (i + 1), m + 1, u);
         carries[i + N + 1] = ptx::addc(carries[i + N + 1], 0);
       }
 
       u32 u = a[N - 1] * m_prime;
-      mac_n_1_even<N, false, false>(&a[N - 1], m, u);
+      mac_n_1_even<N, false, false>(a + (N - 1), m, u);
       carries[2 * N - 1] = ptx::addc(carries[2 * N - 1], 0);
-      mac_n_1_even<N, false, false>(&a[N], &m[1], u);
+      mac_n_1_even<N, false, false>(a + N, m + 1, u);
 
       add<2 * N>(a, a, carries);
     }
 
     // Computes `r = a - b mod m`.
     // `r`, `a`, `b`, `m` all have limbs `N`
-    template <usize N>
-    __device__ __forceinline__ void sub_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    template <usize N, typename StR, typename StA, typename StB, typename StM>
+    __device__ __forceinline__ void sub_modulo(StR r, const StA a, const StB b, const StM m)
     {
       u32 borrow = sub<N>(r, a, b);
       if (borrow)
@@ -481,8 +488,8 @@ namespace mont
 
     // Computes `r = a + b mod m`.
     // `r`, `a`, `b`, `m` all have limbs `N`
-    template <usize N>
-    __device__ __forceinline__ void add_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    template <usize N, typename StR, typename StA, typename StB, typename StM>
+    __device__ __forceinline__ void add_modulo(StR r, const StA a, const StB b, const StM m)
     {
       add<N>(r, a, b);
       sub_modulo<N>(r, r, m, m);
@@ -490,10 +497,11 @@ namespace mont
 
     // Computes `r = a * b mod m`.
     // `r`, `a`, `b`, `m` all have limbs `N`
-    template <usize N>
-    __device__ __forceinline__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
+    template <usize N, typename StR, typename StA, typename StB, typename StM>
+    __device__ __forceinline__ void montgomery_multiplication(StR r, const StA a, const StB b, const StM m, const u32 m_prime)
     {
-      __align__(16) u32 prod[2 * N];
+      ContinuousStorage<2 * N> prod_arr;
+      auto prod = prod_arr.to_ref();
       multiply<N>(prod, a, b);
       montgomery_reduction<N>(prod, m, m_prime);
 #pragma unroll
@@ -504,87 +512,33 @@ namespace mont
   }
 
   // A big integer
-  template <usize LIMBS_>
+  template <usize LIMBS_, typename St_ = ContinuousStorage<LIMBS_>>
   struct
-      __align__(16)
-          Number
+      Number
   {
     static const usize LIMBS = LIMBS_;
-    u32 limbs[LIMBS];
+    using St = St_;
+    St limbs;
 
     __device__ __host__
     Number() {}
 
     // Constructor: `Number x = {0, 1, 2, 3, 4, 5, 6, 7}` in little endian
-    constexpr Number(const std::initializer_list<uint32_t> &values) : limbs{}
-    {
-      size_t i = 0;
-      for (auto value : values)
-      {
-        if (i >= LIMBS)
-          break;
-        limbs[i++] = value;
-      }
-    }
+    constexpr Number(const std::initializer_list<uint32_t> &values) : limbs(values) {}
+    __device__ __host__ __forceinline__ Number(St limbs) : limbs(limbs) {}
 
     static __device__ __host__ __forceinline__
-        Number
+        Number<LIMBS, ContinuousStorage<LIMBS>>
         load(const u32 *p, u32 stride = 1)
     {
-      Number r;
-#ifdef __CUDA_ARCH__
-      if (stride == 1 && LIMBS % 4 == 0)
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS / 4; i++)
-        {
-          reinterpret_cast<uint4 *>(r.limbs)[i] = reinterpret_cast<const uint4 *>(p)[i];
-        }
-      }
-      else if (stride == 1 && LIMBS % 2 == 0)
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS / 2; i++)
-        {
-          reinterpret_cast<uint2 *>(r.limbs)[i] = reinterpret_cast<const uint2 *>(p)[i];
-        }
-      }
-      else
-#endif
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS; i++)
-          r.limbs[i] = p[i * stride];
-      }
+      Number<LIMBS, ContinuousStorage<LIMBS>> r;
+      r.limbs = ContinuousStorage<LIMBS>::load(p, stride);
       return r;
     }
 
-    __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
+    __device__ __host__ __forceinline__ void store(u32 *p, u32 stride = 1) const &
     {
-#ifdef __CUDA_ARCH__
-      if (stride == 1 && LIMBS % 4 == 0)
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS / 4; i++)
-        {
-          reinterpret_cast<uint4 *>(p)[i] = reinterpret_cast<const uint4 *>(limbs)[i];
-        }
-      }
-      else if (stride == 1 && LIMBS % 2 == 0)
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS / 2; i++)
-        {
-          reinterpret_cast<uint2 *>(p)[i] = reinterpret_cast<const uint2 *>(limbs)[i];
-        }
-      }
-      else
-#endif
-      {
-#pragma unroll
-        for (usize i = 0; i < LIMBS; i++)
-          p[i * stride] = limbs[i];
-      }
+      limbs.store<LIMBS>(p, stride);
     }
 
     static __device__ __host__ __forceinline__
@@ -592,7 +546,7 @@ namespace mont
         zero()
     {
       Number r;
-      memset(r.limbs, 0, LIMBS * sizeof(u32));
+      r.limbs.template set_zero<LIMBS>();
       return r;
     }
 
@@ -602,7 +556,7 @@ namespace mont
         slr(u32 k) const &
     {
       Number r;
-      device_arith::slr<LIMBS>(r.limbs, limbs, k);
+      device_arith::slr<LIMBS>(r.limbs.to_ref(), limbs, k);
       return r;
     }
 
@@ -667,9 +621,9 @@ namespace mont
     {
       Number<LIMBS * 2> r;
 #ifdef __CUDA_ARCH__
-      device_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
+      device_arith::multiply<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #else
-      host_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
+      host_arith::multiply<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #endif
       return r;
     }
@@ -681,9 +635,9 @@ namespace mont
     {
       Number r;
 #ifdef __CUDA_ARCH__
-      device_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
+      device_arith::add<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #else
-      host_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
+      host_arith::add<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #endif
       return r;
     }
@@ -706,9 +660,9 @@ namespace mont
     {
       Number r;
 #ifdef __CUDA_ARCH__
-      borrow_ret = device_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
+      borrow_ret = device_arith::sub<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #else
-      borrow_ret = host_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
+      borrow_ret = host_arith::sub<LIMBS>(r.limbs.to_ref(), limbs, rhs.limbs);
 #endif
       return r;
     }
@@ -792,9 +746,9 @@ namespace mont
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
@@ -813,9 +767,9 @@ namespace mont
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+      device_arith::add_modulo<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
-      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+      host_arith::add_modulo<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
       return r;
     }
@@ -827,9 +781,9 @@ namespace mont
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+      device_arith::sub_modulo<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+      host_arith::sub_modulo<LIMBS>(r.n.limbs.to_ref(), n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
       return r;
     }
@@ -842,9 +796,9 @@ namespace mont
         return Element::zero();
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
+      device_arith::sub<LIMBS>(r.n.limbs.to_ref(), Params::m().limbs, n.limbs);
 #else
-      host_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
+      host_arith::sub<LIMBS>(r.n.limbs.to_ref(), Params::m().limbs, n.limbs);
 #endif
       return r;
     }
@@ -856,9 +810,9 @@ namespace mont
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
+      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs.to_ref(), n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
+      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs.to_ref(), n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
@@ -869,17 +823,17 @@ namespace mont
         to_number() const &
     {
       Number<2 * LIMBS> n;
-      memcpy(n.limbs, this->n.limbs, LIMBS * sizeof(u32));
-      memset(n.limbs + LIMBS, 0, LIMBS * sizeof(u32));
+      storage_copy<LIMBS>(n.limbs.to_ref(), this->n.limbs);
+      (n.limbs.to_ref() + LIMBS).template set_zero<LIMBS>();
 
       Number<LIMBS> r;
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_reduction<LIMBS>(n.limbs, Params::m().limbs, Params::m_prime);
+      device_arith::montgomery_reduction<LIMBS>(n.limbs.to_ref(), Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_reduction<LIMBS>(n.limbs, Params::m().limbs, Params::m_prime);
+      host_arith::montgomery_reduction<LIMBS>(n.limbs.to_ref(), Params::m().limbs, Params::m_prime);
 #endif
 
-      memcpy(r.limbs, n.limbs + LIMBS, LIMBS * sizeof(u32));
+      storage_copy<LIMBS>(r.limbs.to_ref(), n.limbs + LIMBS);
       return r;
     }
 
@@ -933,7 +887,7 @@ namespace mont
         host_random()
     {
       Element r;
-      host_arith::random<LIMBS>(r.n.limbs, Params::m().limbs);
+      host_arith::random<LIMBS>(r.n.limbs.to_ref(), Params::m().limbs);
       return r;
     }
   };
@@ -1025,12 +979,12 @@ namespace mont
   template <u32 WORDS, u32 io_group = pow2_ceiling(WORDS), typename GetId>
   __forceinline__ __device__ void store_exchange_raw(
       u32 *dst,
+      u32 dst_len,
       u32 from[WORDS],
       GetId gpos,
       typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
   {
     using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
-    const static usize WORDS = Field::LIMBS;
     const u32 io_id = threadIdx.x & (io_group - 1);
     const u32 lid_start = threadIdx.x - io_id;
     const int warp_id = static_cast<int>(threadIdx.x + threadIdx.y * blockDim.x + threadIdx.z * blockDim.x * blockDim.y) / io_group;
@@ -1039,20 +993,20 @@ namespace mont
 #pragma unroll
     for (u64 i = lid_start; i != lid_start + io_group; i++)
     {
-      auto gpos = gpos(i);
-      if (io_id < WORDS && gpos < dst_len)
+      auto gpos_ = gpos(i);
+      if (io_id < WORDS && gpos_ < dst_len)
       {
-        dst[gpos * WORDS + io_id] = from[i - lid_start];
+        dst[gpos_ * WORDS + io_id] = from[i - lid_start];
       }
     }
   }
 
   template <typename Field, u32 io_group = pow2_ceiling(Field::LIMBS), typename GetId>
-  __forceinline__ __device__ void store_exchange(Field &ans, u32 *dst, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
+  __forceinline__ __device__ void store_exchange(Field &ans, u32 *dst, u32 dst_len, GetId gpos, typename cub::WarpExchange<u32, io_group, io_group>::TempStorage temp_storage[])
   {
     u32 thread_data[io_group];
     ans.store(thread_data);
-    store_exchange_raw(dst, thread_data, gpos, temp_storage);
+    store_exchange_raw(dst, dst_len, thread_data, gpos, temp_storage);
   }
 
 }
