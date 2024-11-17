@@ -86,8 +86,6 @@ namespace msm
 
         static constexpr u32 bay_size = 1 << 8;
 
-        static constexpr u32 sum_partition_factor = 32;
-
         static constexpr bool debug = true;
     };
 
@@ -222,12 +220,13 @@ namespace msm
         u32 *bay_allocator, // global atomic for allocating bays
         Bay<Config> *bay_buffer, // global buffer for bays
         BayMetaData *bay_meta_data, // global buffer for bay meta data
-        u32 *bay_pointers // local pointer for bays;
+        u32 *bay_pointers, // local pointer for bays;
+        Array2D<u32, Config::n_windows, Config::n_buckets - 1> bay_counts // count for bays in each bucket
     ) {
         const static usize WORDS = Field::LIMBS;
         using Number = mont::Number<WORDS>;
         
-        Array2D<u32, Config::n_buckets - 1, Config::n_windows> bay_pointer(bay_pointers + (u64)blockIdx.x * Config::n_buckets * Config::n_windows);
+        Array2D<u32, Config::n_buckets - 1, Config::n_windows> bay_pointer(bay_pointers + (u64)blockIdx.x * (Config::n_buckets - 1) * Config::n_windows);
 
         __shared__ u32 bay_counters[Config::n_buckets - 1][Config::n_windows % 32 == 0 ? Config::n_windows + 1 : Config::n_windows];
         __shared__ u32 start_bay_id; // used to initialize the bays
@@ -285,6 +284,7 @@ namespace msm
                     while (__any_sync(__activemask(), index >= Config::bay_size)){
                         if (index == Config::bay_size) {
                             (bay_meta_data + bay_id)->num = Config::bay_size;
+                            atomicAdd(bay_counts.addr(window_id, scaler_id), 1);
                             // new bay
                             auto new_bay_id = atomicAdd(bay_allocator, 1);
                             auto meta_addr = bay_meta_data + new_bay_id;
@@ -313,6 +313,7 @@ namespace msm
                 for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
                     auto meta_addr = bay_meta_data + bay_pointer.get(bucket_id - 1, window_id);
                     meta_addr->num = bay_counters[bucket_id - 1][window_id];
+                    atomicAdd(bay_counts.addr(window_id, bucket_id - 1), 1);
                 }
             }
         } else {
@@ -321,47 +322,69 @@ namespace msm
                 for (u32 bucket_id = 1; bucket_id < Config::n_buckets; bucket_id++) {
                     auto meta_addr = bay_meta_data + bay_pointer.get(bucket_id - 1, window_id);
                     meta_addr->num = bay_counters[bucket_id - 1][window_id];
+                    atomicAdd(bay_counts.addr(window_id, bucket_id - 1), 1);
                 }
             }
         }
     }
 
-    template <typename Config, typename Point, u32 WarpPerBlock>
+   template <typename Config, typename Point, u32 WarpPerBlock>
     __global__ void bucket_sum_new(
-        const u32 len, // how many scalers are there
-        const u32 num_bays, // how many bays are there
+        u32 max_task_step,
+        u32 min_task_step,
         Bay<Config> *bay_buffer, // all bays
         BayMetaData *bay_meta_data, // meta data for each bay
         u32 *points, // all points
-        u32 *bay_allocator, // global atomic for allocating bays
-        Array2D<Point, Config::n_windows, Config::n_buckets> sum, // sum of each bucket
-        Array2D<unsigned short int, Config::n_windows, Config::n_buckets> mutex // mutex for each bucket
+        u32 *bucket_allocator, // global atomic for allocating buckets
+        u32 *finished_buckets, // number of finished buckets
+        Array2D<u32, Config::n_windows, Config::n_buckets - 1> bay_allocators, // global atomic for allocating bays for each bucket
+        u32 *bucket_offset, // offset for each bucket
+        Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum, // sum of each bucket
+        Array2D<unsigned short int, Config::n_windows, Config::n_buckets - 1> mutex // mutex for each bucket
     ) {
         using WarpReduce = cub::WarpReduce<Point>;
 
-        __shared__ u32 start_bay_id;
         __shared__ typename WarpReduce::TempStorage temp_storage[WarpPerBlock];
 
         const u32 lane_id = threadIdx.x % THREADS_PER_WARP;
         const u32 warp_id = threadIdx.x / THREADS_PER_WARP;
-        // u32 bays_per_round = 4096 / (div_ceil(len * Config::n_windows, num_bays));
-        u32 bays_per_round = max(num_bays / gridDim.x / Config::sum_partition_factor, 1);
 
-        // get inital bay buffer
-        if (threadIdx.x == 0) {
-            start_bay_id = atomicAdd(bay_allocator, WarpPerBlock * bays_per_round);
+        u32 index, window, bucket, cur_bay_cnt, task_step = max_task_step, meta_id, meta_end, offset;
+
+        u32 can_return = 0;
+        if (lane_id == 0) {
+            do {
+                if (*finished_buckets == Config::n_windows * (Config::n_buckets - 1)) {
+                    can_return = 1;
+                    break;
+                }
+                index = atomicInc(bucket_allocator, Config::n_windows * (Config::n_buckets - 1) - 1);
+                window = index / (Config::n_buckets - 1);
+                bucket = index % (Config::n_buckets - 1);
+                cur_bay_cnt = bucket_offset[index + 1] - bucket_offset[index];
+                task_step = max(task_step / 2, min_task_step);
+                meta_id = atomicAdd(bay_allocators.addr(window, bucket), task_step);
+            } while(meta_id >= cur_bay_cnt);
+            if (meta_id < cur_bay_cnt && meta_id + task_step >= cur_bay_cnt) atomicAdd(finished_buckets, 1); // finish this bucket
         }
-        __syncthreads();
 
-        u32 bay_id = start_bay_id + warp_id * bays_per_round;
-        u32 bay_end = min(start_bay_id + (warp_id + 1) * bays_per_round, num_bays);
-        bays_per_round = max((num_bays - bay_end)/ gridDim.x / Config::sum_partition_factor, 1);
+        // broadcast to all threads in the warp
+        can_return = __shfl_sync(0xffffffff, can_return, 0);
+        if (can_return == 1) return;
+        index = __shfl_sync(0xffffffff, index, 0);
+        window = index / (Config::n_buckets - 1);
+        bucket = index % (Config::n_buckets - 1);
+        cur_bay_cnt = __shfl_sync(0xffffffff, cur_bay_cnt, 0);
+        task_step = __shfl_sync(0xffffffff, task_step, 0);
+        meta_id = __shfl_sync(0xffffffff, meta_id, 0);
+        meta_end = min(meta_id + task_step, cur_bay_cnt);
+        offset = bucket_offset[index];
 
-        if (bay_id >= num_bays) return;
-        BayMetaData meta_data = *(bay_meta_data + bay_id);
+        BayMetaData meta_data;
         Point thread_sum = Point::identity();
 
         while(true) {
+            meta_data = *(bay_meta_data + offset + meta_id);            
             u32 *bay_ptr = (bay_buffer + meta_data.bay_id)->points;
 
             for (u32 i = lane_id; i < meta_data.num; i += THREADS_PER_WARP) {
@@ -370,45 +393,65 @@ namespace msm
                 thread_sum = thread_sum + p;
             }
 
-            bay_id++;
+            meta_id++;
             
-            __syncwarp();
-            if (bay_id < bay_end) {
-                BayMetaData next_meta_data = *(bay_meta_data + bay_id);
-                if (next_meta_data.window_id == meta_data.window_id && next_meta_data.scalar_id == meta_data.scalar_id) {
-                    meta_data = next_meta_data;
-                    continue;
+            if (meta_id >= meta_end) {
+                // the owned bays are all processed
+                if (lane_id == 0) {
+                    task_step = max(task_step / 2, min_task_step);
+                    meta_id = atomicAdd(bay_allocators.addr(window, bucket), task_step);
+                    if (meta_id < cur_bay_cnt && meta_id + task_step >= cur_bay_cnt) atomicAdd(finished_buckets, 1); // finish this bucket
+                }
+                meta_id = __shfl_sync(0xffffffff, meta_id, 0);
+                if (meta_id < cur_bay_cnt) {
+                    task_step = __shfl_sync(0xffffffff, task_step, 0);
+                    meta_end = meta_end = min(meta_id + task_step, cur_bay_cnt);
+                } else {
+                    // switch to next bucket
+                    // Sum up accumulated point from each thread in warp, returing the result to thread 0 in warp
+                    Point bay_sum = WarpReduce(temp_storage[warp_id]).Reduce(thread_sum, [](const Point &a, const Point &b){ return a + b; });
+
+                    if (lane_id == 0) {
+                        auto mutex_ptr = mutex.addr(meta_data.window_id, meta_data.scalar_id);
+                        u32 time = 1;
+                        while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
+                            __nanosleep(time);
+                            if (time < 64) time *= 2;
+                        }
+                        __threadfence();
+                        sum.get(window, bucket) = sum.get(window, bucket) + bay_sum;
+                        __threadfence();
+                        atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
+
+                        do {
+                            if (*finished_buckets == Config::n_windows * (Config::n_buckets - 1)) {
+                                can_return = 1;
+                                break;
+                            }
+                            index = atomicInc(bucket_allocator, Config::n_windows * (Config::n_buckets - 1) - 1);
+                            window = index / (Config::n_buckets - 1);
+                            bucket = index % (Config::n_buckets - 1);
+                            cur_bay_cnt = bucket_offset[index + 1] - bucket_offset[index];
+                            task_step = max(task_step / 2, min_task_step);
+                            meta_id = atomicAdd(bay_allocators.addr(window, bucket), task_step);
+                        } while(meta_id >= cur_bay_cnt);
+                        if (meta_id < cur_bay_cnt && meta_id + task_step >= cur_bay_cnt) atomicAdd(finished_buckets, 1); // finish this bucket
+                    }
+                    // broadcast to all threads in the warp
+                    can_return = __shfl_sync(0xffffffff, can_return, 0);
+                    if (can_return == 1) return;
+                    index = __shfl_sync(0xffffffff, index, 0);
+                    window = index / (Config::n_buckets - 1);
+                    bucket = index % (Config::n_buckets - 1);
+                    cur_bay_cnt = __shfl_sync(0xffffffff, cur_bay_cnt, 0);
+                    task_step = __shfl_sync(0xffffffff, task_step, 0);
+                    meta_id = __shfl_sync(0xffffffff, meta_id, 0);
+                    meta_end = min(meta_id + task_step, cur_bay_cnt);
+                    offset = bucket_offset[index];
+
+                    thread_sum = Point::identity();
                 }
             }
-            // Sum up accumulated point from each thread in warp, returing the result to thread 0 in warp
-            Point bay_sum = WarpReduce(temp_storage[warp_id]).Reduce(thread_sum, [](const Point &a, const Point &b){ return a + b; });
-            u32 new_bay_id;
-            if (lane_id == 0) {
-                auto mutex_ptr = mutex.addr(meta_data.window_id, meta_data.scalar_id);
-                u32 time = 1;
-                while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
-                    __nanosleep(time);
-                    if (time < 64) time *= 2;
-                }
-                __threadfence();
-                sum.get(meta_data.window_id, meta_data.scalar_id) = sum.get(meta_data.window_id, meta_data.scalar_id) + bay_sum;
-                __threadfence();
-                atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
-
-                if (bay_id >= bay_end) {
-                    new_bay_id = atomicAdd(bay_allocator, bays_per_round);
-                }
-            }
-
-            if (bay_id >= bay_end) {
-                bay_id = __shfl_sync(0xffffffff, new_bay_id, 0);
-                bay_end = min(bay_id + bays_per_round, num_bays);
-                bays_per_round = max((num_bays - bay_end)/ gridDim.x / Config::sum_partition_factor, 1);
-            }
-
-            if (bay_id >= num_bays) break;
-            meta_data = *(bay_meta_data + bay_id);
-            thread_sum = Point::identity();    
         }
     }
 
@@ -430,7 +473,7 @@ namespace msm
             auto bay_id = bay_meta_ptr->bay_id;
             assert(bay_id == i);
             auto num = bay_meta_ptr->num;
-            printf("bay_id: %d, window_id: %d, scalar_id: %d, num: %d\n", bay_id, window_id, scalar_id, num);
+            // printf("bay_id: %d, window_id: %d, scalar_id: %d, num: %d\n", bay_id, window_id, scalar_id, num);
             if (num > 0) {
                 counts.get(window_id, scalar_id) += num;
             }
@@ -440,7 +483,7 @@ namespace msm
                 if (scaler == 0xffffffff) {
                     printf("Assertion failed! num %d window %d scalar %d i: %d, j: %d, value: %d\n",
                         num, window_id, scalar_id,i, j, scaler);
-                    // assert(false);
+                    assert(false);
                 }
             }
             for (u32 j = num; j < Config::bay_size; j++) {
@@ -453,7 +496,7 @@ namespace msm
                 if (counts.get(i, j) != counts_truth.get(i, j)) {
                     printf("Assertion failed! i: %d, j: %d, value: %d, truth: %d\n",
                         i, j, counts.get(i, j), counts_truth.get(i, j));
-                    // assert(false);
+                    assert(false);
                 }
             }
         }
@@ -461,7 +504,7 @@ namespace msm
 #endif
 
     template <typename Config, typename Point>
-    __global__ void initalize_sum(Array2D<Point, Config::n_windows, Config::n_buckets> sum, u32 *bay_allocator) {
+    __global__ void initalize_sum(Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum, u32 *bay_allocator) {
         u32 bucket_id = blockIdx.x;
         u32 window_id = threadIdx.x;
 
@@ -476,16 +519,16 @@ namespace msm
     }
 
     template <typename Config, typename Point>
-    __global__ void naive_mul_points(Array2D<Point, Config::n_windows, Config::n_buckets> sum) {
+    __global__ void naive_mul_points(Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum) {
         u32 window_id = threadIdx.x;
-        u32 bucket_id = blockIdx.x + 1;
+        u32 bucket_id = blockIdx.x;
 
-        if (bucket_id >= Config::n_buckets || window_id >= Config::n_windows)
+        if (bucket_id >= Config::n_buckets - 1 || window_id >= Config::n_windows)
             return;
 
         auto point = sum.get(window_id, bucket_id);
 
-        point = point.multiple(bucket_id);
+        point = point.multiple(bucket_id + 1);
 
         for (u32 i = 0; i < window_id * Config::s; i++) {
             point = point.self_add();
@@ -637,14 +680,17 @@ namespace msm
 #endif
         PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
 
-        u32 *bay_allocator;
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_allocator, sizeof(u32)));
-        u32 zero = 0;
-        PROPAGATE_CUDA_ERROR(cudaMemcpy(bay_allocator, &zero, sizeof(u32), cudaMemcpyHostToDevice));
+        u32 *allocator;
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&allocator, sizeof(u32)));
+        PROPAGATE_CUDA_ERROR(cudaMemset(allocator, 0, sizeof(u32)));
 
         u32 *bay_pointers;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_pointers, sizeof(u32) * Config::n_windows * (Config::n_buckets - 1) * grid));
 
+        u32 *bay_offset_buffer;
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_offset_buffer, sizeof(u32) * (Config::n_windows * (Config::n_buckets - 1) + 1)));
+        PROPAGATE_CUDA_ERROR(cudaMemset(bay_offset_buffer, 0, sizeof(u32) * (Config::n_windows * (Config::n_buckets - 1) + 1)));
+        Array2D<u32, Config::n_windows, Config::n_buckets - 1> bay_counts(bay_offset_buffer);
         u32 block_len = div_ceil(len, grid);
 
         cudaEvent_t start,end;
@@ -658,10 +704,11 @@ namespace msm
             scalers,
             len,
             block_len,
-            bay_allocator,
+            allocator,
             bay_buffer,
             bay_meta_data,
-            bay_pointers
+            bay_pointers,
+            bay_counts
         );
 
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
@@ -673,7 +720,7 @@ namespace msm
         printf("scatter: %f ms\n", ms);
 
         int bay_num;
-        PROPAGATE_CUDA_ERROR(cudaMemcpy(&bay_num, bay_allocator, sizeof(u32), cudaMemcpyDeviceToHost));
+        PROPAGATE_CUDA_ERROR(cudaMemcpy(&bay_num, allocator, sizeof(u32), cudaMemcpyDeviceToHost));
         printf("bay_num: %d\n", bay_num);
 #ifdef DEBUG
         if (Config::debug) {
@@ -697,9 +744,42 @@ namespace msm
         PROPAGATE_CUDA_ERROR(cudaFree(scalers));
         PROPAGATE_CUDA_ERROR(cudaFree(bay_pointers));
 
+        // perfix sum for bay_num
+        void *d_temp_storage_scan = nullptr;
+        usize temp_storage_bytes_scan = 0;
+
+        PROPAGATE_CUDA_ERROR(
+            cub::DeviceScan::ExclusiveSum(
+                d_temp_storage_scan, 
+                temp_storage_bytes_scan, 
+                bay_offset_buffer, 
+                bay_offset_buffer, 
+                Config::n_windows * (Config::n_buckets - 1) + 1
+            )
+        )
+
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage_scan, temp_storage_bytes_scan));
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
+
+        PROPAGATE_CUDA_ERROR(
+            cub::DeviceScan::ExclusiveSum(
+                d_temp_storage_scan, 
+                temp_storage_bytes_scan, 
+                bay_offset_buffer, 
+                bay_offset_buffer, 
+                Config::n_windows * (Config::n_buckets - 1) + 1
+            )
+        )
+        PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage_scan));
+
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
+        PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
+        PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
+        printf("prefix sum: %f ms\n", ms);
+
+        // Sort all the bays
         void *d_temp_storage = nullptr;
         usize temp_storage_bytes = 0;
-
 
         PROPAGATE_CUDA_ERROR(
             cub::DeviceRadixSort::SortKeys(
@@ -735,36 +815,61 @@ namespace msm
 
 #ifdef DEBUG
         // copy bay_meta_data to host and print when debug
-        if (Config::debug) {
-            BayMetaData *h_bay_meta_data = (BayMetaData *)malloc(sizeof(BayMetaData) * bay_num);
-            PROPAGATE_CUDA_ERROR(cudaMemcpy(h_bay_meta_data, bay_meta_data, sizeof(BayMetaData) * bay_num, cudaMemcpyDeviceToHost));
+        // if (Config::debug) {
+        //     BayMetaData *h_bay_meta_data = (BayMetaData *)malloc(sizeof(BayMetaData) * bay_num);
+        //     PROPAGATE_CUDA_ERROR(cudaMemcpy(h_bay_meta_data, bay_meta_data, sizeof(BayMetaData) * bay_num, cudaMemcpyDeviceToHost));
         
-            for (int i = 0; i < bay_num; i++) {
-                printf("bay_id: %d, window_id: %d, scalar_id: %d, num: %d\n", h_bay_meta_data[i].bay_id, h_bay_meta_data[i].window_id, h_bay_meta_data[i].scalar_id, h_bay_meta_data[i].num);
-            }
-        }
+        //     for (int i = 0; i < bay_num; i++) {
+        //         printf("bay_id: %d, window_id: %d, scalar_id: %d, num: %d\n", h_bay_meta_data[i].bay_id, h_bay_meta_data[i].window_id, h_bay_meta_data[i].scalar_id, h_bay_meta_data[i].num);
+        //     }
+        // }
 #endif
 
         // Prepare for bucket sum
         Point *buckets_sum_buf;
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_sum_buf, sizeof(Point) * Config::n_windows * Config::n_buckets));
-        auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets>(buckets_sum_buf);
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&buckets_sum_buf, sizeof(Point) * Config::n_windows * (Config::n_buckets - 1)));
+        auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets - 1>(buckets_sum_buf);
 
         u32 *points;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
         PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));   
 
 
-        initalize_sum<Config, Point><<<Config::n_buckets, Config::n_windows>>>(buckets_sum, bay_allocator);
+        initalize_sum<Config, Point><<<Config::n_buckets - 1, Config::n_windows>>>(buckets_sum, allocator);
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
 
         unsigned short int *mutex_buf;
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&mutex_buf, sizeof(unsigned short int) * Config::n_windows * Config::n_buckets));
-        PROPAGATE_CUDA_ERROR(cudaMemset(mutex_buf, 0, sizeof(unsigned short int) * Config::n_windows * Config::n_buckets));
-        Array2D<unsigned short int, Config::n_windows, Config::n_buckets> mutex(mutex_buf);
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&mutex_buf, sizeof(unsigned short int) * Config::n_windows * (Config::n_buckets - 1)));
+        PROPAGATE_CUDA_ERROR(cudaMemset(mutex_buf, 0, sizeof(unsigned short int) * Config::n_windows * (Config::n_buckets - 1)));
 
+        u32 *finished_buckets;
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&finished_buckets, sizeof(u32)));
+        PROPAGATE_CUDA_ERROR(cudaMemset(finished_buckets, 0, sizeof(u32)));
+
+        u32 *bay_allocator_buffer;
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_allocator_buffer, sizeof(u32) * Config::n_windows * (Config::n_buckets - 1)));
+        PROPAGATE_CUDA_ERROR(cudaMemset(bay_allocator_buffer, 0, sizeof(u32) * Config::n_windows * (Config::n_buckets - 1)));
+        Array2D<u32, Config::n_windows, Config::n_buckets - 1> bay_allocators(bay_allocator_buffer);
+
+        Array2D<unsigned short int, Config::n_windows, Config::n_buckets - 1> mutex(mutex_buf);
+        
+        u32 max_task_step = bay_num / (grid * 256 / THREADS_PER_WARP) / 2;
+        u32 min_task_step = div_ceil(Config::bay_size, div_ceil(len * Config::n_windows, bay_num));
+        printf("max_task_step: %d, min_task_step: %d\n", max_task_step, min_task_step);
         cudaEventRecord(start);
-        bucket_sum_new<Config, Point, 256 / THREADS_PER_WARP><<<grid, 256>>>(len, bay_num, bay_buffer, bay_meta_data, points, bay_allocator, buckets_sum, mutex);
+        bucket_sum_new<Config, Point, 256 / THREADS_PER_WARP><<<grid, 256>>>(
+            max_task_step,
+            min_task_step,
+            bay_buffer,
+            bay_meta_data, 
+            points, 
+            allocator, 
+            finished_buckets, 
+            bay_allocators, 
+            bay_offset_buffer,
+            buckets_sum, 
+            mutex
+        );
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
         cudaEventRecord(end);
         PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
@@ -774,9 +879,10 @@ namespace msm
         PROPAGATE_CUDA_ERROR(cudaFree(points));
         PROPAGATE_CUDA_ERROR(cudaFree(bay_buffer));
         PROPAGATE_CUDA_ERROR(cudaFree(bay_meta_data));
-        PROPAGATE_CUDA_ERROR(cudaFree(bay_allocator));
+        PROPAGATE_CUDA_ERROR(cudaFree(allocator));
         PROPAGATE_CUDA_ERROR(cudaFree(mutex_buf));
-
+        PROPAGATE_CUDA_ERROR(cudaFree(finished_buckets));
+        PROPAGATE_CUDA_ERROR(cudaFree(bay_allocator_buffer));
 
         PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
         
@@ -802,7 +908,7 @@ namespace msm
                 temp_storage_bytes_reduce, 
                 buckets_sum_buf, 
                 reduced, 
-                Config::n_windows * Config::n_buckets, 
+                Config::n_windows * (Config::n_buckets - 1), 
                 add_op,
                 Point::identity()
             )
@@ -817,7 +923,7 @@ namespace msm
                 temp_storage_bytes_reduce, 
                 buckets_sum_buf, 
                 reduced, 
-                Config::n_windows * Config::n_buckets, 
+                Config::n_windows * (Config::n_buckets - 1), 
                 add_op,
                 Point::identity()
             )
