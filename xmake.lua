@@ -35,6 +35,19 @@ target("bench-mont0")
     add_options("-lineinfo")
     add_files("mont/tests/bench0.cu")
 
+target("cuda_msm")
+    set_kind("static")
+    add_values("cuda.build.devlink", true)
+
+    add_options("-lineinfo")
+    set_languages(("c++17"))
+    
+    add_files("wrapper/msm/c_api/msm_c_api.cu")
+    add_headerfiles("wrapper/msm/c_api/*.h")
+    add_cugencodes("native")
+
+    set_targetdir("lib")
+
 task("sync-epcc")
     on_run(function ()
         import ("core.base.option")
@@ -56,5 +69,5 @@ task("sync-epcc")
 includes("runtime")
 includes("ntt")
 includes("wrapper")
-includes("poly")
+-- includes("poly")
 includes("msm")
