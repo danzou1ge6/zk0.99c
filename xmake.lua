@@ -39,12 +39,12 @@ target("cuda_msm")
     set_kind("static")
     add_values("cuda.build.devlink", true)
 
-    add_options("-lineinfo")
     set_languages(("c++17"))
     
     add_files("wrapper/msm/c_api/msm_c_api.cu")
     add_headerfiles("wrapper/msm/c_api/*.h")
     add_cugencodes("native")
+    add_cuflags("--extended-lambda")
 
     set_targetdir("lib")
 

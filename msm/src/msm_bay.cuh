@@ -364,6 +364,7 @@ namespace msm
                 cur_bay_cnt = bucket_offset[index + 1] - bucket_offset[index];
                 task_step = max(task_step / 2, min_task_step);
                 meta_id = atomicAdd(bay_allocators.addr(window, bucket), task_step);
+                // printf("index: %d meta_id: %d, cur_bay_cnt: %d, task_step: %d\n", index, meta_id, cur_bay_cnt, task_step);
             } while(meta_id >= cur_bay_cnt);
             if (meta_id < cur_bay_cnt && meta_id + task_step >= cur_bay_cnt) atomicAdd(finished_buckets, 1); // finish this bucket
         }
@@ -412,11 +413,12 @@ namespace msm
                     Point bay_sum = WarpReduce(temp_storage[warp_id]).Reduce(thread_sum, [](const Point &a, const Point &b){ return a + b; });
 
                     if (lane_id == 0) {
-                        auto mutex_ptr = mutex.addr(meta_data.window_id, meta_data.scalar_id);
+                        auto mutex_ptr = mutex.addr(window, bucket);
                         u32 time = 1;
                         while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
                             __nanosleep(time);
                             if (time < 64) time *= 2;
+                            // printf("mutex failed %d\n", time);
                         }
                         __threadfence();
                         sum.get(window, bucket) = sum.get(window, bucket) + bay_sum;
@@ -434,6 +436,7 @@ namespace msm
                             cur_bay_cnt = bucket_offset[index + 1] - bucket_offset[index];
                             task_step = max(task_step / 2, min_task_step);
                             meta_id = atomicAdd(bay_allocators.addr(window, bucket), task_step);
+                            // printf("index: %d meta_id: %d, cur_bay_cnt: %d, task_step: %d\n", index, meta_id, cur_bay_cnt, task_step);
                         } while(meta_id >= cur_bay_cnt);
                         if (meta_id < cur_bay_cnt && meta_id + task_step >= cur_bay_cnt) atomicAdd(finished_buckets, 1); // finish this bucket
                     }
@@ -488,7 +491,11 @@ namespace msm
             }
             for (u32 j = num; j < Config::bay_size; j++) {
                 auto scaler = ptr[j];
-                assert(scaler == 0xffffffff);
+                if (scaler != 0xffffffff) {
+                    printf("Assertion failed expected 0xffffffff bay_id: %d, window_id: %d, scalar_id: %d, num: %d, i: %d, j: %d, value: %d\n",
+                        bay_id, window_id, scalar_id, num, i, j, scaler);
+                    assert(scaler == 0xffffffff);
+                }
             }
         }
         for (int i = 0; i < Config::n_windows; i++) {
@@ -660,8 +667,14 @@ namespace msm
 
         cudaDeviceProp deviceProp;
         cudaGetDeviceProperties(&deviceProp, 0);
-        u32 grid = std::min(deviceProp.multiProcessorCount, (int)len);
-        const u32 block = 512;
+        u32 grid = std::min(deviceProp.multiProcessorCount, (int)div_ceil(len, 512));
+        u32 block = 512;
+
+        if (len < 512)
+        {
+            grid = 1;
+            block = len;
+        }
 
         // Count items in buckets
         u32 *scalers;
@@ -669,8 +682,8 @@ namespace msm
 
         Bay<Config> *bay_buffer;
         BayMetaData *bay_meta_data;
-        u64 max_bay_num = (div_ceil(Config::n_windows * len, Config::bay_size) + grid * Config::n_windows * (Config::n_buckets - 2));
-        // printf("max_bay_num: %llu\n", max_bay_num);
+        u64 max_bay_num = (div_ceil(Config::n_windows * len, Config::bay_size) + grid * Config::n_windows * (Config::n_buckets - 1));
+       //  printf("max_bay_num: %llu\n", max_bay_num);
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_buffer, sizeof(Bay<Config>) * max_bay_num));
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_meta_data, sizeof(BayMetaData) * max_bay_num));
 #ifdef DEBUG
@@ -853,7 +866,7 @@ namespace msm
 
         Array2D<unsigned short int, Config::n_windows, Config::n_buckets - 1> mutex(mutex_buf);
         
-        u32 max_task_step = bay_num / (grid * 256 / THREADS_PER_WARP) / 2;
+        u32 max_task_step = div_ceil(div_ceil(bay_num, (div_ceil(grid * 256, THREADS_PER_WARP))), 2);
         u32 min_task_step = div_ceil(Config::bay_size, div_ceil(len * Config::n_windows, bay_num));
         printf("max_task_step: %d, min_task_step: %d\n", max_task_step, min_task_step);
         cudaEventRecord(start);

@@ -1,5 +1,5 @@
 #include "./msm_c_api.h"
-#include "../../../msm/src/msm.cuh"
+#include "../../../msm/src/msm_bay.cuh"
 #include "../../../msm/src/bn254.cuh"
 #include "../../../mont/src/bn254_scalar.cuh"
 
