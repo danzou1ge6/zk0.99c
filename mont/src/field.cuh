@@ -677,13 +677,13 @@ namespace mont
   };
 
   // An element on field defined by `Params`
-  template <class Params>
+  template <class Params, typename St = ContinuousStorage<Params::LIMBS>>
   struct Element
   {
     using ParamsType = Params;
     static const usize LIMBS = Params::LIMBS;
 
-    Number<LIMBS> n;
+    Number<LIMBS, St> n;
 
     __host__ __device__ Element() {}
     constexpr __host__ __device__ Element(Number<LIMBS> n) : n(n) {}
