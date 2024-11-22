@@ -136,4 +136,16 @@ namespace ptx {
     asm("mov.b64 %0, {%1,%2};" : "=l"(result) : "r"(lo), "r"(hi));
     return result;
   }
+
+  __device__ __forceinline__ uint32_t pack_b32(uint16_t lo, uint16_t hi)
+  {
+    uint32_t r;
+    asm("mov.b32 %0, {%1, %2};" : "=r"(r) : "r"(lo), "r"(hi));
+    return r;
+  }
+
+  __device__ __forceinline__ void unpack_b32(uint16_t &lo, uint16_t &hi, uint32_t x)
+  {
+    asm("mov.b32 {%0, %1}, %2;" : "=r"(lo), "=r"(hi), "r"(x));
+  }
 } 
