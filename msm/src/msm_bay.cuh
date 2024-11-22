@@ -669,9 +669,7 @@ namespace msm
         cudaGetDeviceProperties(&deviceProp, 0);
         u32 grid = std::min(deviceProp.multiProcessorCount, (int)div_ceil(len, 512));
         u32 block = 512;
-
-        if (len < 512)
-        {
+        if (len < 512) {
             grid = 1;
             block = len;
         }
@@ -679,6 +677,7 @@ namespace msm
         // Count items in buckets
         u32 *scalers;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&scalers, sizeof(u32) * Number::LIMBS * len));
+        PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
 
         Bay<Config> *bay_buffer;
         BayMetaData *bay_meta_data;
@@ -686,12 +685,13 @@ namespace msm
        //  printf("max_bay_num: %llu\n", max_bay_num);
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_buffer, sizeof(Bay<Config>) * max_bay_num));
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_meta_data, sizeof(BayMetaData) * max_bay_num));
+
+
 #ifdef DEBUG
         if (Config::debug) {
             PROPAGATE_CUDA_ERROR(cudaMemset(bay_buffer, 0xff, sizeof(Bay<Config>) * max_bay_num));
         }
 #endif
-        PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
 
         u32 *allocator;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&allocator, sizeof(u32)));
@@ -703,6 +703,7 @@ namespace msm
         u32 *bay_offset_buffer;
         PROPAGATE_CUDA_ERROR(cudaMalloc(&bay_offset_buffer, sizeof(u32) * (Config::n_windows * (Config::n_buckets - 1) + 1)));
         PROPAGATE_CUDA_ERROR(cudaMemset(bay_offset_buffer, 0, sizeof(u32) * (Config::n_windows * (Config::n_buckets - 1) + 1)));
+
         Array2D<u32, Config::n_windows, Config::n_buckets - 1> bay_counts(bay_offset_buffer);
         u32 block_len = div_ceil(len, grid);
 
@@ -896,6 +897,7 @@ namespace msm
         PROPAGATE_CUDA_ERROR(cudaFree(mutex_buf));
         PROPAGATE_CUDA_ERROR(cudaFree(finished_buckets));
         PROPAGATE_CUDA_ERROR(cudaFree(bay_allocator_buffer));
+        PROPAGATE_CUDA_ERROR(cudaFree(bay_offset_buffer));
 
         PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
         
@@ -947,6 +949,7 @@ namespace msm
         printf("reduce: %f ms\n", ms);
 
         PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage_reduce));
+        PROPAGATE_CUDA_ERROR(cudaFree(buckets_sum_buf));
 
         PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
         PROPAGATE_CUDA_ERROR(cudaFree(reduced));
