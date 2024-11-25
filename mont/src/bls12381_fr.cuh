@@ -22,6 +22,7 @@ namespace bls12381_fr
         const __device__ Number m_sub2 = BIG_INTEGER_CHUNKS8(0x73eda753, 0x299d7d48, 0x3339d808, 0x09a1d805, 0x53bda402, 0xfffe5bfe, 0xfffffffe, 0xffffffff);
         const __device__ Number r_mod = BIG_INTEGER_CHUNKS8(0x1824b159, 0xacc5056f, 0x998c4fef, 0xecbc4ff5, 0x5884b7fa, 0x00034802, 0x00000001, 0xfffffffe);
         const __device__ Number r2_mod = BIG_INTEGER_CHUNKS8(0x748d9d9, 0x9f59ff11, 0x05d31496, 0x7254398f, 0x2b6cedcb, 0x87925c23, 0xc999e990, 0xf3f29c6d);
+        const __device__ Number m_prime_wide = BIG_INTEGER_CHUNKS8(0x3d443ab0, 0xd7bf2839, 0x181b2c17, 0x0004ec06, 0x53ba5bff, 0xfffe5bfd, 0xfffffffe, 0xffffffff);
     }
 
     namespace host_constants
@@ -30,6 +31,7 @@ namespace bls12381_fr
         const Number m_sub2 = BIG_INTEGER_CHUNKS8(0x73eda753, 0x299d7d48, 0x3339d808, 0x09a1d805, 0x53bda402, 0xfffe5bfe, 0xfffffffe, 0xffffffff);
         const Number r_mod = BIG_INTEGER_CHUNKS8(0x1824b159, 0xacc5056f, 0x998c4fef, 0xecbc4ff5, 0x5884b7fa, 0x00034802, 0x00000001, 0xfffffffe);
         const Number r2_mod = BIG_INTEGER_CHUNKS8(0x748d9d9, 0x9f59ff11, 0x05d31496, 0x7254398f, 0x2b6cedcb, 0x87925c23, 0xc999e990, 0xf3f29c6d);
+        const Number m_prime_wide = BIG_INTEGER_CHUNKS8(0x3d443ab0, 0xd7bf2839, 0x181b2c17, 0x0004ec06, 0x53ba5bff, 0xfffe5bfd, 0xfffffffe, 0xffffffff);
     }
 
     struct Params
@@ -37,41 +39,50 @@ namespace bls12381_fr
         static const mont::usize LIMBS = 8;
         static const __host__ __device__ __forceinline__ Number m()
         {
-    #ifdef __CUDA_ARCH__
-        return device_constants::m;
-    #else
-        return host_constants::m;
-    #endif
+#ifdef __CUDA_ARCH__
+            return device_constants::m;
+#else
+            return host_constants::m;
+#endif
         }
         // m - 2
         static const __host__ __device__ __forceinline__ Number m_sub2()
         {
-    #ifdef __CUDA_ARCH__
-        return device_constants::m_sub2;
-    #else
-        return host_constants::m_sub2;
-    #endif
+#ifdef __CUDA_ARCH__
+            return device_constants::m_sub2;
+#else
+            return host_constants::m_sub2;
+#endif
         }
         // m' = -m^(-1) mod b where b = 2^32
         static const u32 m_prime = 4294967295;
         // r_mod = R mod m,
         static const __host__ __device__ __forceinline__ Number r_mod()
         {
-    #ifdef __CUDA_ARCH__
-        return device_constants::r_mod;
-    #else
-        return host_constants::r_mod;
-    #endif
+#ifdef __CUDA_ARCH__
+            return device_constants::r_mod;
+#else
+            return host_constants::r_mod;
+#endif
         }
         // r2_mod = R^2 mod m
         static const __host__ __device__ __forceinline__ Number r2_mod()
         {
 
-    #ifdef __CUDA_ARCH__
-        return device_constants::r2_mod;
-    #else
-        return host_constants::r2_mod;
-    #endif
+#ifdef __CUDA_ARCH__
+            return device_constants::r2_mod;
+#else
+            return host_constants::r2_mod;
+#endif
+        }
+        // m'_wide = -m^(-1) mod R
+        static const __host__ __device__ __forceinline__ Number m_prime_wide()
+        {
+#ifdef __CUDA_ARCH__
+            return device_constants::m_prime_wide;
+#else
+            return host_constants::m_prime_wide;
+#endif
         }
     };
 

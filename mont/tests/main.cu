@@ -4,6 +4,7 @@
 #include <ctime>
 
 #include "../src/bn256_fr.cuh"
+#include "../src/field_tc.cuh"
 using bn256_fr::Element;
 
 using Number = mont::Number<8>;
@@ -63,6 +64,17 @@ __global__ void mont_mul(u32 *r, const u32 *a, const u32 *b)
   auto na = Element::load(a);
   auto nb = Element::load(b);
   auto nr = na * nb;
+  nr.store(r);
+}
+
+__global__ void mont_mul_tc(u32 *r, const u32 *a, const u32 *b)
+{
+  auto na = Element::load(a);
+  auto nb = Element::load(b);
+  Element nr, useless;
+  Element mul_z[1] = {nr};
+  Element mul_y[1] = {nb};
+  mont::tc256::mul<1>(mul_z, na, mul_y);
   nr.store(r);
 }
 
@@ -340,6 +352,12 @@ namespace instance1
         auto ea = Element::from_number(a);
         auto er = ea.pow(b);
         return er.n; });
+  }
+
+  TEST_CASE("Montgomery multiplication (TC)")
+  {
+    test_mont_kernel<WORDS>(prod_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
+                            { mont_mul_tc<<<1, 32>>>(r, a, b); });
   }
 }
 

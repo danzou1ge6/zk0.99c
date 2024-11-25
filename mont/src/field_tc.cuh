@@ -6,7 +6,7 @@
 
 namespace mont
 {
-  namespace w256
+  namespace tc256
   {
 
     using Stage = u8;
@@ -18,8 +18,8 @@ namespace mont
     {
       auto get_limb = [p, n_limbs](int i)
       {
-        if (i < 0 || i >= n)
-          return 0;
+        if (i < 0 || i >= n_limbs)
+          return 0U;
         else
           return p[i];
       };
@@ -35,12 +35,12 @@ namespace mont
     // returns `[x3, x2, x1, x0]`
     __device__ __forceinline__ u32 bytes_reversed(u32 x)
     {
-      return (x & 0xff << 24) | (x & 0xff00 << 8) | (x & 0xff0000 >> 8) | (x & 0xff000000 >> 24);
+      return __byte_perm(x, 0, 0x00010203);
     }
 
     // Layout of the 16x32 A matrix in mma.m16n8k32.s32 (or called A layout) is
     //
-    //         0   1   2   3                5 ... 7    8 ... 11    12 ... 15     16    17    18   19            20 ... 23    ...
+    //         0   1   2   3                4 ... 7    8 ... 11    12 ... 15     16    17    18   19            20 ... 23    ...
     //   0  T0{a0[0],a0[1],a0[2],a0[3]}     T1         T2          T3         T0{a1[0],a1[1],a1[2],a1[3]}       T1
     //   1  T4                              T5         T6          T7         T4                                T5
     //      ...
@@ -74,7 +74,7 @@ namespace mont
     {
       u32 lane_id = threadIdx.x % 32;
 
-      auto get = [lane_id, stage, limbs](u32 m, u32 n)
+      auto get = [lane_id, stage, limbs, n_limbs](u32 m, u32 n)
       {
         u32 i = (lane_id / 4) + stage * 16 + m * 8;
         u32 j = (lane_id % 4) * 4 + 3 + n * 16;
@@ -116,7 +116,7 @@ namespace mont
     template <u32 NUM, typename StL>
     __device__ __forceinline__ void load_b_matrix(
         u32 &b0, u32 &b1,
-        const StL p[NUM])
+        const StL *p)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 col = lane_id / 4;
@@ -143,15 +143,19 @@ namespace mont
     //
     // where T0 means the 0-th lane, and d0, d1, d2, d3 are four i32's in 0-th lane.
     __device__ __forceinline__ void mma_m16n8k32(
-        i32 &d0, i32 &d1, i32 &d2, i32 &d3,
+        u32 &d0, u32 &d1, u32 &d2, u32 &d3,
         u32 a0, u32 a1, u32 a2, u32 a3,
         u32 b0, u32 b1,
-        i32 c0, i32 c1, i32 c2, i32 c3)
+        u32 c0, u32 c1, u32 c2, u32 c3)
     {
+      i32 d0i, d1i, d2i, d3i;
+      i32 c0i = c0, c1i = c1, c2i = c2, c3i = c3;
       asm(
-          "mma.sync.aligned.m16n8k32.row.col.s32.u32.u32.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" : "=r"(d0), "=r"(d1), "=r"(d2), "=r"(d3) : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
-                                                                                                                                                                             "r"(b0), "r"(b1),
-                                                                                                                                                                             "r"(c0), "r"(c1), "r"(c2), "r"(c3));
+          "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" :
+          "=r"(d0i), "=r"(d1i), "=r"(d2i), "=r"(d3i) : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+          "r"(b0), "r"(b1),
+          "r"(c0i), "r"(c1i), "r"(c2i), "r"(c3i));
+      d0 = d0i, d1 = d1i, d2 = d2i, d3 = d3i;
     }
 
     // Transpose a 8x8 matrix, of data type u16.
@@ -389,7 +393,7 @@ namespace mont
     // resulting in Bx;
     // After that By is obtained by applying `shuffle_b_for_mul` to Bx.
     __device__ __forceinline__ void transpose_and_split(
-        u32 by0, u32 by1,
+        u32 &by0, u32 &by1,
         u32 d00, u32 d02,
         u32 d10, u32 d12)
     {
@@ -619,18 +623,19 @@ namespace mont
       sub(z0, r0, 0);
       sub(z1, r1, 1);
 
-      if (borrow_in) {
+      if (borrow_in)
+      {
         add(z0, 0);
         add(z0, 1);
       }
     }
 
     // Store z to st_z, z is in Z layout.
-    template <typename StZ>
+    template <u32 NUM, typename StZ>
     __device__ __forceinline__ void store_z(
-      StZ st_z[4],
-      u16 z0, u16 z1
-    ) {
+        StZ *st_z,
+        u16 z0, u16 z1)
+    {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
@@ -644,21 +649,75 @@ namespace mont
         w |= got & 0x0000ffff;
       else
         w |= got >> 16;
-      
-      u32 got = __shfl_sync(mask, send, (i % 4) * 8 + 4 + j);
+
+      got = __shfl_sync(mask, send, (i % 4) * 8 + 4 + j);
       if (i < 4)
         w |= got & 0xffff0000;
-      else 
+      else
         w |= got << 16;
 
-      st_z[j][i] = w;
+      if (j < NUM)
+        st_z[j][i] = w;
     }
 
-    template <typename StR, typename StA, typename StB, typename StM>
-    __device__ __forceinline__ void montgomery_multiplication(
-        StR st_z0[4],
-        const StA st_x,
-        const StB st_y[4],
+    // Debugging utilies
+    namespace debug {
+      template <u32 R, u32 C, typename T>
+      struct Matrix {
+        T* p;
+        __host__ Matrix() {
+          cudaMalloc(&p, R * C * sizeof(T));
+        }
+        __device__ __host__ T& operator[](u32 i, u32 j)
+        {
+          return p[i * C + j];
+        }
+      };
+
+      // Put a A layotu matrix into memory
+      __device__ __forceinline__ void store_a_matrix(
+        u32 a0, u32 a1, u32 a2, u32 a3,
+        Matrix<16, 32, u8> mat
+      ) {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [mat, lane_id](u32 m, u32 n, u32 a)
+        {
+            u32 i = lane_id / 4 + m * 8;
+            u32 j = (lane_id % 4) * 4 + n * 16;
+            for (u32 k = 0; k < 4; k ++)
+              m[i, j + k] = (a >> (8 * k)) & 0xff;
+        };
+        st(0, 0, a0);
+        st(0, 1, a1);
+        st(1, 0, a2);
+        st(1, 1, a3);
+      }
+
+      // Put a B layotu matrix into memory
+      __device__ __forceinline__ void store_b_matrix(
+        u32 b0, u32 b1, Matrix<31, 8, u8> mat
+      ) {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [mat, lane_id](u32 m, u32 b)
+        {
+          u32 i = (lane_id % 4) * 4 + m * 8;
+          u32 j = lane_id / 4;
+          for (u32 k = 0; k < 4; k ++)
+            m[i + k, j] = (b >> (8 * k)) & 0xff;
+        };
+
+        st(0, b0);
+        st(1, b1);
+      }
+    }
+
+    template <u32 NUM, typename StZ, typename StX, typename StY, typename StM>
+    __device__ __forceinline__ void montgomery_multiplication_raw(
+        StZ *st_z,
+        const StX st_x,
+        const StY *st_y,
         const StM st_m,
         const StM st_m_prime)
     {
@@ -671,7 +730,7 @@ namespace mont
       u32 xa0, xa1, xa2, xa3;
       load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
       u32 yb0, yb1;
-      load_b_matrix(yb0, yb1, st_y);
+      load_b_matrix<NUM>(yb0, yb1, st_y);
       u32 sd00, sd01, sd02, sd03;
       mma_m16n8k32(sd00, sd01, sd02, sd03, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
@@ -712,15 +771,15 @@ namespace mont
       transpose_and_split(ubs0, ubs1, ud00, ud02, ud10, ud12);
 
       u32 ma0, ma1, ma2, ma3;
-      load_a_matrix(ua0, ua1, ua2, ua3, st_m, 8, 1);
+      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
       u32 td10, td11, td12, td13;
       mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ubs0, ubs1, sd10, 0, sd12, 0);
 
       u32 td20, td21, td22, td23;
-      mma_m16n8k32(td20, td21, td22, td23, ubs0, ubs1, sd20, 0, sd22, 0);
+      mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ubs0, ubs1, sd20, 0, sd22, 0);
 
       u32 td30, td31, td32, td33;
-      mma_m16n8k32(td30, td31, td32, td33, ubs0, ubs1, sd30, 0, sd32, 0);
+      mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ubs0, ubs1, sd30, 0, sd32, 0);
 
       td10 += td11;
       td12 += td13;
@@ -739,9 +798,24 @@ namespace mont
       u16 z0, z1;
       modulo_m(z0, z1, r0, r1, st_m);
 
-      store_z(st_z, z0, z1);
+      store_z<NUM>(st_z, z0, z1);
     }
 
+    template <u32 NUM, typename Params, typename StZ, typename StX, typename StY>
+    __device__ __forceinline__ void mul(
+        Element<Params, StZ> *z,
+        Element<Params, StX> x,
+        Element<Params, StY> *y)
+    {
+      StZ st_z[4] = {z[0].n.limbs, z[1].n.limbs, z[2].n.limbs, z[3].n.limbs};
+      StY st_y[4] = {y[0].n.limbs, y[1].n.limbs, y[2].n.limbs, y[3].n.limbs};
+      montgomery_multiplication_raw<NUM>(
+          st_z,
+          x.n.limbs,
+          st_y,
+          Params::m().limbs,
+          Params::m_prime_wide().limbs);
+    }
   }
 }
 

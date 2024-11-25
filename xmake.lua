@@ -16,6 +16,7 @@ target("mont.cuh")
     set_targetdir("mont/src")
 
 target("test-mont")
+    add_cugencodes("sm_80")
     set_languages(("c++17"))
     if is_mode("debug") then
         set_symbols("debug")

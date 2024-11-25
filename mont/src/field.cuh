@@ -697,6 +697,16 @@ namespace mont
       return r;
     }
 
+    template <usize STRIDE>
+    static __host__ __device__ __forceinline__
+        Element<Params, StridedReference<STRIDE>>
+        borrow(u32 *p)
+    {
+      Element<Params, StridedReference<STRIDE>> r;
+      r.n.limbs = StridedReference(p);
+      return r;
+    }
+
     __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1) const &
     {
       n.store(p, stride);

@@ -2,7 +2,8 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 
-namespace ptx {
+namespace ptx
+{
 
   __device__ __forceinline__ uint32_t add(const uint32_t x, const uint32_t y)
   {
@@ -139,13 +140,12 @@ namespace ptx {
 
   __device__ __forceinline__ uint32_t pack_b32(uint16_t lo, uint16_t hi)
   {
-    uint32_t r;
-    asm("mov.b32 %0, {%1, %2};" : "=r"(r) : "r"(lo), "r"(hi));
-    return r;
+    return ((uint32_t)hi << 16) | lo;
   }
 
   __device__ __forceinline__ void unpack_b32(uint16_t &lo, uint16_t &hi, uint32_t x)
   {
-    asm("mov.b32 {%0, %1}, %2;" : "=r"(lo), "=r"(hi), "r"(x));
+    lo = x & 0x0000ffff;
+    hi = x >> 16;
   }
-} 
+}
