@@ -1,6 +1,8 @@
 #ifndef FIELD_TC_H
 #define FIELD_TC_H
 
+#include <iostream>
+
 #include "./field.cuh"
 #include "./ptx.cuh"
 
@@ -10,32 +12,29 @@ namespace mont
   {
 
     using Stage = u8;
-
+    const u32 MASK_ALL = 0xffffffff;
     // Load the consecutive four bytes of storage `p` starting at the `n`-th byte.
     // `p` has `n_limbs` u32.
     template <typename StL>
-    __device__ __forceinline__ u32 unanligned_u32_access(StL p, u32 n_limbs, int n)
+    __device__ __forceinline__ u32 unanligned_u32_access(StL p, u32 n_limbs, i32 n)
     {
-      auto get_limb = [p, n_limbs](int i)
+      auto get_limb = [p, n_limbs](i32 i)
       {
         if (i < 0 || i >= n_limbs)
           return 0U;
         else
           return p[i];
       };
-      int rem = n % 4;
-      int n0 = n - rem;
-      if (rem == 0)
-        return get_limb(n / 4);
-      else
-        return (get_limb(n0 / 4) >> (rem * 8)) | (get_limb(n0 / 4 + 1) << (32 - rem * 8));
+      i32 rem = (u32)n & 0b11;  // modular 4
+      i32 n0 = n - rem;
+      return (get_limb(n0 / 4) >> (rem * 8)) | (get_limb(n0 / 4 + 1) << (32 - rem * 8));
     }
 
     // Let `x` be composed of four bytes in little-endian `[x0, x1, x2, x3]`,
     // returns `[x3, x2, x1, x0]`
     __device__ __forceinline__ u32 bytes_reversed(u32 x)
     {
-      return __byte_perm(x, 0, 0x00010203);
+      return __byte_perm(x, 0, 0x00000123);
     }
 
     // Layout of the 16x32 A matrix in mma.m16n8k32.s32 (or called A layout) is
@@ -76,8 +75,8 @@ namespace mont
 
       auto get = [lane_id, stage, limbs, n_limbs](u32 m, u32 n)
       {
-        u32 i = (lane_id / 4) + stage * 16 + m * 8;
-        u32 j = (lane_id % 4) * 4 + 3 + n * 16;
+        i32 i = (lane_id / 4) + stage * 16 + m * 8;
+        i32 j = (lane_id % 4) * 4 + 3 + n * 16;
         return bytes_reversed(unanligned_u32_access(limbs, n_limbs, i - j));
       };
 
@@ -121,11 +120,381 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 col = lane_id / 4;
       u32 j = col / 2;
-      if (col % 2 == 0 && j + 1 >= NUM)
+      u32 i = lane_id % 4;
+      if (col % 2 == 0 && j < NUM)
       {
-        u32 i = lane_id % 4;
         b0 = p[j][i];
         b1 = p[j][i + 4];
+      }
+    }
+
+    // Debugging utilies
+    namespace debug
+    {
+      template <u32 R, u32 C, typename T>
+      struct Matrix
+      {
+        T *p;
+        __host__ Matrix() = default;
+        __host__ Matrix(T *p) : p(p) {}
+        __host__ void alloc_device()
+        {
+          cudaMalloc(&p, sizeof(T) * R * C);
+        }
+        static __host__ Matrix new_host()
+        {
+          T *p = new T[R * C];
+          return Matrix(p);
+        }
+        __host__ Matrix to_host()
+        {
+          auto h = new_host();
+          cudaMemcpy(h.p, p, R * C * sizeof(T), cudaMemcpyDeviceToHost);
+          return h;
+        }
+        __device__ __host__ T &get(u32 i, u32 j)
+        {
+          return p[i * C + j];
+        }
+        __device__ __host__ const T &get(u32 i, u32 j) const
+        {
+          return p[i * C + j];
+        }
+      };
+
+      template <u32 R, u32 C, typename T>
+      std::ostream &operator<<(std::ostream &os, const Matrix<R, C, T> mat)
+      {
+        u32 w = std::is_same<T, u8>() ? 3 : 10;
+        for (u32 i = 0; i < R; i++)
+        {
+          for (u32 j = 0; j < C; j++)
+          {
+            os << std::dec << std::setw(w) << std::setfill(' ') << (u32)mat.get(i, j) << " ";
+          }
+          os << std::endl;
+        }
+        return os;
+      }
+
+      struct Intermediates
+      {
+        // Naming convention here is similar to that in `montgomery_multiplication_raw`,
+        // but here the number distinguishes different matrix chunks, instead of fragments.
+
+        // s = x * y
+        Matrix<16, 32, u8> xa0, xa1, xa2, xa3;
+        Matrix<32, 8, u8> yb;
+        Matrix<16, 8, u32> sd0, sd1, sd2, sd3;
+        Matrix<16, 8, u32> sbx0, sbx1;
+        // u = m' * s (mod 2^256)
+        Matrix<32, 8, u8> sb;
+        Matrix<16, 32, u8> mp0, mp1;
+        Matrix<16, 8, u32> ud0, ud1;
+        Matrix<16, 8, u32> uds0, uds1; // ud after summing each two adjacent columns
+        Matrix<16, 8, u32> ubx0, ubx1;
+        // t = s + m * u
+        Matrix<16, 32, u8> ma1, ma2, ma3;
+        Matrix<32, 8, u8> ub;
+        Matrix<16, 8, u32> td1, td2, td3;
+        Matrix<16, 8, u32> tds1, tds2, tds3; // td after summing each two adjacent columns
+        Matrix<16, 8, u32> tdc1, tdc2, tdc3; // tds after carrying up tail of first 32 u32's
+        // z = t mod 2^256
+        Matrix<16, 4, u16> r; // t after compact
+        Matrix<16, 4, u16> z;
+
+        __host__ Intermediates() = default;
+        __host__ void alloc_device()
+        {
+          xa0.alloc_device();
+          xa1.alloc_device();
+          xa2.alloc_device();
+          xa3.alloc_device();
+          yb.alloc_device();
+          sd0.alloc_device();
+          sd1.alloc_device();
+          sd2.alloc_device();
+          sd3.alloc_device();
+          sbx0.alloc_device();
+          sbx1.alloc_device();
+          sb.alloc_device();
+          mp0.alloc_device();
+          mp1.alloc_device();
+          ud0.alloc_device();
+          ud1.alloc_device();
+          uds0.alloc_device();
+          uds1.alloc_device();
+          ubx0.alloc_device();
+          ubx1.alloc_device();
+          ma1.alloc_device();
+          ma2.alloc_device();
+          ma3.alloc_device();
+          ub.alloc_device();
+          td1.alloc_device();
+          td2.alloc_device();
+          td3.alloc_device();
+          tds1.alloc_device();
+          tds2.alloc_device();
+          tds3.alloc_device();
+          tdc1.alloc_device();
+          tdc2.alloc_device();
+          tdc3.alloc_device();
+          r.alloc_device();
+          z.alloc_device();
+        }
+        static __host__ Intermediates new_device()
+        {
+          Intermediates i;
+          i.alloc_device();
+          return i;
+        }
+        __host__ Intermediates to_host()
+        {
+          return Intermediates{
+              .xa0 = xa0.to_host(),
+              .xa1 = xa1.to_host(),
+              .xa2 = xa2.to_host(),
+              .xa3 = xa3.to_host(),
+              .yb = yb.to_host(),
+              .sd0 = sd0.to_host(),
+              .sd1 = sd1.to_host(),
+              .sd2 = sd2.to_host(),
+              .sd3 = sd3.to_host(),
+              .sbx0 = sbx0.to_host(),
+              .sbx1 = sbx1.to_host(),
+              .sb = sb.to_host(),
+              .mp0 = mp0.to_host(),
+              .mp1 = mp1.to_host(),
+              .ud0 = ud0.to_host(),
+              .ud1 = ud1.to_host(),
+              .uds0 = uds0.to_host(),
+              .uds1 = uds1.to_host(),
+              .ubx0 = ubx0.to_host(),
+              .ubx1 = ubx1.to_host(),
+              .ma1 = ma1.to_host(),
+              .ma2 = ma2.to_host(),
+              .ma3 = ma3.to_host(),
+              .ub = ub.to_host(),
+              .td1 = td1.to_host(),
+              .td2 = td2.to_host(),
+              .td3 = td3.to_host(),
+              .tds1 = tds1.to_host(),
+              .tds2 = tds2.to_host(),
+              .tds3 = tds3.to_host(),
+              .tdc1 = tdc1.to_host(),
+              .tdc2 = tdc2.to_host(),
+              .tdc3 = tdc3.to_host(),
+              .r = r.to_host(),
+              .z = z.to_host()};
+        }
+      };
+
+      std::ostream &operator<<(std::ostream &os, const Intermediates &i)
+      {
+        os << "xa0 = \n"
+           << i.xa0;
+        os << "xa1 = \n"
+           << i.xa1;
+        os << "xa2 = \n"
+           << i.xa2;
+        os << "xa3 = \n"
+           << i.xa3;
+        os << "yb = \n"
+           << i.yb;
+        os << "sd0 = \n"
+           << i.sd0;
+        os << "sd1 = \n"
+           << i.sd1;
+        os << "sd2 = \n"
+           << i.sd2;
+        os << "sd3 = \n"
+           << i.sd3;
+        os << "sbx0 = \n"
+           << i.sbx0;
+        os << "sbx1 = \n"
+           << i.sbx1;
+        os << "sb = \n"
+           << i.sb;
+        os << "mp0 = \n"
+           << i.mp0;
+        os << "mp1 = \n"
+           << i.mp1;
+        os << "ud0 = \n"
+           << i.ud0;
+        os << "ud1 = \n"
+           << i.ud1;
+        os << "uds0 = \n"
+           << i.uds0;
+        os << "uds1 = \n"
+           << i.uds1;
+        os << "ubx0 = \n"
+           << i.ubx0;
+        os << "ubx1 = \n"
+           << i.ubx1;
+        os << "ma1 = \n"
+           << i.ma1;
+        os << "ma2 = \n"
+           << i.ma2;
+        os << "ma3 = \n"
+           << i.ma3;
+        os << "ub = \n"
+           << i.ub;
+        os << "td1 = \n"
+           << i.td1;
+        os << "td2 = \n"
+           << i.td2;
+        os << "td3 = \n"
+           << i.td3;
+        os << "tds1 = \n"
+           << i.tds1;
+        os << "tds2 = \n"
+           << i.tds2;
+        os << "tds3 = \n"
+           << i.tds3;
+        os << "tdc1 = \n"
+           << i.tdc1;
+        os << "tdc2 = \n"
+           << i.tdc2;
+        os << "tdc3 = \n"
+           << i.tdc3;
+        os << "r = \n"
+           << i.r;
+        os << "z = \n"
+           << i.z;
+        return os;
+      }
+
+      // Put a A layotu matrix into memory
+      __device__ __forceinline__ void store_a_matrix(
+          u32 a0, u32 a1, u32 a2, u32 a3,
+          Matrix<16, 32, u8> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [&mat, lane_id](u32 m, u32 n, u32 a)
+        {
+          u32 i = lane_id / 4 + m * 8;
+          u32 j = (lane_id % 4) * 4 + n * 16;
+          for (u32 k = 0; k < 4; k++)
+            mat.get(i, j + k) = (a >> (8 * k)) & 0xff;
+          // printf("[%u, %u] %u %u %u %u \n", i, j, mat.get(i, j + 0), mat.get(i, j + 1), mat.get(i, j + 2), mat.get(i, j + 3));
+        };
+        st(0, 0, a0);
+        st(0, 1, a1);
+        st(1, 0, a2);
+        st(1, 1, a3);
+      }
+
+      // Put a B layotu matrix into memory
+      __device__ __forceinline__ void store_b_matrix(
+          u32 b0, u32 b1, Matrix<32, 8, u8> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [&mat, lane_id](u32 m, u32 b)
+        {
+          u32 i = (lane_id % 4) * 4 + m * 16;
+          u32 j = lane_id / 4;
+          for (u32 k = 0; k < 4; k++)
+            mat.get(i + k, j) = (b >> (8 * k)) & 0xff;
+        };
+
+        st(0, b0);
+        st(1, b1);
+      }
+
+      // Put a D layout matrix into memory
+      __device__ __forceinline__ void store_d_matrix(
+          u32 d0, u32 d1, u32 d2, u32 d3,
+          Matrix<16, 8, u32> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [&mat, lane_id](u32 m, u32 n, u32 d)
+        {
+          u32 i = lane_id / 4 + m * 8;
+          u32 j = (lane_id % 4) * 2 + n;
+          mat.get(i, j) = d;
+        };
+
+        st(0, 0, d0);
+        st(0, 1, d1);
+        st(1, 0, d2);
+        st(1, 1, d3);
+      }
+
+      // Put a Bx layout matrix into memory
+      __device__ __forceinline__ void store_bx_matrix(
+          u32 bx0, u32 bx1, u32 bx2, u32 bx3,
+          Matrix<16, 8, u32> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [&mat, lane_id](u32 m, u32 bx)
+        {
+          u32 i = lane_id % 4 + m * 4;
+          u32 j = lane_id / 4;
+          mat.get(i, j) = bx;
+        };
+
+        st(0, bx0);
+        st(1, bx1);
+        st(2, bx2);
+        st(3, bx3);
+      }
+
+      __device__ __forceinline__ void store_z_matrix(
+          u16 z0, u16 z1, Matrix<16, 4, u16> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto st = [&mat, lane_id](u32 m, u32 z)
+        {
+          u32 i = lane_id / 4 + 8 * m;
+          u32 j = lane_id % 4;
+          mat.get(i, j) = z;
+        };
+
+       st(0, z0);
+        st(1, z1);
+      }
+
+      template <typename M>
+      __device__ __forceinline__ void polulate_a_matrix(
+        u32 &a0, u32 &a1, u32 &a2, u32 &a3, const M mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto ld = [mat, lane_id](u32 m, u32 n, u32 &a)
+        {
+          u32 i = lane_id / 4 + m * 8;
+          u32 j = (lane_id % 4) * 4 + n * 16;
+          for (u32 k = 0; k < 4; k++)
+            a |= (mat(i, j + k)) << (8 * k);
+        };
+        ld(0, 0, a0);
+        ld(0, 1, a1);
+        ld(1, 0, a2);
+        ld(1, 1, a3);
+      }
+
+      template <typename M>
+      __device__ __forceinline__ void polulate_b_matrix(
+        u32 &b0, u32 &b1, const M mat
+      )
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto ld = [mat, lane_id](u32 m, u32 &b)
+        {
+          u32 i = (lane_id % 4) * 4 + m * 16;
+          u32 j = lane_id / 4;
+          for (u32 k = 0; k < 4; k++)
+            b |= (mat(i + k, j)) << (8 * k);
+        };
+
+        ld(0, b0);
+        ld(1, b1);
       }
     }
 
@@ -148,14 +517,10 @@ namespace mont
         u32 b0, u32 b1,
         u32 c0, u32 c1, u32 c2, u32 c3)
     {
-      i32 d0i, d1i, d2i, d3i;
-      i32 c0i = c0, c1i = c1, c2i = c2, c3i = c3;
       asm(
-          "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" :
-          "=r"(d0i), "=r"(d1i), "=r"(d2i), "=r"(d3i) : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
-          "r"(b0), "r"(b1),
-          "r"(c0i), "r"(c1i), "r"(c2i), "r"(c3i));
-      d0 = d0i, d1 = d1i, d2 = d2i, d3 = d3i;
+          "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" : "=r"(d0), "=r"(d1), "=r"(d2), "=r"(d3) : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+                                                                                                                                                                               "r"(b0), "r"(b1),
+                                                                                                                                                                               "r"(c0), "r"(c1), "r"(c2), "r"(c3));
     }
 
     // Transpose a 8x8 matrix, of data type u16.
@@ -220,10 +585,12 @@ namespace mont
     //       ...
     //   15  T3(D[0,30],D[0,31])
     //
+    // This can be viewed as two matrices in BX layout.
+    //
     // If mma is called with C = 0, then each D[ij] is at most 2^21, so the highest byte of D[ij] is zero.
     // This way, for example, D[0,0] and D[0,1] can be coalesced into a u32
     //   Bx[0,0] = D[0,0] + (D[0,1] << 8)
-    // Note that D' is not calculated in this function.
+    // Note that Bx is not calculated in this function.
     __device__ __forceinline__ void transpose_d_to_b(
         u32 &b00, u32 &b01, u32 &b10, u32 &b11, u32 &b20, u32 &b21, u32 &b30, u32 &b31,
         u32 d00, u32 d02,
@@ -265,7 +632,7 @@ namespace mont
     // Note that N_0(Bx[0]) + N_1(Bx[0]) does not equal the original N(Bx[0]), since the higher u16 of Bx[0,15] is thrown away,
     // but since montgomery reduction only needs modular 2^256 multiplication when calculating u = m' * (a * b), this is not a problem.
     //
-    // The resulting By matrix is
+    // The resulting By matrix is in B layout
     //
     //              0                           1                   2       3    ...   7
     //   0         {by0[0]=Bx[0,0][0],         {Bx'[0,1][0],
@@ -292,7 +659,7 @@ namespace mont
       u32 col = lane_id / 4;
       u32 j = col / 2;
       u32 k = col % 2;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
 
       u16 bx0_hi, bx0_lo;
       u16 bx1_hi, bx1_lo;
@@ -392,15 +759,22 @@ namespace mont
     // It first transposes D to Bx0, then Bx0's columns are coalesced as described before,
     // resulting in Bx;
     // After that By is obtained by applying `shuffle_b_for_mul` to Bx.
+    template <bool DEBUG>
     __device__ __forceinline__ void transpose_and_split(
         u32 &by0, u32 &by1,
         u32 d00, u32 d02,
-        u32 d10, u32 d12)
+        u32 d10, u32 d12,
+        debug::Matrix<16, 8, u32> bx0, debug::Matrix<16, 8, u32> bx1)
     {
       u32 db00, db01, db10, db11, db20, db21, db30, db31;
       transpose_d_to_b(
           db00, db01, db10, db11, db20, db21, db30, db31,
           d00, d02, d10, d12);
+      if (DEBUG)
+      {
+        debug::store_bx_matrix(db00, db10, db20, db30, bx0);
+        debug::store_bx_matrix(db01, db11, db21, db31, bx1);
+      }
       shuffle_b_for_mul(
           by0, by1,
           db00 + (db01 << 8),
@@ -420,12 +794,11 @@ namespace mont
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
-      u32 mask = 0xf000000f;
+      u32 mask = MASK_ALL;
       u32 got = __shfl_sync(mask, d12, lane_id % 4 + 28);
       if (i == 0)
         d20 += got >> 16;
 
-      mask = 0x0f00000f;
       got = __shfl_sync(mask, d12, lane_id % 4 + 28);
       if (i == 0)
         d20 += got >> 8;
@@ -438,7 +811,7 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
 
       auto shuffle = [i, j, mask](u32 &ey, u32 exx0, u32 exx1)
       {
@@ -466,7 +839,7 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
 
       u32 full = IS_SUB ? r == 0 : r == 0xffff;
 
@@ -537,7 +910,7 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
       u32 d00_higher = __shfl_down_sync(mask, d00, 4);
 
       u32 e0, e1, e2, e3;
@@ -592,7 +965,7 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
       u32 borrow_in = 0;
 
       auto get_st_u16 = [st_m](u32 n)
@@ -639,7 +1012,7 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = 0xffffffff;
+      u32 mask = MASK_ALL;
 
       u32 w = 0;
 
@@ -660,161 +1033,184 @@ namespace mont
         st_z[j][i] = w;
     }
 
-    // Debugging utilies
-    namespace debug {
-      template <u32 R, u32 C, typename T>
-      struct Matrix {
-        T* p;
-        __host__ Matrix() {
-          cudaMalloc(&p, R * C * sizeof(T));
-        }
-        __device__ __host__ T& operator[](u32 i, u32 j)
-        {
-          return p[i * C + j];
-        }
-      };
-
-      // Put a A layotu matrix into memory
-      __device__ __forceinline__ void store_a_matrix(
-        u32 a0, u32 a1, u32 a2, u32 a3,
-        Matrix<16, 32, u8> mat
-      ) {
-        u32 lane_id = threadIdx.x % 32;
-
-        auto st = [mat, lane_id](u32 m, u32 n, u32 a)
-        {
-            u32 i = lane_id / 4 + m * 8;
-            u32 j = (lane_id % 4) * 4 + n * 16;
-            for (u32 k = 0; k < 4; k ++)
-              m[i, j + k] = (a >> (8 * k)) & 0xff;
-        };
-        st(0, 0, a0);
-        st(0, 1, a1);
-        st(1, 0, a2);
-        st(1, 1, a3);
-      }
-
-      // Put a B layotu matrix into memory
-      __device__ __forceinline__ void store_b_matrix(
-        u32 b0, u32 b1, Matrix<31, 8, u8> mat
-      ) {
-        u32 lane_id = threadIdx.x % 32;
-
-        auto st = [mat, lane_id](u32 m, u32 b)
-        {
-          u32 i = (lane_id % 4) * 4 + m * 8;
-          u32 j = lane_id / 4;
-          for (u32 k = 0; k < 4; k ++)
-            m[i + k, j] = (b >> (8 * k)) & 0xff;
-        };
-
-        st(0, b0);
-        st(1, b1);
-      }
-    }
-
-    template <u32 NUM, typename StZ, typename StX, typename StY, typename StM>
+    template <u32 NUM, bool DEBUG = false, typename StZ, typename StX, typename StY, typename StM>
     __device__ __forceinline__ void montgomery_multiplication_raw(
         StZ *st_z,
         const StX st_x,
         const StY *st_y,
         const StM st_m,
-        const StM st_m_prime)
+        const StM st_m_prime,
+        debug::Intermediates *intermediates = nullptr)
     {
-      // Naming convention: <symbol> <layout> [variant]   <number>
-      // For example,        s        d                    00
-      //                     mp       a                    0
-      //                     u        b        s(plitted)  0
+      // Naming convention: <symbol> <layout> <number>
+      // For example,        s        d        00
+      //                     mp       a        0
 
       // Compute s = x * y
-      u32 xa0, xa1, xa2, xa3;
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
+
       u32 yb0, yb1;
       load_b_matrix<NUM>(yb0, yb1, st_y);
+      if (DEBUG)
+        debug::store_b_matrix(yb0, yb1, intermediates->yb);
+
+      u32 xa0, xa1, xa2, xa3;
+
+      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa0);
       u32 sd00, sd01, sd02, sd03;
       mma_m16n8k32(sd00, sd01, sd02, sd03, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
       load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 1);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa1);
       u32 sd10, sd11, sd12, sd13;
       mma_m16n8k32(sd10, sd11, sd12, sd13, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
       load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 2);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa2);
       u32 sd20, sd21, sd22, sd23;
       mma_m16n8k32(sd20, sd21, sd22, sd23, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
       load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 3);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa3);
       u32 sd30, sd31, sd32, sd33;
       mma_m16n8k32(sd30, sd31, sd32, sd33, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      // Compute u = m' * s (mod 2^256)
+      if (DEBUG)
+      {
+        debug::store_d_matrix(sd00, sd01, sd02, sd03, intermediates->sd0);
+        debug::store_d_matrix(sd10, sd11, sd12, sd13, intermediates->sd1);
+        debug::store_d_matrix(sd20, sd21, sd22, sd23, intermediates->sd2);
+        debug::store_d_matrix(sd30, sd31, sd32, sd33, intermediates->sd3);
+      }
 
-      u32 sbs0, sbs1;
-      transpose_and_split(sbs0, sbs1, sd00, sd02, sd10, sd12);
+      // // Compute u = m' * s (mod 2^256)
 
-      u32 mpa0, mpa1, mpa2, mpa3;
-      load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 0);
+      // u32 sb0, sb1;
+      // transpose_and_split<DEBUG>(sb0, sb1, sd00, sd02, sd10, sd12, intermediates->sbx0, intermediates->sbx1);
+      // if (DEBUG)
+      //   debug::store_b_matrix(sb0, sb1, intermediates->sb);
 
-      u32 ud00, ud01, ud02, ud03;
-      mma_m16n8k32(ud00, ud01, ud02, ud03, mpa0, mpa1, mpa2, mpa3, sbs0, sbs1, 0, 0, 0, 0);
+      // u32 mpa0, mpa1, mpa2, mpa3;
+      // load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 0);
+      // if (DEBUG)
+      //   debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp0);
+      // u32 ud00, ud01, ud02, ud03;
+      // mma_m16n8k32(ud00, ud01, ud02, ud03, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
 
-      u32 ud10, ud11, ud12, ud13;
-      mma_m16n8k32(ud10, ud11, ud12, ud13, mpa0, mpa1, mpa2, mpa3, sbs0, sbs1, 0, 0, 0, 0);
+      // load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 1);
+      // if (DEBUG)
+      //   debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp1);
+      // u32 ud10, ud11, ud12, ud13;
+      // mma_m16n8k32(ud10, ud11, ud12, ud13, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
 
-      ud00 += ud01;
-      ud02 += ud03;
-      ud10 += ud11;
-      ud12 += ud13;
+      // if (DEBUG)
+      // {
+      //   debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->ud0);
+      //   debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->ud1);
+      // }
 
-      // Compute t = s + m * u
+      // ud00 += ud01;
+      // ud02 += ud03;
+      // ud10 += ud11;
+      // ud12 += ud13;
 
-      u32 ubs0, ubs1;
-      transpose_and_split(ubs0, ubs1, ud00, ud02, ud10, ud12);
+      // if (DEBUG)
+      // {
+      //   debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->ud0);
+      //   debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->ud1);
+      // }
 
-      u32 ma0, ma1, ma2, ma3;
-      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
-      u32 td10, td11, td12, td13;
-      mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ubs0, ubs1, sd10, 0, sd12, 0);
+      // // Compute t = s + m * u
 
-      u32 td20, td21, td22, td23;
-      mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ubs0, ubs1, sd20, 0, sd22, 0);
+      // u32 ub0, ub1;
+      // transpose_and_split<DEBUG>(ub0, ub1, ud00, ud02, ud10, ud12, intermediates->ubx0, intermediates->ubx1);
+      // if (DEBUG)
+      //   debug::store_b_matrix(ub0, ub1, intermediates->ub);
 
-      u32 td30, td31, td32, td33;
-      mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ubs0, ubs1, sd30, 0, sd32, 0);
+      // u32 ma0, ma1, ma2, ma3;
+      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
+      // if (DEBUG)
+      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma1);
+      // u32 td10, td11, td12, td13;
+      // mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ub0, ub1, sd10, 0, sd12, 0);
 
-      td10 += td11;
-      td12 += td13;
-      td20 += td21;
-      td22 += td23;
-      td30 += td31;
-      td32 += td33;
+      // u32 td20, td21, td22, td23;
+      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 2);
+      // if (DEBUG)
+      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma2);
+      // mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ub0, ub1, sd20, 0, sd22, 0);
 
-      // Compute z = t mod 2^256
+      // u32 td30, td31, td32, td33;
+      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 3);
+      // if (DEBUG)
+      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma3);
+      // mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ub0, ub1, sd30, 0, sd32, 0);
 
-      carry_up_tail_of_d(td20, td12);
+      // if (DEBUG)
+      // {
+      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->td1);
+      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->td2);
+      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->td3);
+      // }
 
-      u16 r0, r1;
-      compact(r0, r1, td20, td22, td30, td32);
+      // td10 += td11;
+      // td12 += td13;
+      // td20 += td21;
+      // td22 += td23;
+      // td30 += td31;
+      // td32 += td33;
 
-      u16 z0, z1;
-      modulo_m(z0, z1, r0, r1, st_m);
+      // if (DEBUG)
+      // {
+      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->tds1);
+      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->tds2);
+      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->tds3);
+      // }
 
-      store_z<NUM>(st_z, z0, z1);
+      // // Compute z = t mod 2^256
+
+      // carry_up_tail_of_d(td20, td12);
+
+      // if (DEBUG)
+      // {
+      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->tdc1);
+      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->tdc2);
+      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->tdc3);
+      // }
+
+      // u16 r0, r1;
+      // compact(r0, r1, td20, td22, td30, td32);
+
+      // if (DEBUG)
+      //   debug::store_z_matrix(r0, r1, intermediates->r);
+
+      // u16 z0, z1;
+      // modulo_m(z0, z1, r0, r1, st_m);
+
+      // if (DEBUG)
+      //   debug::store_z_matrix(z0, z1, intermediates->z);
+
+      // store_z<NUM>(st_z, z0, z1);
     }
 
-    template <u32 NUM, typename Params, typename StZ, typename StX, typename StY>
+    template <u32 NUM, bool DEBUG, typename Params, typename StZ, typename StX, typename StY>
     __device__ __forceinline__ void mul(
-        Element<Params, StZ> *z,
-        Element<Params, StX> x,
-        Element<Params, StY> *y)
+        StZ *st_z,
+        const StX st_x,
+        const StY *st_y,
+        debug::Intermediates *intermediate = nullptr)
     {
-      StZ st_z[4] = {z[0].n.limbs, z[1].n.limbs, z[2].n.limbs, z[3].n.limbs};
-      StY st_y[4] = {y[0].n.limbs, y[1].n.limbs, y[2].n.limbs, y[3].n.limbs};
-      montgomery_multiplication_raw<NUM>(
+      montgomery_multiplication_raw<NUM, DEBUG>(
           st_z,
-          x.n.limbs,
+          st_x,
           st_y,
           Params::m().limbs,
-          Params::m_prime_wide().limbs);
+          Params::m_prime_wide().limbs,
+          intermediate);
     }
   }
 }

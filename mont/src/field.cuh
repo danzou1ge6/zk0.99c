@@ -703,7 +703,7 @@ namespace mont
         borrow(u32 *p)
     {
       Element<Params, StridedReference<STRIDE>> r;
-      r.n.limbs = StridedReference(p);
+      r.n.limbs = StridedReference<STRIDE>(p);
       return r;
     }
 

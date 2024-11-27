@@ -19,6 +19,8 @@ namespace mont
   {
     u32 *p;
 
+    __device__ __host__ __forceinline__ StridedReference(u32 *p) : p(p) {}
+
     __device__ __host__ __forceinline__ u32 &operator[](usize i)
     {
       return *(p + i * STRIDE);
@@ -40,12 +42,12 @@ namespace mont
 
     __device__ __host__ __forceinline__ StridedReference<STRIDE> operator+(int k)
     {
-      return StridedReference<STRIDE>{.p = p + k * STRIDE};
+      return StridedReference<STRIDE>(p + k * STRIDE);
     }
 
     __device__ __host__ __forceinline__ const StridedReference<STRIDE> operator+(int k) const
     {
-      return StridedReference<STRIDE>{.p = p + k * STRIDE};
+      return StridedReference<STRIDE>(p + k * STRIDE);
     }
 
     template <usize N>
@@ -120,12 +122,12 @@ namespace mont
 
     __device__ __host__ __forceinline__ StridedReference<1> operator+(int k)
     {
-      return StridedReference<1>{.p = (u32 *)limbs + k};
+      return StridedReference<1>((u32 *)limbs + k);
     }
 
     __device__ __host__ __forceinline__ const StridedReference<1> operator+(int k) const
     {
-      return StridedReference<1>{.p = (u32 *)limbs + k};
+      return StridedReference<1>((u32 *)limbs + k);
     }
 
     template <usize N1>
@@ -136,12 +138,12 @@ namespace mont
 
     __device__ __host__ __forceinline__ StridedReference<1> to_ref()
     {
-      return StridedReference<1>{.p = limbs};
+      return StridedReference<1>(limbs);
     }
 
     __device__ __host__ __forceinline__ const StridedReference<1> to_ref() const
     {
-      return StridedReference<1>{.p = (u32 *)limbs};
+      return StridedReference<1>((u32 *)limbs);
     }
 
     static __device__ __host__ __forceinline__
@@ -179,10 +181,12 @@ namespace mont
     template <usize N1>
     __device__ __host__ __forceinline__ void store(u32 * p, u32 stride = 1) const &
     {
-      const auto ref = StridedReference<1>{.p = (u32 *)limbs};
+      const auto ref = StridedReference<1>((u32 *)limbs);
       ref.template store<N1>(p, stride);
     }
   };
+
+  using Reference = StridedReference<1>;
 
   template <usize N, typename Src, typename Dst>
   __host__ __device__ __forceinline__ void storage_copy(Dst dst, Src src)

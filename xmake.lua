@@ -24,6 +24,14 @@ target("test-mont")
     add_files("mont/tests/main.cu")
     add_packages("doctest")
 
+target("debug-tc-mont")
+    add_cugencodes("sm_80")
+    set_languages(("c++17"))
+    if is_mode("debug") then
+        set_symbols("debug")
+    end
+    add_files("mont/tests/debug_tc.cu")
+
 target("bench-mont")
     set_languages(("c++17"))
     add_cugencodes("native")
