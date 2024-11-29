@@ -86,17 +86,6 @@ namespace msm
     static constexpr bool debug = false;
   };
 
-  // with n_windows = 32, launched 64 threads
-  //
-  //   scaler 0 = digit 0 | d1 | ... | d31
-  //               ^thread 0 ^t1        ^t31
-  //   scaler 1 = digit 0 | d1 | ... | d31
-  //               ^t32     ^t33        ^t63
-  //   scaler 2 = digit 0 | d1 | ... | d31
-  //               ^t0      ^t1         ^t31
-  //   ...
-  //
-  // blockDim.x better be multiple of n_windows, and total number threads must be mutiple of n_windows
   template <typename Config>
   __global__ void count_buckets(
       const u32 *scalers,
@@ -104,25 +93,22 @@ namespace msm
       Array2D<u32, Config::n_windows, Config::n_buckets> counts)
   {
     u32 tid = blockIdx.x * blockDim.x + threadIdx.x;
-    u32 window_id = tid % Config::n_windows;
-    u32 i0_scaler = tid / Config::n_windows;
-
-    u32 n_threads = gridDim.x * blockDim.x;
-    u32 i_stride = n_threads / Config::n_windows;
-
-    __syncthreads();
-
+    u32 stride = gridDim.x * blockDim.x;
+    
     // Count into block-wide counter
-    for (u32 i = i0_scaler; i < len; i += i_stride)
-    {
+    for (u32 i = tid; i < len; i += stride) {
+      u32 bucket[Config::n_windows];
       auto scaler = Number::load(scalers + i * Number::LIMBS);
-      auto scaler_window = scaler.bit_slice(window_id * Config::s, Config::s);
-      if (scaler_window != 0)
-        atomicAdd(counts.addr(window_id, scaler_window), 1);
+      scaler.bit_slice<Config::n_windows, Config::s>(bucket);
+
+      #pragma unroll
+      for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
+        auto bucketid = bucket[window_id];
+        if (bucketid != 0) {
+          atomicAdd(counts.addr(window_id, bucketid), 1);
+        }
+      }
     }
-
-    __syncthreads();
-
   }
 
   struct PointId
@@ -140,20 +126,6 @@ namespace msm
     }
   };
 
-
-  // with n_windows = 32, scatter_batch_size = 2, launched 64 threads
-  //
-  //   scaler 0 = digit 0 | d1 | ... | d31
-  //               ^thread 0 ^t1        ^t31
-  //   scaler 1 = digit 0 | d1 | ... | d31
-  //               ^t0       ^t1        ^t31
-  //   scaler 2 = digit 0 | d1 | ... | d31
-  //               ^t32      ^t33       ^t63
-  //   scaler 3 = digit 0 | d1 | ... | d31
-  //               ^t32      ^t33       ^t63
-  //   ...
-  //
-  // blockDim.x better be multiple of n_windows, and total number threads must be mutiple of n_windows
   template <typename Config>
   __global__ void scatter(
       const u32 *scalers,
@@ -163,33 +135,19 @@ namespace msm
       Array2D<u32, Config::n_windows, Config::n_buckets> buckets_len)
   {
     u32 tid = blockIdx.x * blockDim.x + threadIdx.x;
-    u32 window_id = tid % Config::n_windows;
-    u32 i0_scaler = tid / Config::n_windows * Config::scatter_batch_size;
+    u32 stride = gridDim.x * blockDim.x;
+    
+    // Count into block-wide counter
+    for (u32 i = tid; i < len; i += stride) {
+      u32 bucket[Config::n_windows];
+      auto scaler = Number::load(scalers + i * Number::LIMBS);
+      scaler.bit_slice<Config::n_windows, Config::s>(bucket);
 
-    u32 n_threads = gridDim.x * blockDim.x;
-    u32 i_stride = n_threads / Config::n_windows * Config::scatter_batch_size;
-
-    // if (tid == 0)
-    //   printf("config info: %d %d %d %d\n", Config::n_windows, Config::n_buckets, Config::scatter_batch_size, i_stride);
-
-    // Opt. Opportunity: First scatter to shared memory, then scatter to global, so as to reduce
-    // global atomic operations.
-    for (u32 i = i0_scaler; i < len; i += i_stride)
-    {
-      for (u32 j = i; j < i + Config::scatter_batch_size && j < len; j++)
-      {
-        auto scaler = Number::load(scalers + j * Number::LIMBS);
-        auto scaler_window = scaler.bit_slice(window_id * Config::s, Config::s);
-        if (scaler_window != 0)
-        {
-          u32 old_count = atomicAdd(buckets_len.addr(window_id, scaler_window), 1);
-          if (buckets_offset.get_const(window_id, scaler_window) + old_count >= len * Config::n_windows)
-          {
-            printf("Assertion failed! window_id: %d, scaler_window: %d, old_count: %d, offset: %d, len: %d\n",
-                   window_id, scaler_window, old_count, buckets_offset.get_const(window_id, scaler_window), len);
-            assert(false);
-          }
-          buckets_buffer[buckets_offset.get_const(window_id, scaler_window) + old_count] = PointId(window_id, j);
+      #pragma unroll
+      for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
+        auto bucketid = bucket[window_id];
+        if (bucketid != 0) {
+          buckets_buffer[buckets_offset.get_const(window_id, bucketid) + atomicAdd(buckets_len.addr(window_id, bucketid), 1)] = PointId(window_id, i);
         }
       }
     }
@@ -297,15 +255,14 @@ namespace msm
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
-    u32 block_size = 96;
-    u32 grid_size = 128;
+    u32 block_size = 512;
+    u32 grid_size = deviceProp.multiProcessorCount * 2;
     count_buckets<Config><<<grid_size, block_size>>>(scalers, len, counts); 
     PROPAGATE_CUDA_ERROR(cudaGetLastError());
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
     std::cout << "MSM count time:" << elapsedTime << std::endl;
-
 
     // Allocate space for buckets buffer
     // Space for PoindId's

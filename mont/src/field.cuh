@@ -418,11 +418,18 @@ namespace mont
     template <usize N>
     __host__ __device__ __forceinline__ void slr(u32 *r, const u32 *x, const u32 k)
     {
-      if (k == 0)
+      if (k % 32 == 0)
       {
-#pragma unroll
-        for (usize i = 0; i < N; i++)
-          r[i] = x[i];
+        u32 shift = k / 32;
+        #pragma unroll
+        for (usize i = N - shift; i < N; i++) {
+          r[i] = 0;
+        }
+
+        #pragma unroll
+        for (usize i = 0; i < N - shift; i++) {
+          r[i] = x[i + shift];
+        }
         return;
       }
 #pragma unroll
@@ -434,8 +441,9 @@ namespace mont
           u32 k_lo = k - (i - 1) * 32;
           u32 k_hi = i * 32 - k;
 #pragma unroll
-          for (int j = N - 1; j > N - i; j--)
+          for (int j = N - 1; j > N - i; j--) {
             r[j] = 0;
+          }
           r[N - i] = x[N - 1] >> k_lo;
 #pragma unroll
           for (int j = N - i - 1; j >= 0; j--)
@@ -613,7 +621,22 @@ namespace mont
         bit_slice(u32 lo, u32 n_bits)
     {
       Number t = slr(lo);
-      return t.limbs[0] & ~((u32)0 - (1 << n_bits));
+      return t.limbs[0] & ((1 << n_bits) - 1);
+    }
+
+    template <u32 windows, u32 bits_per_window>
+    __host__ __device__ __forceinline__
+    void bit_slice(u32 (&r)[windows]) {
+      static_assert(bits_per_window <= 32, "Too many bits per window");
+      static_assert(windows * bits_per_window <= LIMBS * 32, "Too many bits");
+
+      // can be optimized by using hand written __funnelshift sequences
+      Number t = *this;
+      #pragma unroll
+      for (u32 i = 0; i < windows; i++) {
+        r[i] = t.limbs[0] & ((1 << bits_per_window) - 1);
+        t = t.slr(bits_per_window);
+      }
     }
 
     // Word-by-word equality
