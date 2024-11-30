@@ -628,7 +628,6 @@ namespace mont
     __host__ __device__ __forceinline__
     void bit_slice(u32 (&r)[windows]) {
       static_assert(bits_per_window <= 32, "Too many bits per window");
-      static_assert(windows * bits_per_window <= LIMBS * 32, "Too many bits");
 
       // can be optimized by using hand written __funnelshift sequences
       Number t = *this;
