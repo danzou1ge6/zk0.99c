@@ -123,6 +123,20 @@ namespace msm
         sum.get(window_id, bucket_id) = Point::identity();
     }
 
+  __device__ __forceinline__ void lock(u32 *mutex_ptr, u32 wait_limit = 16) {
+    u32 time = 1;
+    while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
+        __nanosleep(time);
+        if (time < wait_limit) time *= 2;
+    }
+    __threadfence();
+  }
+
+  __device__ __forceinline__ void unlock(u32 *mutex_ptr) {
+    __threadfence();
+    atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
+  }
+
   template <typename Config, u32 WarpPerBlock>
   __global__ void bucket_sum(
       const u32 window_id,
@@ -147,37 +161,31 @@ namespace msm
 
     auto acc = Point::identity();
     u32 last_key = key_for_pointer[start_id];
+    bool first = true; // only the first bucket and the last bucket may have conflict with other threads
 
     for (u32 i = start_id; i < end_id; i++) {
       u32 cur_key = key_for_pointer[i];
       if (cur_key != last_key) {
-        auto mutex_ptr = mutex + last_key;
-        u32 time = 1;
-        while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
-            __nanosleep(time);
-            if (time < 16) time *= 2;
+        if (first) {
+          first = false;
+          auto mutex_ptr = mutex + last_key;
+          lock(mutex_ptr);
+          sum.get(window_id, last_key - 1) = sum.get(window_id, last_key - 1) + acc;
+          unlock(mutex_ptr);
+        } else {
+          sum.get(window_id, last_key - 1) = acc;
         }
-        __threadfence();
-        sum.get(window_id, last_key - 1) = sum.get(window_id, last_key - 1) + acc;
-        __threadfence();
-        atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
         acc = Point::identity();
+        last_key = cur_key;
       }
-      last_key = cur_key;
       auto pointer = pointer_to_points[i];
       auto p = PointAffine::load(points + pointer * PointAffine::N_WORDS);
       acc = acc + p;
     }
     auto mutex_ptr = mutex + last_key;
-    u32 time = 1;
-    while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
-        __nanosleep(time);
-        if (time < 16) time *= 2;
-    }
-    __threadfence();
+    lock(mutex_ptr);
     sum.get(window_id, last_key - 1) = sum.get(window_id, last_key - 1) + acc;
-    __threadfence();
-    atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
+    unlock(mutex_ptr);
   }
 
     template<typename Config, u32 blockdim = 256>
