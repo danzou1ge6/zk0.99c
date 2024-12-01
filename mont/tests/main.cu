@@ -69,13 +69,9 @@ __global__ void mont_mul(u32 *r, const u32 *a, const u32 *b)
 
 __global__ void mont_mul_tc(u32 *r, const u32 *a, const u32 *b)
 {
-  auto na = Element::load(a);
-  auto nb = Element::load(b);
-  Element nr, useless;
-  Element mul_z[1] = {nr};
-  Element mul_y[1] = {nb};
-  mont::tc256::mul<1>(mul_z, na, mul_y);
-  nr.store(r);
+  mont::Reference mul_z[1] = {mont::Reference(r)};
+  const mont::Reference mul_y[1] = {mont::Reference::immutable(b)};
+  mont::tc256::mul<1, false, bn256_fr::Params>(mul_z, mont::Reference::immutable(a), mul_y);
 }
 
 __global__ void convert_to_mont(u32 *r, const u32 *a, const u32 *b)

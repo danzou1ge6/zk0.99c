@@ -25,7 +25,7 @@ namespace mont
         else
           return p[i];
       };
-      i32 rem = (u32)n & 0b11;  // modular 4
+      i32 rem = (u32)n & 0b11; // modular 4
       i32 n0 = n - rem;
       return (get_limb(n0 / 4) >> (rem * 8)) | (get_limb(n0 / 4 + 1) << (32 - rem * 8));
     }
@@ -170,7 +170,7 @@ namespace mont
         {
           for (u32 j = 0; j < C; j++)
           {
-            os << std::dec << std::setw(w) << std::setfill(' ') << (u32)mat.get(i, j) << " ";
+            os << std::hex << std::setw(w) << std::setfill(' ') << (u32)mat.get(i, j) << " ";
           }
           os << std::endl;
         }
@@ -186,13 +186,13 @@ namespace mont
         Matrix<16, 32, u8> xa0, xa1, xa2, xa3;
         Matrix<32, 8, u8> yb;
         Matrix<16, 8, u32> sd0, sd1, sd2, sd3;
-        Matrix<16, 8, u32> sbx0, sbx1;
+        Matrix<16, 8, u32> sbx;
         // u = m' * s (mod 2^256)
         Matrix<32, 8, u8> sb;
         Matrix<16, 32, u8> mp0, mp1;
         Matrix<16, 8, u32> ud0, ud1;
         Matrix<16, 8, u32> uds0, uds1; // ud after summing each two adjacent columns
-        Matrix<16, 8, u32> ubx0, ubx1;
+        Matrix<16, 8, u32> ubx;
         // t = s + m * u
         Matrix<16, 32, u8> ma1, ma2, ma3;
         Matrix<32, 8, u8> ub;
@@ -200,6 +200,7 @@ namespace mont
         Matrix<16, 8, u32> tds1, tds2, tds3; // td after summing each two adjacent columns
         Matrix<16, 8, u32> tdc1, tdc2, tdc3; // tds after carrying up tail of first 32 u32's
         // z = t mod 2^256
+        Matrix<16, 4, u32> tey;
         Matrix<16, 4, u16> r; // t after compact
         Matrix<16, 4, u16> z;
 
@@ -215,8 +216,7 @@ namespace mont
           sd1.alloc_device();
           sd2.alloc_device();
           sd3.alloc_device();
-          sbx0.alloc_device();
-          sbx1.alloc_device();
+          sbx.alloc_device();
           sb.alloc_device();
           mp0.alloc_device();
           mp1.alloc_device();
@@ -224,8 +224,7 @@ namespace mont
           ud1.alloc_device();
           uds0.alloc_device();
           uds1.alloc_device();
-          ubx0.alloc_device();
-          ubx1.alloc_device();
+          ubx.alloc_device();
           ma1.alloc_device();
           ma2.alloc_device();
           ma3.alloc_device();
@@ -239,6 +238,7 @@ namespace mont
           tdc1.alloc_device();
           tdc2.alloc_device();
           tdc3.alloc_device();
+          tey.alloc_device();
           r.alloc_device();
           z.alloc_device();
         }
@@ -260,8 +260,7 @@ namespace mont
               .sd1 = sd1.to_host(),
               .sd2 = sd2.to_host(),
               .sd3 = sd3.to_host(),
-              .sbx0 = sbx0.to_host(),
-              .sbx1 = sbx1.to_host(),
+              .sbx = sbx.to_host(),
               .sb = sb.to_host(),
               .mp0 = mp0.to_host(),
               .mp1 = mp1.to_host(),
@@ -269,8 +268,7 @@ namespace mont
               .ud1 = ud1.to_host(),
               .uds0 = uds0.to_host(),
               .uds1 = uds1.to_host(),
-              .ubx0 = ubx0.to_host(),
-              .ubx1 = ubx1.to_host(),
+              .ubx = ubx.to_host(),
               .ma1 = ma1.to_host(),
               .ma2 = ma2.to_host(),
               .ma3 = ma3.to_host(),
@@ -284,6 +282,7 @@ namespace mont
               .tdc1 = tdc1.to_host(),
               .tdc2 = tdc2.to_host(),
               .tdc3 = tdc3.to_host(),
+              .tey = tey.to_host(),
               .r = r.to_host(),
               .z = z.to_host()};
         }
@@ -309,10 +308,8 @@ namespace mont
            << i.sd2;
         os << "sd3 = \n"
            << i.sd3;
-        os << "sbx0 = \n"
-           << i.sbx0;
-        os << "sbx1 = \n"
-           << i.sbx1;
+        os << "sbx = \n"
+           << i.sbx;
         os << "sb = \n"
            << i.sb;
         os << "mp0 = \n"
@@ -327,10 +324,8 @@ namespace mont
            << i.uds0;
         os << "uds1 = \n"
            << i.uds1;
-        os << "ubx0 = \n"
-           << i.ubx0;
-        os << "ubx1 = \n"
-           << i.ubx1;
+        os << "ubx = \n"
+           << i.ubx;
         os << "ma1 = \n"
            << i.ma1;
         os << "ma2 = \n"
@@ -357,6 +352,8 @@ namespace mont
            << i.tdc2;
         os << "tdc3 = \n"
            << i.tdc3;
+        os << "tey = \n"
+           << i.tey;
         os << "r = \n"
            << i.r;
         os << "z = \n"
@@ -443,8 +440,9 @@ namespace mont
         st(3, bx3);
       }
 
+      template <typename T = u16>
       __device__ __forceinline__ void store_z_matrix(
-          u16 z0, u16 z1, Matrix<16, 4, u16> mat)
+          T z0, T z1, Matrix<16, 4, T> mat)
       {
         u32 lane_id = threadIdx.x % 32;
 
@@ -455,13 +453,13 @@ namespace mont
           mat.get(i, j) = z;
         };
 
-       st(0, z0);
+        st(0, z0);
         st(1, z1);
       }
 
       template <typename M>
       __device__ __forceinline__ void polulate_a_matrix(
-        u32 &a0, u32 &a1, u32 &a2, u32 &a3, const M mat)
+          u32 &a0, u32 &a1, u32 &a2, u32 &a3, const M mat)
       {
         u32 lane_id = threadIdx.x % 32;
 
@@ -480,8 +478,7 @@ namespace mont
 
       template <typename M>
       __device__ __forceinline__ void polulate_b_matrix(
-        u32 &b0, u32 &b1, const M mat
-      )
+          u32 &b0, u32 &b1, const M mat)
       {
         u32 lane_id = threadIdx.x % 32;
 
@@ -495,6 +492,26 @@ namespace mont
 
         ld(0, b0);
         ld(1, b1);
+      }
+
+      template <typename M>
+      __device__ __forceinline__ void polulate_d_matrix(
+          u32 &d0, u32 &d1, u32 &d2, u32 &d3,
+          const M mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+
+        auto ld = [&mat, lane_id](u32 m, u32 n, u32 &d)
+        {
+          u32 i = lane_id / 4 + m * 8;
+          u32 j = (lane_id % 4) * 2 + n;
+          d = mat(i, j);
+        };
+
+        ld(0, 0, d0);
+        ld(0, 1, d1);
+        ld(1, 0, d2);
+        ld(1, 1, d3);
       }
     }
 
@@ -517,10 +534,11 @@ namespace mont
         u32 b0, u32 b1,
         u32 c0, u32 c1, u32 c2, u32 c3)
     {
+      // Due to a mistake in reading documentation, I mistakenly swapped a1 and a2
       asm(
-          "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" : "=r"(d0), "=r"(d1), "=r"(d2), "=r"(d3) : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
-                                                                                                                                                                               "r"(b0), "r"(b1),
-                                                                                                                                                                               "r"(c0), "r"(c1), "r"(c2), "r"(c3));
+          "mma.sync.aligned.m16n8k32.row.col.s32.u8.u8.s32 {%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%10, %11, %12, %13};" : "=r"(d0), "=r"(d1), "=r"(d2), "=r"(d3) : "r"(a0), "r"(a2), "r"(a1), "r"(a3),
+                                                                                                                                                                           "r"(b0), "r"(b1),
+                                                                                                                                                                           "r"(c0), "r"(c1), "r"(c2), "r"(c3));
     }
 
     // Transpose a 8x8 matrix, of data type u16.
@@ -676,7 +694,7 @@ namespace mont
       if (i % 2 == 0)
         src_var = bx0;
       else
-        src_var = ptx::pack_b32(bx0_hi, bx1_hi);
+        src_var = ptx::pack_b32(bx0_lo, bx1_lo);
 
       u32 src_lane = (col - k) * 4 + (i * 2 + k) % 4;
       // if (k == 0)
@@ -698,7 +716,7 @@ namespace mont
       if (i % 2 == 0)
         src_var = bx1;
       else
-        src_var = ptx::pack_b32(bx0_lo, bx1_lo);
+        src_var = ptx::pack_b32(bx0_hi, bx1_hi);
 
       src_lane = (col - k) * 4 + (i * 2 - k) % 4;
 
@@ -720,7 +738,7 @@ namespace mont
       if (i % 2 == 0)
         src_var = bx2;
       else
-        src_var = ptx::pack_b32(bx2_hi, bx3_hi);
+        src_var = ptx::pack_b32(bx2_lo, bx3_lo);
 
       src_lane = (col - k) * 4 + (i * 2 + k) % 4;
 
@@ -738,7 +756,7 @@ namespace mont
       if (i % 2 == 0)
         src_var = bx3;
       else
-        src_var = ptx::pack_b32(bx2_lo, bx3_lo);
+        src_var = ptx::pack_b32(bx2_hi, bx3_hi);
 
       src_lane = (col - k) * 4 + (i * 2 - k) % 4;
 
@@ -764,30 +782,41 @@ namespace mont
         u32 &by0, u32 &by1,
         u32 d00, u32 d02,
         u32 d10, u32 d12,
-        debug::Matrix<16, 8, u32> bx0, debug::Matrix<16, 8, u32> bx1)
+        debug::Matrix<16, 8, u32> *bx = nullptr)
     {
       u32 db00, db01, db10, db11, db20, db21, db30, db31;
       transpose_d_to_b(
           db00, db01, db10, db11, db20, db21, db30, db31,
           d00, d02, d10, d12);
+      u32 dbx0 = db00 + (db01 << 8);
+      u32 dbx1 = db10 + (db11 << 8);
+      u32 dbx2 = db20 + (db21 << 8);
+      u32 dbx3 = db30 + (db31 << 8);
       if (DEBUG)
-      {
-        debug::store_bx_matrix(db00, db10, db20, db30, bx0);
-        debug::store_bx_matrix(db01, db11, db21, db31, bx1);
-      }
+        debug::store_bx_matrix(dbx0, dbx1, dbx2, dbx3, *bx);
       shuffle_b_for_mul(
           by0, by1,
-          db00 + (db01 << 8),
-          db10 + (db11 << 8),
-          db20 + (db21 << 8),
-          db30 + (db31 << 8));
+          dbx0, dbx1, dbx2, dbx3);
     }
 
     // Montgomery reduction zeros-out lower 256 bit of d = a * b, but the matrix column representing d consists of i32 elements,
     //   d = d[0] + d[1] * 2^8 + ... + d[30] * 2^240 + d[31] * 2^248 + d[32] * 2^256 + ... + d[63] * 2^504
-    // so d[30]'s third byte (also the highest non-zero byte) has weight 2^256, and d[31]'s second and third byte has weight 2^256, 2^264.
-    // They are non-zero after applying montgomery reduction to them.
-    // Therefore these bytes must be added to d[32], which is what this function does.
+    // so d[30]'s third byte (also the highest non-zero byte, d[30].2) has weight 2^256,
+    // and d[31]'s second and third byte (d[31].1, d[31].2) has weight 2^256, 2^264.
+    // These bytes must be added to d[32], which is what this function does.
+    // However, this doesn't mean d[31].0, d[30].1 and all bytes with smaller weights are zero —— what are zero are sum of
+    // those bytes with same weight. Thanks to this, we don't need to calculate d[28], d[27], ...
+    //
+    // Clearly, d[i].3's are all zeros, so for each weight, there are at most three bytes, and their sum is no bigger than
+    //   3 * (2^8 - 1) = 3 * 2^8 - 3
+    // By induction we can prove that the carry-out of this sum is no bigger than 3
+    //   Sum with carry in <= 3 * (2^8 - 1) + 3 = 3 * 2^8
+    // Based on this knowledge, we know for some x in {0, 1, 2, 3}
+    //   d[29].2 + d[30].1 + d[31].0 + x = 0 (mod 2^8)
+    // So the carry-out of sum at weight 2^248 equals to that of
+    //   d[29].2 + d[30].1 + d[31].0 + 3
+    // Directly adding this carry-out c to d[32] produces
+    //   d mod 2^256 = (c + d[32]) * 2^256 + ... + d[63] * 2^504
     // After mma, lane 28's d12 holds d[30] and lane24's d12 holds d[31].
     __device__ __forceinline__ void carry_up_tail_of_d(
         u32 &d20, u32 d12)
@@ -795,15 +824,70 @@ namespace mont
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 mask = MASK_ALL;
-      u32 got = __shfl_sync(mask, d12, lane_id % 4 + 28);
+      u32 got = __shfl_sync(mask, d12, lane_id % 4 + 24);
+      u32 s = 0;
       if (i == 0)
+      {
+        s += (got >> 8) & 0xff;
         d20 += got >> 16;
+      }
 
       got = __shfl_sync(mask, d12, lane_id % 4 + 28);
       if (i == 0)
+      {
+        s += got & 0xff;
         d20 += got >> 8;
+      }
+
+      got = __shfl_sync(mask, d12, lane_id % 4 + 20);
+      if (i == 0)
+      {
+        s += (got >> 16) & 0xff;
+        s += 3;
+        d20 += s >> 8;
+      }
     }
 
+    // Shuffle layout EX
+    //
+    //        0        1        2        3
+    // 0  T0 {ex0}     T1       T2       T3
+    // 1  T8           T9       T10      T11
+    // 2  T16          T17      T18      T19
+    // 3  T24          T25      T26      T27
+    // 4  T0 {ex1}     T1       T2       T3
+    // 5  T8           T9       T10      T11
+    // 6  T16          T17      T18      T19
+    // 7  T24          T25      T26      T27
+    // 8  T0 {ex2}     T1       T2       T3
+    // 9  T8           T9       T10      T11
+    // 10 T16          T17      T18      T19
+    // 11 T24          T25      T26      T27
+    // 12 T0 {ex3}     T1       T2       T3
+    // 13 T8           T9       T10      T11
+    // 14 T16          T17      T18      T19
+    // 15 T24          T25      T26      T27
+    //
+    // to layout EY
+    //
+    //        0        1        2        3
+    // 0  T0 {ey0}     T1       T2       T3
+    // 1  T4
+    // 2  T8
+    // 3  T12
+    // 4  T16
+    // 5  T20
+    // 6  T24
+    // 7  T28
+    // 8  T0 {ey1}
+    // 9  T4
+    // 10 T8
+    // 11 T12
+    // 12 T16
+    // 13 T20
+    // 14 T24
+    // 15 T28
+    //
     __device__ __forceinline__ void shuffle_e_for_compact(
         u32 &ey0, u32 &ey1,
         u32 ex0, u32 ex1, u32 ex2, u32 ex3)
@@ -843,16 +927,16 @@ namespace mont
 
       u32 full = IS_SUB ? r == 0 : r == 0xffff;
 
-      u32 lco_b = __ballot_sync(mask, carry_out);
-      u32 fu_b = __ballot_sync(mask, full);
-      lco_b = lco_b & (0x11111111 << j);
-      fu_b = fu_b | (0xeeeeeeee << j);
-      lco_b = (lco_b << 4) | (carry_in << j);
+      u64 lco_b = __ballot_sync(mask, carry_out);
+      u64 fu_b = __ballot_sync(mask, full);
+      fu_b = (fu_b >> j) | 0xeeeeeeee;
+      lco_b = (lco_b >> j) & 0x11111111;
+      lco_b = (lco_b << 4) | carry_in;
 
-      u32 carries = ptx::add_cc(lco_b, fu_b);
-      carry_in = ptx::addc(carry_in, 0);
+      u64 carries = lco_b + fu_b;
+      carry_in = carries >> 32;
 
-      if ((carries ^ fu_b) & (1 << lane_id))
+      if ((carries ^ fu_b) & (1 << (lane_id - j)))
       {
         if (IS_SUB)
           r -= 1;
@@ -902,10 +986,12 @@ namespace mont
     //       ...
     //   15  T28{r[15]   }
     //
+    template <bool DEBUG>
     __device__ __forceinline__ void compact(
         u16 &r0, u16 &r1,
         u32 d00, u32 d02,
-        u32 d10, u32 d12)
+        u32 d10, u32 d12,
+        debug::Matrix<16, 4, u32> *mey = nullptr)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
@@ -930,28 +1016,31 @@ namespace mont
       if (i % 2 == 0)
         e3 = d12 + (d12_higher << 8);
 
-      u32 f0, f1;
-      shuffle_e_for_compact(f0, f1, e0, e1, e2, e3);
+      u32 ey0, ey1;
+      shuffle_e_for_compact(ey0, ey1, e0, e1, e2, e3);
 
       if (i == 7)
       {
-        f1 = (f1 & 0x0000ffff) | (f0 & 0xffff0000);
-        f0 = f0 & 0x0000ffff;
+        ey1 = (ey1 & 0x0000ffff) | (ey0 & 0xffff0000);
+        ey0 = ey0 & 0x0000ffff;
       }
 
+      if (DEBUG)
+        debug::store_z_matrix<u32>(ey0, ey1, *mey);
+
       u32 carry_in = 0;
-      auto calc = [&carry_in, mask, lane_id, i, j](u16 &r, u32 &f)
+      auto calc = [&carry_in, mask, lane_id, i, j](u16 &r, u32 ey)
       {
-        u32 e_lower = __shfl_up_sync(mask, f, 4);
-        u32 r_wide = (e_lower >> 16) + (f & 0x0000ffff);
+        u32 e_lower = __shfl_sync(mask, ey, lane_id - 4);
+        u32 r_wide = (e_lower >> 16) + (ey & 0x0000ffff);
         r = r_wide & 0x0000ffff;
         u32 limb_carry_out = r_wide >> 16;
 
         fast_propagate_u16(r, limb_carry_out, carry_in);
       };
 
-      calc(r0, f0);
-      calc(r1, f1);
+      calc(r0, ey0);
+      calc(r1, ey1);
     }
 
     // Compute z = r mod m.
@@ -999,7 +1088,7 @@ namespace mont
       if (borrow_in)
       {
         add(z0, 0);
-        add(z0, 1);
+        add(z1, 1);
       }
     }
 
@@ -1025,9 +1114,9 @@ namespace mont
 
       got = __shfl_sync(mask, send, (i % 4) * 8 + 4 + j);
       if (i < 4)
-        w |= got & 0xffff0000;
-      else
         w |= got << 16;
+      else
+        w |= got & 0xffff0000;
 
       if (j < NUM)
         st_z[j][i] = w;
@@ -1087,114 +1176,114 @@ namespace mont
         debug::store_d_matrix(sd30, sd31, sd32, sd33, intermediates->sd3);
       }
 
-      // // Compute u = m' * s (mod 2^256)
+      // Compute u = m' * s (mod 2^256)
 
-      // u32 sb0, sb1;
-      // transpose_and_split<DEBUG>(sb0, sb1, sd00, sd02, sd10, sd12, intermediates->sbx0, intermediates->sbx1);
-      // if (DEBUG)
-      //   debug::store_b_matrix(sb0, sb1, intermediates->sb);
+      u32 sb0, sb1;
+      transpose_and_split<DEBUG>(sb0, sb1, sd00, sd02, sd10, sd12, &intermediates->sbx);
+      if (DEBUG)
+        debug::store_b_matrix(sb0, sb1, intermediates->sb);
 
-      // u32 mpa0, mpa1, mpa2, mpa3;
-      // load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 0);
-      // if (DEBUG)
-      //   debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp0);
-      // u32 ud00, ud01, ud02, ud03;
-      // mma_m16n8k32(ud00, ud01, ud02, ud03, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
+      u32 mpa0, mpa1, mpa2, mpa3;
+      load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 0);
+      if (DEBUG)
+        debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp0);
+      u32 ud00, ud01, ud02, ud03;
+      mma_m16n8k32(ud00, ud01, ud02, ud03, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
 
-      // load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 1);
-      // if (DEBUG)
-      //   debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp1);
-      // u32 ud10, ud11, ud12, ud13;
-      // mma_m16n8k32(ud10, ud11, ud12, ud13, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
+      load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 1);
+      if (DEBUG)
+        debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp1);
+      u32 ud10, ud11, ud12, ud13;
+      mma_m16n8k32(ud10, ud11, ud12, ud13, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
 
-      // if (DEBUG)
-      // {
-      //   debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->ud0);
-      //   debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->ud1);
-      // }
+      if (DEBUG)
+      {
+        debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->ud0);
+        debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->ud1);
+      }
 
-      // ud00 += ud01;
-      // ud02 += ud03;
-      // ud10 += ud11;
-      // ud12 += ud13;
+      ud00 += ud01;
+      ud02 += ud03;
+      ud10 += ud11;
+      ud12 += ud13;
 
-      // if (DEBUG)
-      // {
-      //   debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->ud0);
-      //   debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->ud1);
-      // }
+      if (DEBUG)
+      {
+        debug::store_d_matrix(ud00, ud01, ud02, ud03, intermediates->uds0);
+        debug::store_d_matrix(ud10, ud11, ud12, ud13, intermediates->uds1);
+      }
 
-      // // Compute t = s + m * u
+      // Compute t = s + m * u
 
-      // u32 ub0, ub1;
-      // transpose_and_split<DEBUG>(ub0, ub1, ud00, ud02, ud10, ud12, intermediates->ubx0, intermediates->ubx1);
-      // if (DEBUG)
-      //   debug::store_b_matrix(ub0, ub1, intermediates->ub);
+      u32 ub0, ub1;
+      transpose_and_split<DEBUG>(ub0, ub1, ud00, ud02, ud10, ud12, &intermediates->ubx);
+      if (DEBUG)
+        debug::store_b_matrix(ub0, ub1, intermediates->ub);
 
-      // u32 ma0, ma1, ma2, ma3;
-      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
-      // if (DEBUG)
-      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma1);
-      // u32 td10, td11, td12, td13;
-      // mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ub0, ub1, sd10, 0, sd12, 0);
+      u32 ma0, ma1, ma2, ma3;
+      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
+      if (DEBUG)
+        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma1);
+      u32 td10, td11, td12, td13;
+      mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ub0, ub1, sd10, 0, sd12, 0);
 
-      // u32 td20, td21, td22, td23;
-      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 2);
-      // if (DEBUG)
-      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma2);
-      // mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ub0, ub1, sd20, 0, sd22, 0);
+      u32 td20, td21, td22, td23;
+      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 2);
+      if (DEBUG)
+        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma2);
+      mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ub0, ub1, sd20, 0, sd22, 0);
 
-      // u32 td30, td31, td32, td33;
-      // load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 3);
-      // if (DEBUG)
-      //   debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma3);
-      // mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ub0, ub1, sd30, 0, sd32, 0);
+      u32 td30, td31, td32, td33;
+      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 3);
+      if (DEBUG)
+        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma3);
+      mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ub0, ub1, sd30, 0, sd32, 0);
 
-      // if (DEBUG)
-      // {
-      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->td1);
-      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->td2);
-      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->td3);
-      // }
+      if (DEBUG)
+      {
+        debug::store_d_matrix(td10, td11, td12, td13, intermediates->td1);
+        debug::store_d_matrix(td20, td21, td22, td23, intermediates->td2);
+        debug::store_d_matrix(td30, td31, td32, td33, intermediates->td3);
+      }
 
-      // td10 += td11;
-      // td12 += td13;
-      // td20 += td21;
-      // td22 += td23;
-      // td30 += td31;
-      // td32 += td33;
+      td10 += td11;
+      td12 += td13;
+      td20 += td21;
+      td22 += td23;
+      td30 += td31;
+      td32 += td33;
 
-      // if (DEBUG)
-      // {
-      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->tds1);
-      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->tds2);
-      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->tds3);
-      // }
+      if (DEBUG)
+      {
+        debug::store_d_matrix(td10, td11, td12, td13, intermediates->tds1);
+        debug::store_d_matrix(td20, td21, td22, td23, intermediates->tds2);
+        debug::store_d_matrix(td30, td31, td32, td33, intermediates->tds3);
+      }
 
-      // // Compute z = t mod 2^256
+      // Compute z = t mod 2^256
 
-      // carry_up_tail_of_d(td20, td12);
+      carry_up_tail_of_d(td20, td12);
 
-      // if (DEBUG)
-      // {
-      //   debug::store_d_matrix(td10, td11, td12, td13, intermediates->tdc1);
-      //   debug::store_d_matrix(td20, td21, td22, td23, intermediates->tdc2);
-      //   debug::store_d_matrix(td30, td31, td32, td33, intermediates->tdc3);
-      // }
+      if (DEBUG)
+      {
+        debug::store_d_matrix(td10, td11, td12, td13, intermediates->tdc1);
+        debug::store_d_matrix(td20, td21, td22, td23, intermediates->tdc2);
+        debug::store_d_matrix(td30, td31, td32, td33, intermediates->tdc3);
+      }
 
-      // u16 r0, r1;
-      // compact(r0, r1, td20, td22, td30, td32);
+      u16 rz0, rz1;
+      compact<DEBUG>(rz0, rz1, td20, td22, td30, td32, &intermediates->tey);
 
-      // if (DEBUG)
-      //   debug::store_z_matrix(r0, r1, intermediates->r);
+      if (DEBUG)
+        debug::store_z_matrix(rz0, rz1, intermediates->r);
 
-      // u16 z0, z1;
-      // modulo_m(z0, z1, r0, r1, st_m);
+      u16 zz0, zz1;
+      modulo_m(zz0, zz1, rz0, rz1, st_m);
 
-      // if (DEBUG)
-      //   debug::store_z_matrix(z0, z1, intermediates->z);
+      if (DEBUG)
+        debug::store_z_matrix(zz0, zz1, intermediates->z);
 
-      // store_z<NUM>(st_z, z0, z1);
+      store_z<NUM>(st_z, zz0, zz1);
     }
 
     template <u32 NUM, bool DEBUG, typename Params, typename StZ, typename StX, typename StY>

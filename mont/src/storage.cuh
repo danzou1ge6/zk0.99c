@@ -20,6 +20,9 @@ namespace mont
     u32 *p;
 
     __device__ __host__ __forceinline__ StridedReference(u32 *p) : p(p) {}
+    __device__ __host__ __forceinline__ static const StridedReference immutable(const u32 *p) {
+      return StridedReference((u32*)p);
+    }
 
     __device__ __host__ __forceinline__ u32 &operator[](usize i)
     {

@@ -34,7 +34,7 @@ target("debug-tc-mont")
 
 target("bench-mont")
     set_languages(("c++17"))
-    add_cugencodes("native")
+    add_cugencodes("sm_80")
     add_options("-lineinfo")
     add_options("--expt-relaxed-constexpr")
     add_files("mont/tests/bench.cu")

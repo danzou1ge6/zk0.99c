@@ -7,42 +7,30 @@ using bn256_fr::Element;
 
 __global__ void kernel(const Element *x, const Element *y, Element *z, mont::tc256::debug::Intermediates *i)
 {
-  // const mont::Reference st_y[4] = {
-  //     mont::Reference((mont::u32 *)y),
-  //     mont::Reference((mont::u32 *)(y + 1)),
-  //     mont::Reference((mont::u32 *)(y + 2)),
-  //     mont::Reference((mont::u32 *)(y + 3)),
-  // };
-  // mont::Reference st_z[4] = {
-  //     mont::Reference((mont::u32 *)z),
-  //     mont::Reference((mont::u32 *)(z + 1)),
-  //     mont::Reference((mont::u32 *)(z + 2)),
-  //     mont::Reference((mont::u32 *)(z + 3)),
-  // };
-  // const mont::Reference st_x = mont::Reference((mont::u32 *)x);
-  // mont::tc256::mul<4, true, bn256_fr::Params>(st_z, st_x, st_y, i);
-  using namespace mont::tc256;
-  using mont::u32;
-
-  u32 a0, a1, a2, a3;
-  debug::polulate_a_matrix(a0, a1, a2, a3, [](u32 i, u32 j) { return j; });
-  u32 b0, b1;
-  debug::polulate_b_matrix(b0, b1, [](u32 i, u32 j) { return (i == j) ? 1 : 0; });
-  u32 d0, d1, d2, d3;
-  mma_m16n8k32(d0, d1, d2, d3, a0, a1, a2, a3, b0, b1, 0, 0, 0, 0);
-  debug::store_a_matrix(a0, a1, a2, a3, i->xa0);
-  debug::store_b_matrix(b0, b1, i->yb);
-  debug::store_d_matrix(d0, d1, d2, d3, i->sd0);
+  const mont::Reference st_y[4] = {
+      mont::Reference((mont::u32 *)y),
+      mont::Reference((mont::u32 *)(y + 1)),
+      mont::Reference((mont::u32 *)(y + 2)),
+      mont::Reference((mont::u32 *)(y + 3)),
+  };
+  mont::Reference st_z[4] = {
+      mont::Reference((mont::u32 *)z),
+      mont::Reference((mont::u32 *)(z + 1)),
+      mont::Reference((mont::u32 *)(z + 2)),
+      mont::Reference((mont::u32 *)(z + 3)),
+  };
+  const mont::Reference st_x = mont::Reference((mont::u32 *)x);
+  mont::tc256::mul<1, false, bn256_fr::Params>(st_z, st_x, st_y);
 }
 
 int main()
 {
-  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(1, 1, 1, 1, 1, 1, 1, 1));
+  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x20b962c2, 0xed033696, 0xa5384118, 0x06c215e1, 0xbb31704c, 0x6a92ae0e, 0x31f7b2f9, 0x1bf8bb19));
   Element y[4] = {
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(1, 1, 1, 1, 1, 1, 1, 1)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(1, 1, 1, 1, 1, 1, 1, 1)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(1, 1, 1, 1, 1, 1, 1, 1)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(1, 1, 1, 1, 1, 1, 1, 1)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
   };
   Element z[4];
   auto i = mont::tc256::debug::Intermediates::new_device();
@@ -67,7 +55,7 @@ int main()
 
   cudaMemcpy(&z, dz, sizeof(Element) * 4, cudaMemcpyDeviceToHost);
 
-  std::cout << z[0] << std::endl;
+  std::cout << z[0].n << std::endl;
   std::cout << i.to_host();
 
   return 0;
