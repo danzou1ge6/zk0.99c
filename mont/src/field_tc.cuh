@@ -112,7 +112,9 @@ namespace mont
     //  x1[1]  0  x1[1]  0  x2[1]  0  x3[1]  0
     //  ...
     //  x1[31] 0  x1[31] 0  x2[31] 0  x3[31] 0
-    template <u32 NUM, typename StL>
+    //
+    // `(MASK >> j) & 1` decides whether j-th column is to be loaded from p[j]
+    template <u32 MASK, typename StL>
     __device__ __forceinline__ void load_b_matrix(
         u32 &b0, u32 &b1,
         const StL *p)
@@ -121,7 +123,7 @@ namespace mont
       u32 col = lane_id / 4;
       u32 j = col / 2;
       u32 i = lane_id % 4;
-      if (col % 2 == 0 && j < NUM)
+      if (col % 2 == 0 && (MASK >> j) & 1)
       {
         b0 = p[j][i];
         b1 = p[j][i + 4];
@@ -690,6 +692,9 @@ namespace mont
 
       u32 src_var;
 
+      by0 = 0;
+      by1 = 0;
+
       // Round 1
       if (i % 2 == 0)
         src_var = bx0;
@@ -1092,10 +1097,15 @@ namespace mont
       }
     }
 
-    // Store z to st_z, z is in Z layout.
-    template <u32 NUM, typename StZ>
-    __device__ __forceinline__ void store_z(
-        StZ *st_z,
+    // Shuffle Z layout to W layout
+    //
+    //          0       1        2        3
+    //   0   T0{w0}     T1       T2       T3
+    //   1   T4         T5       T6       T7
+    //        ...
+    //   7   T28        T29      T30      T31
+    __device__ __forceinline__ void shuffle_z_to_w(
+        u32 &w,
         u16 z0, u16 z1)
     {
       u32 lane_id = threadIdx.x % 32;
@@ -1103,7 +1113,7 @@ namespace mont
       u32 j = lane_id % 4;
       u32 mask = MASK_ALL;
 
-      u32 w = 0;
+      w = 0;
 
       u32 send = ((u32)z1 << 16) + z0;
       u32 got = __shfl_sync(mask, send, (i % 4) * 8 + j);
@@ -1117,16 +1127,39 @@ namespace mont
         w |= got << 16;
       else
         w |= got & 0xffff0000;
-
-      if (j < NUM)
-        st_z[j][i] = w;
     }
 
-    template <u32 NUM, bool DEBUG = false, typename StZ, typename StX, typename StY, typename StM>
+    // Store z to st_z, z is in Z layout.
+    // `(MASK >> j) & 1` marks whether j-th column is to be stored to `st_w[j]`
+    template <u32 MASK, typename StW>
+    __device__ __forceinline__ void store_w(
+        StW *st_w, u32 w)
+    {
+      u32 lane_id = threadIdx.x % 32;
+      u32 i = lane_id / 4;
+      u32 j = lane_id % 4;
+
+      if ((MASK >> j) & 1)
+        st_w[j][i] = w;
+    }
+
+    // Transmute four numbers in four columns from W layout to B layout
+    __device__ __forceinline__ void transpose_w_to_b(
+        u32 &b0, u32 &b1, u32 w)
+    {
+      u32 lane_id = threadIdx.x % 32;
+      u32 j = lane_id / 8;
+      u32 i = lane_id % 8;
+      u32 src_lane = 4 * i + j;
+      b0 = __shfl_sync(MASK_ALL, w, src_lane);
+      b1 = __shfl_down_sync(MASK_ALL, b0, 4);
+    }
+
+    template <bool DEBUG = false, typename StX, typename StM>
     __device__ __forceinline__ void montgomery_multiplication_raw(
-        StZ *st_z,
+        u32 &w,
         const StX st_x,
-        const StY *st_y,
+        u32 yb0, u32 yb1,
         const StM st_m,
         const StM st_m_prime,
         debug::Intermediates *intermediates = nullptr)
@@ -1137,8 +1170,6 @@ namespace mont
 
       // Compute s = x * y
 
-      u32 yb0, yb1;
-      load_b_matrix<NUM>(yb0, yb1, st_y);
       if (DEBUG)
         debug::store_b_matrix(yb0, yb1, intermediates->yb);
 
@@ -1283,24 +1314,66 @@ namespace mont
       if (DEBUG)
         debug::store_z_matrix(zz0, zz1, intermediates->z);
 
-      store_z<NUM>(st_z, zz0, zz1);
+      shuffle_z_to_w(w, zz0, zz1);
     }
 
-    template <u32 NUM, bool DEBUG, typename Params, typename StZ, typename StX, typename StY>
-    __device__ __forceinline__ void mul(
-        StZ *st_z,
-        const StX st_x,
-        const StY *st_y,
-        debug::Intermediates *intermediate = nullptr)
+    template <typename St = ContinuousStorage<8>>
+    struct FragmentA
     {
-      montgomery_multiplication_raw<NUM, DEBUG>(
-          st_z,
-          st_x,
-          st_y,
-          Params::m().limbs,
-          Params::m_prime_wide().limbs,
-          intermediate);
+      St a;
+      __device__ __forceinline__ FragmentA(St a) : a(a) {}
+      __device__ __forceinline__ FragmentA() = default;
+    };
+
+    struct FragmentB
+    {
+      u32 b0, b1;
+
+      template <u32 MASK, typename St>
+      static __device__ __forceinline__ FragmentB load(St* p)
+      {
+        FragmentB fb;
+        load_b_matrix<MASK, St>(fb.b0, fb.b1, p);
+        return fb;
+      }
+    };
+
+    struct FragmentW
+    {
+      u32 w;
+      template <u32 MASK, typename St>
+      __device__ __forceinline__ void store(St *p)
+      {
+        store_w<MASK, St>(p, w);
+      }
+
+      template <u32 PERMUTED>
+      __device__ __forceinline__ void transmute_columns()
+      {
+        u32 lane_id = threadIdx.x % 32;
+        u32 j = lane_id % 4;
+        u32 src_column = (PERMUTED >> (j * 2)) & 0b11;
+        u32 src_lane = lane_id - j + src_column;
+        w = __shfl_sync(MASK_ALL, w, src_lane);
+      }
+
+      __device__ __forceinline__ FragmentB transpose_to_b()
+      {
+        FragmentB fb;
+        transpose_w_to_b(fb.b0, fb.b1, w);
+        return fb;
+      }
+    };
+
+    template <typename Params, bool DEBUG = false, typename StX>
+    __device__ __forceinline__ FragmentW mul(FragmentA<StX> x, FragmentB y, debug::Intermediates *i = nullptr)
+    {
+      FragmentW w;
+      montgomery_multiplication_raw<DEBUG>(
+          w.w, x.a, y.b0, y.b1, Params::m().limbs, Params::m_prime_wide().limbs, i);
+      return w;
     }
+
   }
 }
 

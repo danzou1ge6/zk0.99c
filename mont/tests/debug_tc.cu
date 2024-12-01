@@ -19,8 +19,14 @@ __global__ void kernel(const Element *x, const Element *y, Element *z, mont::tc2
       mont::Reference((mont::u32 *)(z + 2)),
       mont::Reference((mont::u32 *)(z + 3)),
   };
-  const mont::Reference st_x = mont::Reference((mont::u32 *)x);
-  mont::tc256::mul<1, false, bn256_fr::Params>(st_z, st_x, st_y);
+  using namespace mont::tc256;
+
+  FragmentA fx(x->n.limbs.to_ref());
+  auto fy = FragmentB::load<0b1111>(st_y);
+  auto fz = mul<bn256_fr::Params, true>(fx, fy, i);
+  fz.store<0b1111>(st_z);
+  auto test = fz.transpose_to_b();
+  debug::store_b_matrix(test.b0, test.b1, i->ub);
 }
 
 int main()
@@ -32,6 +38,14 @@ int main()
       mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
       mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
   };
+  // Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101));
+  // Element y[4] = {
+  //     mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101)),
+  //     mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101)),
+  //     mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101)),
+  //     mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101)),
+  // };
+
   Element z[4];
   auto i = mont::tc256::debug::Intermediates::new_device();
 
