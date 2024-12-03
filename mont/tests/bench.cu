@@ -6,27 +6,20 @@
 using bn256_fr::Element;
 using mont::u32;
 
-const u32 BATCH = 3;
-const u32 THREADS = 256;
+const u32 BATCH = 128;
+const u32 THREADS = 512;
 const u32 ITERS = 2;
 
 __global__ void bench(Element *r, const Element *a, const Element *b)
 {
-  auto v0 = *a;
-  auto v1 = *a;
-  auto v2 = *a;
-  auto v3 = *a;
+  Element v[4];
+  for (u32 j = 0; j < 4; j ++)
+    v[j] = b[j];
   for (u32 i = 0; i < BATCH; i++)
-  {
-    v0 = v0 * b[0];
-    v1 = v1 * b[1];
-    v2 = v2 * b[2];
-    v3 = v3 * b[3];
-  }
-  r[0] = v0;
-  r[1] = v1;
-  r[2] = v2;
-  r[3] = v3;
+    for (u32 j = 0; j < 4; j ++)
+      v[j] = v[j] * *a;
+  for (u32 j = 0; j < 4; j ++)
+    r[j] = v[j];
 }
 
 __global__ void bench_tc(Element *r, const Element *a, const Element *b)
@@ -55,7 +48,11 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
   auto fb = FragmentB::load<0b1111>(rb);
 
   FragmentW fr;
-  fr = mul<bn256_fr::Params>(fa, fb);
+  for (u32 i = 0; i < BATCH; i++)
+  {
+    fr = mul<bn256_fr::Params>(fa, fb);
+    fb = fr.transpose_to_b();
+  }
 
   fr.store<0b1111>(rr);
 }
@@ -87,12 +84,28 @@ float time_it(u32 iters, F f)
     f(r, a, b);
     cudaEventRecord(stop);
 
-    auto err = cudaStreamSynchronize(0);
+    auto err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
       std::cout << "CUDA error: " << cudaGetErrorString(err) << std::endl;
       std::exit(1);
     }
+
+    Element hv[4] = {hb[0], hb[1], hb[2], hb[3]};
+    for (u32 i = 0; i < BATCH; i ++)
+      for (u32 j = 0; j < 4; j ++)
+        hv[j] = hv[j] * ha;
+    
+    Element hr[4];
+    cudaMemcpy(hr, r, sizeof(Element) * 4, cudaMemcpyDeviceToHost);
+
+    for (u32 j = 0; j < 4; j ++)
+      if (hr[j] != hv[j])
+      {
+        std::cout << "Computation error: " << ha.n << " ^ " << BATCH << " * " << hb[j].n << " = " << hv[j].n
+          << ", but got " << hr[j] << std::endl;
+        std::exit(1);
+      }
 
     cudaEventSynchronize(stop);
     float elapsed_time;
@@ -116,9 +129,9 @@ int main()
 
   u32 grid_size = 8 * deviceProp.multiProcessorCount;
 
-  // float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b)
-  //                            { bench<<<grid_size, THREADS>>>(r, a, b); });
-  // std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time * 1000 << std::endl;
+  float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b)
+                             { bench<<<grid_size, THREADS>>>(r, a, b); });
+  std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time * 1000 << std::endl;
 
   float total_time_tc = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b)
                                 { bench_tc<<<grid_size, THREADS>>>(r, a, b); });

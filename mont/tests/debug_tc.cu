@@ -25,19 +25,18 @@ __global__ void kernel(const Element *x, const Element *y, Element *z, mont::tc2
   auto fy = FragmentB::load<0b1111>(st_y);
   auto fz = mul<bn256_fr::Params, true>(fx, fy, i);
   fz.store<0b1111>(st_z);
-  auto test = fz.transpose_to_b();
-  debug::store_b_matrix(test.b0, test.b1, i->ub);
 }
 
 int main()
 {
-  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x20b962c2, 0xed033696, 0xa5384118, 0x06c215e1, 0xbb31704c, 0x6a92ae0e, 0x31f7b2f9, 0x1bf8bb19));
+  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x06074b4b, 0x1df79173, 0x3c133ef9, 0x1819d4bc, 0xd33fac94, 0xe36715f1, 0x7779c165, 0xd12e658d));
   Element y[4] = {
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1977f26e, 0x7eb3df21, 0x25ffd6e7, 0x558f2112, 0xc1358e32, 0x98c44536, 0x5528af35, 0xe0a0b93b)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1457b41b, 0xc2455063, 0x1b0a7958, 0xa4803a05, 0x755211e3, 0xa13bbbd6, 0x5be452ae, 0x7e785885)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1457b41b, 0xc2455063, 0x1b0a7958, 0xa4803a05, 0x755211e3, 0xa13bbbd6, 0x5be452ae, 0x7e785885)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1457b41b, 0xc2455063, 0x1b0a7958, 0xa4803a05, 0x755211e3, 0xa13bbbd6, 0x5be452ae, 0x7e785885)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x1457b41b, 0xc2455063, 0x1b0a7958, 0xa4803a05, 0x755211e3, 0xa13bbbd6, 0x5be452ae, 0x7e785885)),
   };
+
   // Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101));
   // Element y[4] = {
   //     mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101)),
@@ -69,7 +68,8 @@ int main()
 
   cudaMemcpy(&z, dz, sizeof(Element) * 4, cudaMemcpyDeviceToHost);
 
-  std::cout << z[0].n << std::endl;
+  std::cout << "Correct answer = " << (x * y[0]).n << std::endl;
+  std::cout << "Got            = " << z[0].n << std::endl;
   std::cout << i.to_host();
 
   return 0;

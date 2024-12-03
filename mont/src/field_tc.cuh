@@ -203,8 +203,9 @@ namespace mont
         Matrix<16, 8, u32> tdc1, tdc2, tdc3; // tds after carrying up tail of first 32 u32's
         // z = t mod 2^256
         Matrix<16, 4, u32> tey;
-        Matrix<16, 4, u16> r; // t after compact
-        Matrix<16, 4, u16> z;
+        Matrix<16, 4, u16> rz; // t after compact
+        Matrix<8, 4, u32> rw;
+        Matrix<8, 4, u32> zw;
 
         __host__ Intermediates() = default;
         __host__ void alloc_device()
@@ -241,8 +242,9 @@ namespace mont
           tdc2.alloc_device();
           tdc3.alloc_device();
           tey.alloc_device();
-          r.alloc_device();
-          z.alloc_device();
+          rz.alloc_device();
+          rw.alloc_device();
+          zw.alloc_device();
         }
         static __host__ Intermediates new_device()
         {
@@ -285,8 +287,9 @@ namespace mont
               .tdc2 = tdc2.to_host(),
               .tdc3 = tdc3.to_host(),
               .tey = tey.to_host(),
-              .r = r.to_host(),
-              .z = z.to_host()};
+              .rz = rz.to_host(),
+              .rw = rw.to_host(),
+              .zw = zw.to_host()};
         }
       };
 
@@ -356,10 +359,12 @@ namespace mont
            << i.tdc3;
         os << "tey = \n"
            << i.tey;
-        os << "r = \n"
-           << i.r;
-        os << "z = \n"
-           << i.z;
+        os << "rz = \n"
+           << i.rz;
+        os << "rw = \n"
+           << i.rw;
+        os << "zw = \n"
+           << i.zw;
         return os;
       }
 
@@ -457,6 +462,14 @@ namespace mont
 
         st(0, z0);
         st(1, z1);
+      }
+
+      __device__ __forceinline__ void store_w_matrix(u32 w, Matrix<8, 4, u32> mat)
+      {
+        u32 lane_id = threadIdx.x % 32;
+        u32 i = lane_id / 4;
+        u32 j = lane_id % 4;
+        mat.get(i, j) = w;
       }
 
       template <typename M>
@@ -921,33 +934,47 @@ namespace mont
       shuffle(ey1, ex2, ex3);
     }
 
-    template <bool IS_SUB = false>
-    __device__ __forceinline__ void fast_propagate_u16(
-        u16 &r, u32 carry_out, u32 &carry_in)
+    template <bool IS_SUB = false, typename T, T T_MAX>
+    __device__ __forceinline__ void fast_propagate_zw_template(
+        T &r, u32 carry_out, u32 &carry_in)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
       u32 mask = MASK_ALL;
 
-      u32 full = IS_SUB ? r == 0 : r == 0xffff;
+      u32 saturated = IS_SUB ? r == 0 : r == T_MAX;
 
       u64 lco_b = __ballot_sync(mask, carry_out);
-      u64 fu_b = __ballot_sync(mask, full);
-      fu_b = (fu_b >> j) | 0xeeeeeeee;
+      u64 sat_b = __ballot_sync(mask, saturated);
+      sat_b = (sat_b >> j) | 0xeeeeeeee;
       lco_b = (lco_b >> j) & 0x11111111;
       lco_b = (lco_b << 4) | carry_in;
 
-      u64 carries = lco_b + fu_b;
+      u64 carries = lco_b + sat_b;
       carry_in = carries >> 32;
 
-      if ((carries ^ fu_b) & (1 << (lane_id - j)))
+      if ((carries ^ sat_b) & (1 << (lane_id - j)))
       {
         if (IS_SUB)
           r -= 1;
         else
           r += 1;
       }
+    }
+
+    template <bool IS_SUB = false>
+    __device__ __forceinline__ void fast_propagate_z(
+        u16 &r, u32 carry_out, u32 &carry_in)
+    {
+      fast_propagate_zw_template<IS_SUB, u16, 0xffff>(r, carry_out, carry_in);
+    }
+
+    template <bool IS_SUB = false>
+    __device__ __forceinline__ void fast_propagate_w(
+        u32 &r, u32 carry_out, u32 &carry_in)
+    {
+      fast_propagate_zw_template<IS_SUB, u32, 0xffffffff>(r, carry_out, carry_in);
     }
 
     // For the result t of montgomery reduction
@@ -1041,60 +1068,48 @@ namespace mont
         r = r_wide & 0x0000ffff;
         u32 limb_carry_out = r_wide >> 16;
 
-        fast_propagate_u16(r, limb_carry_out, carry_in);
+        fast_propagate_z(r, limb_carry_out, carry_in);
       };
 
       calc(r0, ey0);
       calc(r1, ey1);
     }
 
+    __device__ __forceinline__ void add_w(
+      u32& r, u32& carry_out, u32 a, u32 b
+    )
+    {
+      r = ptx::add_cc(a, b);
+      carry_out = 0;
+      u32 limb_carry = ptx::addc(0, 0);
+      fast_propagate_w<false>(r, limb_carry, carry_out);
+    }
+
+    __device__ __forceinline__ void sub_w(
+      u32& r, u32& borrow_out, u32 a, u32 b
+    )
+    {
+      r = ptx::sub_cc(a, b);
+      borrow_out = 0;
+      u32 limb_borrow = ptx::subc(0, 0);
+      fast_propagate_w<true>(r, limb_borrow & 1, borrow_out);
+    }
+
     // Compute z = r mod m.
-    // z and r are both in Z layout.
+    // z and r are both in W layout.
     template <typename StM>
-    __device__ __forceinline__ void modulo_m(
-        u16 &z0, u16 &z1,
-        u16 r0, u16 r1,
+    __device__ __forceinline__ void modulo_m_w(
+        u32 &z, u32 &r,
         StM st_m)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
-      u32 mask = MASK_ALL;
-      u32 borrow_in = 0;
 
-      auto get_st_u16 = [st_m](u32 n)
-      {
-        u32 limb = st_m[n / 2];
-        return n % 2 == 0 ? limb & 0x0000ffff : limb >> 16;
-      };
-
-      auto sub = [&borrow_in, mask, lane_id, i, j, get_st_u16](u16 &z, u16 r, u32 round)
-      {
-        u32 z_wide = r - get_st_u16(i + round * 8);
-        z = z_wide & 0x0000ffff;
-        u32 limb_borrow = z_wide >> 31;
-
-        fast_propagate_u16<true>(z, limb_borrow, borrow_in);
-      };
-
-      u32 carry_in = 0;
-      auto add = [&carry_in, mask, lane_id, i, j, get_st_u16](u16 &z, u32 round)
-      {
-        u32 z_wide = z + get_st_u16(i + round * 8);
-        z = z_wide & 0x0000ffff;
-        u32 limb_carry_out = z_wide >> 16;
-
-        fast_propagate_u16(z, limb_carry_out, carry_in);
-      };
-
-      sub(z0, r0, 0);
-      sub(z1, r1, 1);
-
-      if (borrow_in)
-      {
-        add(z0, 0);
-        add(z1, 1);
-      }
+      u32 borrow = 0;
+      u32 useless;
+      sub_w(z, borrow, r, st_m[i]);
+      add_w(z, useless, z, borrow ? st_m[i] : 0);
     }
 
     // Shuffle Z layout to W layout
@@ -1157,7 +1172,7 @@ namespace mont
 
     template <bool DEBUG = false, typename StX, typename StM>
     __device__ __forceinline__ void montgomery_multiplication_raw(
-        u32 &w,
+        u32 &z,
         const StX st_x,
         u32 yb0, u32 yb1,
         const StM st_m,
@@ -1306,15 +1321,18 @@ namespace mont
       compact<DEBUG>(rz0, rz1, td20, td22, td30, td32, &intermediates->tey);
 
       if (DEBUG)
-        debug::store_z_matrix(rz0, rz1, intermediates->r);
+        debug::store_z_matrix(rz0, rz1, intermediates->rz);
 
-      u16 zz0, zz1;
-      modulo_m(zz0, zz1, rz0, rz1, st_m);
+      u32 rw;
+      shuffle_z_to_w(rw, rz0, rz1);
 
       if (DEBUG)
-        debug::store_z_matrix(zz0, zz1, intermediates->z);
+        debug::store_w_matrix(rw, intermediates->rw);
+      
+      modulo_m_w(z, rw, st_m);
 
-      shuffle_z_to_w(w, zz0, zz1);
+      if (DEBUG)
+        debug::store_w_matrix(z, intermediates->zw);
     }
 
     template <typename St = ContinuousStorage<8>>
@@ -1330,7 +1348,7 @@ namespace mont
       u32 b0, b1;
 
       template <u32 MASK, typename St>
-      static __device__ __forceinline__ FragmentB load(St* p)
+      static __device__ __forceinline__ FragmentB load(St *p)
       {
         FragmentB fb;
         load_b_matrix<MASK, St>(fb.b0, fb.b1, p);
