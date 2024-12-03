@@ -7,24 +7,13 @@ using bn256_fr::Element;
 
 __global__ void kernel(const Element *x, const Element *y, Element *z, mont::tc256::debug::Intermediates *i)
 {
-  const mont::Reference st_y[4] = {
-      mont::Reference((mont::u32 *)y),
-      mont::Reference((mont::u32 *)(y + 1)),
-      mont::Reference((mont::u32 *)(y + 2)),
-      mont::Reference((mont::u32 *)(y + 3)),
-  };
-  mont::Reference st_z[4] = {
-      mont::Reference((mont::u32 *)z),
-      mont::Reference((mont::u32 *)(z + 1)),
-      mont::Reference((mont::u32 *)(z + 2)),
-      mont::Reference((mont::u32 *)(z + 3)),
-  };
   using namespace mont::tc256;
+  using mont::u32;
 
-  FragmentA fx(x->n.limbs.to_ref());
-  auto fy = FragmentB::load<0b1111>(st_y);
+  FragmentA fx((const u32*)x);
+  auto fy = FragmentB::load<0b1111>([y](u32 i, u32 j) { return y[i].n.limbs[j]; });
   auto fz = mul<bn256_fr::Params, true>(fx, fy, i);
-  fz.store<0b1111>(st_z);
+  fz.store<0b1111>([z](u32 i, u32 j, u32 w) { z[i].n.limbs[j] = w; });
 }
 
 int main()

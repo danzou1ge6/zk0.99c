@@ -27,25 +27,13 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
   using namespace mont::tc256;
   u32 lane_id = threadIdx.x % 32;
 
-  __shared__ FragmentA fa;
+  __shared__ u32 fas[8];
+  FragmentA fa(fas);
+
   if (lane_id < 8)
-    fa.a[lane_id] = a->n.limbs[lane_id];
+    fas[lane_id] = a->n.limbs[lane_id];
 
-  mont::Reference rb[4] = {
-      b[0].n.limbs.to_ref(),
-      b[1].n.limbs.to_ref(),
-      b[2].n.limbs.to_ref(),
-      b[3].n.limbs.to_ref(),
-  };
-
-  mont::Reference rr[4] = {
-      r[0].n.limbs.to_ref(),
-      r[1].n.limbs.to_ref(),
-      r[2].n.limbs.to_ref(),
-      r[3].n.limbs.to_ref(),
-  };
-
-  auto fb = FragmentB::load<0b1111>(rb);
+  auto fb = FragmentB::load<0b1111>([b](u32 i, u32 j) { return b[i].n.limbs[j]; });
 
   FragmentW fr;
   for (u32 i = 0; i < BATCH; i++)
@@ -54,7 +42,7 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
     fb = fr.transpose_to_b();
   }
 
-  fr.store<0b1111>(rr);
+  fr.store<0b1111>([r] (u32 i, u32 j, u32 w) { r[i].n.limbs[j] = w; });
 }
 
 template <typename F>

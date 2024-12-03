@@ -15,8 +15,7 @@ namespace mont
     const u32 MASK_ALL = 0xffffffff;
     // Load the consecutive four bytes of storage `p` starting at the `n`-th byte.
     // `p` has `n_limbs` u32.
-    template <typename StL>
-    __device__ __forceinline__ u32 unanligned_u32_access(StL p, u32 n_limbs, i32 n)
+    __device__ __forceinline__ u32 unanligned_u32_access(const u32* p, u32 n_limbs, i32 n)
     {
       auto get_limb = [p, n_limbs](i32 i)
       {
@@ -66,10 +65,9 @@ namespace mont
     //
     // In the actual case of big number of 32 bytes, the matrix is splitted into four 16x32 matrices vertically,
     // and `stage` determines which one is loaded into A.
-    template <typename StL>
     __device__ __forceinline__ void load_a_matrix(
         u32 &a0, u32 &a1, u32 &a2, u32 &a3,
-        StL limbs, u32 n_limbs, Stage stage)
+        const u32* limbs, u32 n_limbs, Stage stage)
     {
       u32 lane_id = threadIdx.x % 32;
 
@@ -114,10 +112,10 @@ namespace mont
     //  x1[31] 0  x1[31] 0  x2[31] 0  x3[31] 0
     //
     // `(MASK >> j) & 1` decides whether j-th column is to be loaded from p[j]
-    template <u32 MASK, typename StL>
+    template <u32 MASK, typename F>
     __device__ __forceinline__ void load_b_matrix(
         u32 &b0, u32 &b1,
-        const StL *p)
+        F p)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 col = lane_id / 4;
@@ -125,8 +123,8 @@ namespace mont
       u32 i = lane_id % 4;
       if (col % 2 == 0 && (MASK >> j) & 1)
       {
-        b0 = p[j][i];
-        b1 = p[j][i + 4];
+        b0 = p(j, i);
+        b1 = p(j, i + 4);
       }
     }
 
@@ -137,7 +135,7 @@ namespace mont
       struct Matrix
       {
         T *p;
-        __host__ Matrix() = default;
+        Matrix() = default;
         __host__ Matrix(T *p) : p(p) {}
         __host__ void alloc_device()
         {
@@ -207,7 +205,7 @@ namespace mont
         Matrix<8, 4, u32> rw;
         Matrix<8, 4, u32> zw;
 
-        __host__ Intermediates() = default;
+        Intermediates() = default;
         __host__ void alloc_device()
         {
           xa0.alloc_device();
@@ -1097,10 +1095,9 @@ namespace mont
 
     // Compute z = r mod m.
     // z and r are both in W layout.
-    template <typename StM>
     __device__ __forceinline__ void modulo_m_w(
         u32 &z, u32 &r,
-        StM st_m)
+        const u32* st_m)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
@@ -1146,16 +1143,16 @@ namespace mont
 
     // Store z to st_z, z is in Z layout.
     // `(MASK >> j) & 1` marks whether j-th column is to be stored to `st_w[j]`
-    template <u32 MASK, typename StW>
+    template <u32 MASK, typename F>
     __device__ __forceinline__ void store_w(
-        StW *st_w, u32 w)
+        F set, u32 w)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
       u32 j = lane_id % 4;
 
       if ((MASK >> j) & 1)
-        st_w[j][i] = w;
+        set(j, i, w);
     }
 
     // Transmute four numbers in four columns from W layout to B layout
@@ -1170,13 +1167,13 @@ namespace mont
       b1 = __shfl_down_sync(MASK_ALL, b0, 4);
     }
 
-    template <bool DEBUG = false, typename StX, typename StM>
+    template <bool DEBUG = false>
     __device__ __forceinline__ void montgomery_multiplication_raw(
         u32 &z,
-        const StX st_x,
+        const u32 *st_x,
         u32 yb0, u32 yb1,
-        const StM st_m,
-        const StM st_m_prime,
+        const u32* st_m,
+        const u32* st_m_prime,
         debug::Intermediates *intermediates = nullptr)
     {
       // Naming convention: <symbol> <layout> <number>
@@ -1335,23 +1332,22 @@ namespace mont
         debug::store_w_matrix(z, intermediates->zw);
     }
 
-    template <typename St = ContinuousStorage<8>>
     struct FragmentA
     {
-      St a;
-      __device__ __forceinline__ FragmentA(St a) : a(a) {}
-      __device__ __forceinline__ FragmentA() = default;
+      const u32 *a;
+      FragmentA() = default;
+      __device__ __forceinline__ FragmentA(const u32 *a) : a(a) {}
     };
 
     struct FragmentB
     {
       u32 b0, b1;
 
-      template <u32 MASK, typename St>
-      static __device__ __forceinline__ FragmentB load(St *p)
+      template <u32 MASK, typename F>
+      static __device__ __forceinline__ FragmentB load(F p)
       {
         FragmentB fb;
-        load_b_matrix<MASK, St>(fb.b0, fb.b1, p);
+        load_b_matrix<MASK>(fb.b0, fb.b1, p);
         return fb;
       }
     };
@@ -1359,10 +1355,10 @@ namespace mont
     struct FragmentW
     {
       u32 w;
-      template <u32 MASK, typename St>
-      __device__ __forceinline__ void store(St *p)
+      template <u32 MASK, typename F>
+      __device__ __forceinline__ void store(F set)
       {
-        store_w<MASK, St>(p, w);
+        store_w<MASK>(set, w);
       }
 
       template <u32 PERMUTED>
@@ -1383,8 +1379,8 @@ namespace mont
       }
     };
 
-    template <typename Params, bool DEBUG = false, typename StX>
-    __device__ __forceinline__ FragmentW mul(FragmentA<StX> x, FragmentB y, debug::Intermediates *i = nullptr)
+    template <typename Params, bool DEBUG = false>
+    __device__ __forceinline__ FragmentW mul(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
     {
       FragmentW w;
       montgomery_multiplication_raw<DEBUG>(
