@@ -10,9 +10,14 @@ __global__ void kernel(const Element *x, const Element *y, Element *z, mont::tc2
   using namespace mont::tc256;
   using mont::u32;
 
-  FragmentA fx((const u32*)x);
+  __shared__ Multiplier<bn256_fr::Params, true> mul;
+  mul.load();
+
+  __shared__ FragmentA fx;  // only one warp here
+  fx.load(x->n.limbs);
+
   auto fy = FragmentB::load<0b1111>([y](u32 i, u32 j) { return y[i].n.limbs[j]; });
-  auto fz = mul<bn256_fr::Params, true>(fx, fy, i);
+  auto fz = mul(fx, fy, i);
   fz.store<0b1111>([z](u32 i, u32 j, u32 w) { z[i].n.limbs[j] = w; });
 }
 

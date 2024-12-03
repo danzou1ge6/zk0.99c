@@ -13,21 +13,6 @@ namespace mont
 
     using Stage = u8;
     const u32 MASK_ALL = 0xffffffff;
-    // Load the consecutive four bytes of storage `p` starting at the `n`-th byte.
-    // `p` has `n_limbs` u32.
-    __device__ __forceinline__ u32 unanligned_u32_access(const u32* p, u32 n_limbs, i32 n)
-    {
-      auto get_limb = [p, n_limbs](i32 i)
-      {
-        if (i < 0 || i >= n_limbs)
-          return 0U;
-        else
-          return p[i];
-      };
-      i32 rem = (u32)n & 0b11; // modular 4
-      i32 n0 = n - rem;
-      return (get_limb(n0 / 4) >> (rem * 8)) | (get_limb(n0 / 4 + 1) << (32 - rem * 8));
-    }
 
     // Let `x` be composed of four bytes in little-endian `[x0, x1, x2, x3]`,
     // returns `[x3, x2, x1, x0]`
@@ -65,23 +50,26 @@ namespace mont
     //
     // In the actual case of big number of 32 bytes, the matrix is splitted into four 16x32 matrices vertically,
     // and `stage` determines which one is loaded into A.
+    //
+    // CAUTION that here `limbs` is assumed to be a 24 u32's array, with the 8 u32's containing the big number lies
+    // in u32's 8, 9, ..., 15
     __device__ __forceinline__ void load_a_matrix(
         u32 &a0, u32 &a1, u32 &a2, u32 &a3,
-        const u32* limbs, u32 n_limbs, Stage stage)
+        const u32 *limbs, u32 n_limbs, Stage stage)
     {
       u32 lane_id = threadIdx.x % 32;
-
-      auto get = [lane_id, stage, limbs, n_limbs](u32 m, u32 n)
-      {
-        i32 i = (lane_id / 4) + stage * 16 + m * 8;
-        i32 j = (lane_id % 4) * 4 + 3 + n * 16;
-        return bytes_reversed(unanligned_u32_access(limbs, n_limbs, i - j));
-      };
-
-      a0 = get(0, 0);
-      a1 = get(0, 1);
-      a2 = get(1, 0);
-      a3 = get(1, 1);
+      u32 i = lane_id / 4 + stage * 16;
+      u32 j = lane_id % 4;
+      i32 k0 = i / 4 - j;
+      u32 rem = (i & 0b11) + 1;
+      const u32 *p = limbs + 8;
+      a0 = bytes_reversed((p[k0] << (32 - 8 * rem)) | (p[k0 - 1] >> (8 * rem)));
+      i32 k1 = k0 - 4;
+      a1 = bytes_reversed((p[k1] << (32 - 8 * rem)) | (p[k1 - 1] >> (8 * rem)));
+      i32 k2 = k0 + 2;
+      a2 = bytes_reversed((p[k2] << (32 - 8 * rem)) | (p[k2 - 1] >> (8 * rem)));
+      i32 k3 = k0 - 2;
+      a3 = bytes_reversed((p[k3] << (32 - 8 * rem)) | (p[k3 - 1] >> (8 * rem)));
     }
 
     // Layout of 32x8 B matrix in mma.m16n8k32.s32 (or called B layout) is
@@ -1074,8 +1062,7 @@ namespace mont
     }
 
     __device__ __forceinline__ void add_w(
-      u32& r, u32& carry_out, u32 a, u32 b
-    )
+        u32 &r, u32 &carry_out, u32 a, u32 b)
     {
       r = ptx::add_cc(a, b);
       carry_out = 0;
@@ -1084,8 +1071,7 @@ namespace mont
     }
 
     __device__ __forceinline__ void sub_w(
-      u32& r, u32& borrow_out, u32 a, u32 b
-    )
+        u32 &r, u32 &borrow_out, u32 a, u32 b)
     {
       r = ptx::sub_cc(a, b);
       borrow_out = 0;
@@ -1097,7 +1083,7 @@ namespace mont
     // z and r are both in W layout.
     __device__ __forceinline__ void modulo_m_w(
         u32 &z, u32 &r,
-        const u32* st_m)
+        const u32 *st_m)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4;
@@ -1172,8 +1158,8 @@ namespace mont
         u32 &z,
         const u32 *st_x,
         u32 yb0, u32 yb1,
-        const u32* st_m,
-        const u32* st_m_prime,
+        const u32 *st_m,
+        const u32 *st_m_prime,
         debug::Intermediates *intermediates = nullptr)
     {
       // Naming convention: <symbol> <layout> <number>
@@ -1325,8 +1311,8 @@ namespace mont
 
       if (DEBUG)
         debug::store_w_matrix(rw, intermediates->rw);
-      
-      modulo_m_w(z, rw, st_m);
+
+      modulo_m_w(z, rw, st_m + 8);
 
       if (DEBUG)
         debug::store_w_matrix(z, intermediates->zw);
@@ -1334,9 +1320,14 @@ namespace mont
 
     struct FragmentA
     {
-      const u32 *a;
+      u32 a[24] = {0};
       FragmentA() = default;
-      __device__ __forceinline__ FragmentA(const u32 *a) : a(a) {}
+      __device__ __forceinline__ void load(const u32 *p)
+      {
+        u32 lane_id = threadIdx.x % 32;
+        if (lane_id < 8)
+          a[lane_id + 8] = p[lane_id];
+      }
     };
 
     struct FragmentB
@@ -1380,13 +1371,25 @@ namespace mont
     };
 
     template <typename Params, bool DEBUG = false>
-    __device__ __forceinline__ FragmentW mul(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
+    struct Multiplier
     {
-      FragmentW w;
-      montgomery_multiplication_raw<DEBUG>(
-          w.w, x.a, y.b0, y.b1, Params::m().limbs, Params::m_prime_wide().limbs, i);
-      return w;
-    }
+      FragmentA m, m_prime;
+
+      Multiplier() = default;
+      __device__ __forceinline__ void load()
+      {
+        m.load(Params::m().limbs);
+        m_prime.load(Params::m_prime_wide().limbs);
+      }
+
+      __device__ __forceinline__ FragmentW operator()(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
+      {
+        FragmentW w;
+        montgomery_multiplication_raw<DEBUG>(
+            w.w, x.a, y.b0, y.b1, m.a, m_prime.a, i);
+        return w;
+      }
+    };
 
   }
 }
