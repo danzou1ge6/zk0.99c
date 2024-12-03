@@ -1,5 +1,7 @@
 #include "../../mont/src/bn254_scalar.cuh"
 #include "bn254.cuh"
+#include <cooperative_groups/memcpy_async.h>
+#include <cuda/pipeline>
 
 #include <cub/cub.cuh>
 #include <iostream>
@@ -86,14 +88,23 @@ namespace msm
     static constexpr bool debug = false;
   };
 
+  struct __align__(8) Index {
+    u32 key;
+    u32 pointer;
+    struct Decomposer{
+      __host__ __device__ ::cuda::std::tuple<u32&> operator()(Index& index) const {
+        return index.key;
+      }
+    };
+  };
+
   template <typename Config>
-  __global__ void count_buckets(
-      const u32 *scalers,
-      const u32 len,
-      u32* cnt_zero,
-      u32* keys,
-      u32* values)
-  {
+  __global__ void distribute_windows(
+    const u32 *scalers,
+    const u32 len,
+    u32* cnt_zero,
+    Index* indexs
+  ) {
     u32 tid = blockIdx.x * blockDim.x + threadIdx.x;
     u32 stride = gridDim.x * blockDim.x;
     
@@ -107,8 +118,7 @@ namespace msm
       for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
         auto bucket_id = bucket[window_id];
         if (bucket_id == 0) atomicAdd(cnt_zero + window_id, 1);
-        keys[window_id * len + i] = bucket_id;
-        values[window_id * len + i] = i;
+        indexs[window_id * len + i] = Index{bucket_id, i};
       }
     }
   }
@@ -141,50 +151,88 @@ namespace msm
   __global__ void bucket_sum(
       const u32 window_id,
       const u32 len,
-      const u32 *key_for_pointer,
-      const u32 *pointer_to_points,
+      const Index *indexs,
       const u32 *points,
       const u32 *cnt_zero,
       u32 *mutex,
       Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum)
   {
+    __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS + 4]; // +4 for padding and alignment
 
     const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
     const u32 threads = blockDim.x * gridDim.x;
     const u32 zero_offset = cnt_zero[window_id];
-    const u32 work_len = div_ceil(len - zero_offset, threads);
+    indexs += zero_offset;
+
+    u32 work_len = div_ceil(len - zero_offset, threads);
+    if (work_len % 2 != 0) work_len++; // we need each thread to read two indexes at a time for 16 byte alignment
+
     const u32 start_id = work_len * gtid;
     const u32 end_id = min(start_id + work_len, len - zero_offset);
     if (start_id >= end_id) return;
-    key_for_pointer += zero_offset;
-    pointer_to_points += zero_offset;
+
+    // for async transfer, 16 byte alignment is needed so we read two indexes at a time
+    // if zero_offset is odd, means the first index is not aligned, so we need to start from the second index
+    // when stage is 1, we need to read the next index for the next iteration
+    int stage = zero_offset & 1u;
+
+    PointAffine p;
+    bool first = true; // only the first bucket and the last bucket may have conflict with other threads
+    auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
+
+    Index index = indexs[start_id];
+
+    pip_thread.producer_acquire();
+    cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x]), reinterpret_cast<const uint4*>(points + index.pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
+    if (stage == 0) cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + start_id), sizeof(Index) * 2, pip_thread);
+    else if (stage == 1) cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + start_id + 1), sizeof(Index) * 2, pip_thread);
+    stage ^= 1;
+    pip_thread.producer_commit();
 
     auto acc = Point::identity();
-    u32 last_key = key_for_pointer[start_id];
-    bool first = true; // only the first bucket and the last bucket may have conflict with other threads
 
-    for (u32 i = start_id; i < end_id; i++) {
-      u32 cur_key = key_for_pointer[i];
-      if (cur_key != last_key) {
+    for (u32 i = start_id + 1; i < end_id; i++) {
+      Index next_index;
+
+      pip_thread.consumer_wait();
+      p = PointAffine::load(point_buffer[threadIdx.x]);
+      next_index = reinterpret_cast<const Index*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS)[stage];
+      pip_thread.consumer_release();
+
+      pip_thread.producer_acquire();
+      cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x]), reinterpret_cast<const uint4*>(points + next_index.pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
+      if (stage == 1 && i + 1 < end_id) {
+        cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + i + 1), sizeof(Index) * 2, pip_thread);
+      }
+      stage ^= 1;
+      pip_thread.producer_commit();
+
+      acc = acc + p;
+
+      if (next_index.key != index.key) {
         if (first) {
           first = false;
-          auto mutex_ptr = mutex + last_key;
+          auto mutex_ptr = mutex + index.key;
           lock(mutex_ptr);
-          sum.get(window_id, last_key - 1) = sum.get(window_id, last_key - 1) + acc;
+          sum.get(window_id, index.key - 1) = sum.get(window_id, index.key - 1) + acc;
           unlock(mutex_ptr);
         } else {
-          sum.get(window_id, last_key - 1) = acc;
+          sum.get(window_id, index.key - 1) = acc;
         }
         acc = Point::identity();
-        last_key = cur_key;
       }
-      auto pointer = pointer_to_points[i];
-      auto p = PointAffine::load(points + pointer * PointAffine::N_WORDS);
-      acc = acc + p;
+      index = next_index;
     }
-    auto mutex_ptr = mutex + last_key;
+
+    pip_thread.consumer_wait();
+    p = PointAffine::load(point_buffer[threadIdx.x]);
+    pip_thread.consumer_release();
+
+    acc = acc + p;
+
+    auto mutex_ptr = mutex + index.key;
     lock(mutex_ptr);
-    sum.get(window_id, last_key - 1) = sum.get(window_id, last_key - 1) + acc;
+    sum.get(window_id, index.key - 1) = sum.get(window_id, index.key - 1) + acc;
     unlock(mutex_ptr);
   }
 
@@ -256,10 +304,9 @@ namespace msm
 
     // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
     
-    u32 *keys, *values;
+    Index *indexs;
 
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&keys, sizeof(u32) * len * Config::n_windows));
-    PROPAGATE_CUDA_ERROR(cudaMalloc(&values, sizeof(u32) * len * Config::n_windows));
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&indexs, sizeof(Index) * (len * Config::n_windows + 1))); // +1 for possible overflow in bucket_sum
 
     PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
 
@@ -270,7 +317,7 @@ namespace msm
     cudaEventRecord(start, 0);
     u32 block_size = 512;
     u32 grid_size = deviceProp.multiProcessorCount * 4;
-    count_buckets<Config><<<grid_size, block_size>>>(scalers, len, cnt_zero, keys, values);
+    distribute_windows<Config><<<grid_size, block_size>>>(scalers, len, cnt_zero, indexs);
 
     PROPAGATE_CUDA_ERROR(cudaGetLastError());
     cudaEventRecord(stop, 0);
@@ -282,9 +329,9 @@ namespace msm
     size_t temp_storage_bytes = 0;
     
 
-    cub::DeviceRadixSort::SortPairs(
-        d_temp_storage, temp_storage_bytes,
-        keys, keys, values, values, len
+    cub::DeviceRadixSort::SortKeys(
+      d_temp_storage, temp_storage_bytes,
+      indexs, indexs, len, Index::Decomposer()
     );
 
     PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
@@ -293,9 +340,9 @@ namespace msm
     cudaEventRecord(start);
 
     for (int i = 0; i < Config::n_windows; i++) {
-        cub::DeviceRadixSort::SortPairs(
+        cub::DeviceRadixSort::SortKeys(
             d_temp_storage, temp_storage_bytes,
-            keys + i * len, keys + i * len, values + i * len, values + i * len, len
+            indexs + i * len, indexs + i * len, len, Index::Decomposer()
         );
     }
 
@@ -318,7 +365,13 @@ namespace msm
     // TODO: Cut into chunks to support len at 2^30
     u32 *points;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&points, sizeof(u32) * PointAffine::N_WORDS * len));
+
+    cudaEventRecord(start);
     PROPAGATE_CUDA_ERROR(cudaMemcpy(points, h_points, sizeof(u32) * PointAffine::N_WORDS * len, cudaMemcpyHostToDevice));   
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&elapsedTime, start, stop);
+    std::cout << "MSM points copy time:" << elapsedTime << std::endl;
 
     u32 *mutex;
     PROPAGATE_CUDA_ERROR(cudaMalloc(&mutex, sizeof(u32) * Config::n_buckets));
@@ -334,8 +387,7 @@ namespace msm
       bucket_sum<Config, 8><<<grid_size, block_size>>>(
         i,
         len,
-        keys + i * len,
-        values + i * len,
+        indexs + i * len,
         points,
         cnt_zero,
         mutex,
@@ -352,8 +404,7 @@ namespace msm
     PROPAGATE_CUDA_ERROR(cudaGetLastError());
     PROPAGATE_CUDA_ERROR(cudaFree(points));
     PROPAGATE_CUDA_ERROR(cudaFree(mutex));
-    PROPAGATE_CUDA_ERROR(cudaFree(values));
-    PROPAGATE_CUDA_ERROR(cudaFree(keys));
+    PROPAGATE_CUDA_ERROR(cudaFree(indexs));
     PROPAGATE_CUDA_ERROR(cudaFree(cnt_zero));
 
     float ms;
