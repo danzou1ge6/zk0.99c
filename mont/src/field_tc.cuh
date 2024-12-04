@@ -63,13 +63,16 @@ namespace mont
       i32 k0 = i / 4 - j;
       u32 rem = (i & 0b11) + 1;
       const u32 *p = limbs + 8;
-      a0 = bytes_reversed((p[k0] << (32 - 8 * rem)) | (p[k0 - 1] >> (8 * rem)));
+
+      u32 sr = 8 * rem;
+      u32 sl = 32 - sr;
+      a0 = bytes_reversed((p[k0] << sl) | (p[k0 - 1] >> sr));
       i32 k1 = k0 - 4;
-      a1 = bytes_reversed((p[k1] << (32 - 8 * rem)) | (p[k1 - 1] >> (8 * rem)));
+      a1 = bytes_reversed((p[k1] << sl) | (p[k1 - 1] >> sr));
       i32 k2 = k0 + 2;
-      a2 = bytes_reversed((p[k2] << (32 - 8 * rem)) | (p[k2 - 1] >> (8 * rem)));
+      a2 = bytes_reversed((p[k2] << sl) | (p[k2 - 1] >> sr));
       i32 k3 = k0 - 2;
-      a3 = bytes_reversed((p[k3] << (32 - 8 * rem)) | (p[k3 - 1] >> (8 * rem)));
+      a3 = bytes_reversed((p[k3] << sl) | (p[k3 - 1] >> sr));
     }
 
     // Layout of 32x8 B matrix in mma.m16n8k32.s32 (or called B layout) is
@@ -106,10 +109,9 @@ namespace mont
         F p)
     {
       u32 lane_id = threadIdx.x % 32;
-      u32 col = lane_id / 4;
-      u32 j = col / 2;
+      u32 j = lane_id / 8;
       u32 i = lane_id % 4;
-      if (col % 2 == 0 && (MASK >> j) & 1)
+      if ((MASK >> j) & 1)
       {
         b0 = p(j, i);
         b1 = p(j, i + 4);
@@ -615,17 +617,15 @@ namespace mont
         u32 d00, u32 d02,
         u32 d10, u32 d12)
     {
-      auto calc = [](u32 &b0, u32 &b1, u32 d)
+      u32 lane_id = threadIdx.x % 32;
+      u32 i = lane_id % 4;
+      u32 j = lane_id / 4;
+      u32 src_lane0 = 8 * i + j / 2;
+      u32 src_lane1 = src_lane0 + 4;
+      auto calc = [src_lane0, src_lane1](u32 &b0, u32 &b1, u32 d)
       {
-        u16 d_lo, d_hi;
-        ptx::unpack_b32(d_lo, d_hi, d);
-        u32 b_lo = transpose_m8n8(ptx::pack_b32(d_lo, d_lo));
-        u16 b0_lo, b1_lo, b0_hi, b1_hi;
-        ptx::unpack_b32(b0_lo, b1_lo, b_lo);
-        u32 b_hi = transpose_m8n8(ptx::pack_b32(d_hi, d_hi));
-        ptx::unpack_b32(b0_hi, b1_hi, b_hi);
-        b0 = ptx::pack_b32(b0_lo, b0_hi);
-        b1 = ptx::pack_b32(b1_lo, b1_hi);
+        b0 = __shfl_sync(MASK_ALL, d, src_lane0);
+        b1 = __shfl_sync(MASK_ALL, d, src_lane1);
       };
 
       calc(b00, b01, d00);

@@ -6,9 +6,9 @@
 using bn256_fr::Element;
 using mont::u32;
 
-const u32 BATCH = 128;
+const u32 BATCH = 1;
 const u32 THREADS = 512;
-const u32 ITERS = 2;
+const u32 ITERS = 512;
 
 __global__ void bench(Element *r, const Element *a, const Element *b)
 {
@@ -29,7 +29,8 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
   u32 warp_id = threadIdx.x / 32;
 
   __shared__ Multiplier<bn256_fr::Params, false> mul;
-  mul.load();
+  if (warp_id == 0)
+    mul.load();
 
   __shared__ FragmentA fa[THREADS / 32];
   fa[warp_id].load(a->n.limbs);
@@ -43,7 +44,8 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
     fb = fr.transpose_to_b();
   }
 
-  fr.store<0b1111>([r] (u32 i, u32 j, u32 w) { r[i].n.limbs[j] = w; });
+  if (warp_id == 0)
+    fr.store<0b1111>([r] (u32 i, u32 j, u32 w) { r[i].n.limbs[j] = w; });
 }
 
 template <typename F>
