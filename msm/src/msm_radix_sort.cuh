@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 16, u32 PRECOMPUTE = 1, u32 SEGMENTS = 1>
+    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 PRECOMPUTE = 1, u32 SEGMENTS = 1>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE;
@@ -344,7 +344,7 @@ namespace msm {
         
         Index *indexs;
 
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&indexs, sizeof(Index) * (len * Config::n_windows + 1))); // +1 for possible overflow in bucket_sum
+        PROPAGATE_CUDA_ERROR(cudaMalloc(&indexs, sizeof(Index) * (len * (Config::n_windows + 1) + 1))); // window + 1 for double buffer in sort, +1 for possible overflow in bucket_sum
 
         PROPAGATE_CUDA_ERROR(cudaMemcpy(scalers, h_scalers, sizeof(u32) * Number::LIMBS * len, cudaMemcpyHostToDevice));
 
@@ -355,7 +355,7 @@ namespace msm {
         cudaEventRecord(start, 0);
         u32 block_size = 512;
         u32 grid_size = deviceProp.multiProcessorCount * 4;
-        distribute_windows<Config><<<grid_size, block_size>>>(scalers, len, cnt_zero, indexs);
+        distribute_windows<Config><<<grid_size, block_size>>>(scalers, len, cnt_zero, indexs + len);
 
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
         cudaEventRecord(stop, 0);
@@ -369,7 +369,7 @@ namespace msm {
 
         cub::DeviceRadixSort::SortKeys(
             d_temp_storage, temp_storage_bytes,
-            indexs, indexs, len, Index::Decomposer()
+            indexs + len, indexs, len, Index::Decomposer(), 0, Config::s
         );
 
         PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage, temp_storage_bytes));
@@ -380,7 +380,7 @@ namespace msm {
         for (int i = 0; i < Config::n_windows; i++) {
             cub::DeviceRadixSort::SortKeys(
                 d_temp_storage, temp_storage_bytes,
-                indexs + i * len, indexs + i * len, len, Index::Decomposer()
+                indexs + (i + 1) * len, indexs + i * len, len, Index::Decomposer(), 0, Config::s
             );
         }
 
