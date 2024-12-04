@@ -209,6 +209,19 @@ namespace curve
       multiple_iter(*this, found_one, res, n);
       return res;
     }
+
+    __device__ __host__ __forceinline__ Point shuffle_down(const u32 delta) const &
+    {
+      Point res;
+      #pragma unroll
+      for (usize i = 0; i < Element::LIMBS; i++)
+      {
+        res.x.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n.limbs[i], delta);
+        res.y.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n.limbs[i], delta);
+        res.z.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, z.n.limbs[i], delta);
+      }
+      return res;
+    }
   };
 
   template <class Params, class Element>
@@ -222,8 +235,6 @@ namespace curve
     os << "}";
     return os;
   }
-
-  const u32 WORDS_PER_POINT_AFFINE = 16;
 
   // A point (x, y) on curve. Identity marked by (0, 0).
   template <class Params, class Element>

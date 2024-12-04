@@ -82,8 +82,7 @@ namespace msm
     static constexpr u32 n_windows = div_ceil(lambda, s);
     static constexpr u32 n_buckets = pow2(s);
     static constexpr u32 n_window_id_bits = log2_ceil(n_windows);
-
-    static constexpr u32 scatter_batch_size = 32;
+    static constexpr u32 n_precompute = 1; // lines of points to be stored in memory, 1 for no precomputation
 
     static constexpr bool debug = false;
   };
@@ -98,6 +97,8 @@ namespace msm
     };
   };
 
+  // divide scalers into windows
+  // count number of zeros in each window
   template <typename Config>
   __global__ void distribute_windows(
     const u32 *scalers,
@@ -236,14 +237,13 @@ namespace msm
     unlock(mutex_ptr);
   }
 
-    template<typename Config, u32 blockdim = 256>
+    template<typename Config, u32 WarpNum = 8>
     __launch_bounds__(256,1)
     __global__ void reduceBuckets(Array2D<Point, Config::n_windows, Config::n_buckets - 1> buckets_sum, Point *reduceMemory) {
 
         assert(gridDim.x % Config::n_windows == 0);
 
-        using BlockReduce = cub::BlockReduce<Point, blockdim>;
-        __shared__ typename BlockReduce::TempStorage temp_storage;
+        __shared__ u32 smem[WarpNum][Point::N_WORDS + 4]; // +4 for padding and alignment
 
         const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
         u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
@@ -271,13 +271,46 @@ namespace msm
 
         sum_of_sums = sum_of_sums + sum;
 
-        auto aggregate = BlockReduce(temp_storage).Reduce(sum_of_sums, [](const Point &a, const Point &b){ return a + b; });
+        // Reduce within the block
+        // 1. reduce in each warp
+        // 2. store to smem
+        // 3. reduce in warp1
+        u32 warp_id = threadIdx.x / 32;
+        u32 lane_id = threadIdx.x % 32;
 
+        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+
+        if (lane_id == 0) {
+          sum_of_sums.store(smem[warp_id]);
+        }
+
+        __syncthreads();
+
+        if (warp_id > 0) return;
+
+        if (threadIdx.x < WarpNum) {
+          sum_of_sums = Point::load(smem[threadIdx.x]);
+        } else {
+          sum_of_sums = Point::identity();
+        }
+
+        // Reduce in warp1
+        if constexpr (WarpNum > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        if constexpr (WarpNum > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        if constexpr (WarpNum > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        if constexpr (WarpNum > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        if constexpr (WarpNum > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+
+        // Store to global memory
         if (threadIdx.x == 0) {
             for (u32 i = 0; i < window_id * Config::s; i++) {
-                aggregate = aggregate.self_add();
+                sum_of_sums = sum_of_sums.self_add();
             }
-            reduceMemory[blockIdx.x] = aggregate;
+            reduceMemory[blockIdx.x] = sum_of_sums;
         }
     }
 
@@ -410,71 +443,71 @@ namespace msm
     float ms;
     cudaEvent_t end;
     cudaEventCreate(&end);
-    u32 grid = deviceProp.multiProcessorCount;
+    u32 grid = div_ceil(deviceProp.multiProcessorCount, Config::n_windows) * Config::n_windows; 
 
     Point *reduce_buffer;
 
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&reduce_buffer, sizeof(Point) * Config::n_windows * grid));
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&reduce_buffer, sizeof(Point) * Config::n_windows * grid));
 
 
-        // start reduce
+    // start reduce
 
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
-        
-        reduceBuckets<Config, 256> <<< grid * Config::n_windows, 256 >>> (buckets_sum, reduce_buffer);
+    PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
+    
+    reduceBuckets<Config, 8> <<< grid, 256 >>> (buckets_sum, reduce_buffer);
 
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
-        PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
-        PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
-        printf("bucket reduce: %f ms\n", ms);
+    PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
+    PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
+    PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
+    printf("bucket reduce: %f ms\n", ms);
 
-        PROPAGATE_CUDA_ERROR(cudaFree(buckets_sum_buf));
+    PROPAGATE_CUDA_ERROR(cudaFree(buckets_sum_buf));
 
-        // ruduce all
-        void *d_temp_storage_reduce = nullptr;
-        mont::usize temp_storage_bytes_reduce = 0;
+    // ruduce all
+    void *d_temp_storage_reduce = nullptr;
+    mont::usize temp_storage_bytes_reduce = 0;
 
-        Point *reduced;
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&reduced, sizeof(Point)));
+    Point *reduced;
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&reduced, sizeof(Point)));
 
-        auto add_op = [] __device__ __host__(const Point &a, const Point &b) { return a + b; };
+    auto add_op = [] __device__ __host__(const Point &a, const Point &b) { return a + b; };
 
-        PROPAGATE_CUDA_ERROR(
-            cub::DeviceReduce::Reduce(
-                d_temp_storage_reduce, 
-                temp_storage_bytes_reduce, 
-                reduce_buffer, 
-                reduced, 
-                Config::n_windows * grid, 
-                add_op,
-                Point::identity()
-            )
-        );
+    PROPAGATE_CUDA_ERROR(
+        cub::DeviceReduce::Reduce(
+            d_temp_storage_reduce, 
+            temp_storage_bytes_reduce, 
+            reduce_buffer, 
+            reduced, 
+            Config::n_windows * grid, 
+            add_op,
+            Point::identity()
+        )
+    );
 
-        PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage_reduce, temp_storage_bytes_reduce));
+    PROPAGATE_CUDA_ERROR(cudaMalloc(&d_temp_storage_reduce, temp_storage_bytes_reduce));
 
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
-        PROPAGATE_CUDA_ERROR(
-            cub::DeviceReduce::Reduce(
-                d_temp_storage_reduce, 
-                temp_storage_bytes_reduce, 
-                reduce_buffer, 
-                reduced, 
-                Config::n_windows * grid,
-                add_op,
-                Point::identity()
-            )
-        );
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
-        PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
-        PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
-        printf("reduce: %f ms\n", ms);
+    PROPAGATE_CUDA_ERROR(cudaEventRecord(start));
+    PROPAGATE_CUDA_ERROR(
+        cub::DeviceReduce::Reduce(
+            d_temp_storage_reduce, 
+            temp_storage_bytes_reduce, 
+            reduce_buffer, 
+            reduced, 
+            Config::n_windows * grid,
+            add_op,
+            Point::identity()
+        )
+    );
+    PROPAGATE_CUDA_ERROR(cudaEventRecord(end));
+    PROPAGATE_CUDA_ERROR(cudaEventSynchronize(end));
+    PROPAGATE_CUDA_ERROR(cudaEventElapsedTime(&ms, start, end));
+    printf("reduce: %f ms\n", ms);
 
-        PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage_reduce));
-        PROPAGATE_CUDA_ERROR(cudaFree(reduce_buffer));
+    PROPAGATE_CUDA_ERROR(cudaFree(d_temp_storage_reduce));
+    PROPAGATE_CUDA_ERROR(cudaFree(reduce_buffer));
 
-        PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
-        PROPAGATE_CUDA_ERROR(cudaFree(reduced));
+    PROPAGATE_CUDA_ERROR(cudaMemcpy(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost));
+    PROPAGATE_CUDA_ERROR(cudaFree(reduced));
 
     return cudaSuccess;
   }
