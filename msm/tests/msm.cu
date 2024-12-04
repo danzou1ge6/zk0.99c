@@ -71,7 +71,7 @@ int main(int argc, char *argv[])
   cudaEventRecord(start, 0);
 
   Point r;
-  msm::run<msm::MsmConfig>((u32*)msm.scalers, (u32*)msm.points, msm.len, r);
+  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, (u32*)msm.points, msm.len, r);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
