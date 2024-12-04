@@ -14,7 +14,7 @@ __global__ void kernel(
   using namespace mont::tc256;
   using mont::u32;
 
-  __shared__ Multiplier<bn256_fr::Params, true> mul;
+  __shared__ Multiplier<bn256_fr::Params> mul;
   mul.load();
 
   __shared__ FragmentA fx; // only one warp here
@@ -22,19 +22,19 @@ __global__ void kernel(
 
   auto fy = FragmentB::load<0b1111>([y](u32 i, u32 j)
                                     { return y[i].n.limbs[j]; });
-  auto fz = mul(fx, fy, i);
+  auto fz = mul.template execute<true>(fx, fy, i);
   fz.store<0b1111>([z](u32 i, u32 j, u32 w)
                    { z[i].n.limbs[j] = w; });
 }
 
 int main()
 {
-  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0xfa33c07, 0x55497a85, 0x58972cab, 0x3f42f3af, 0x0746f5fe, 0x6b3a3cd2, 0x2b2542f9, 0x6e9a0ff8));
+  Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x2fa3e185, 0x1fa39e5a, 0x168b3cbd, 0x0d33b74a, 0x086f10d9, 0x032c7039, 0x6195cc82, 0x0f9e13e6));
   Element y[4] = {
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x2f8b39bb, 0x0cb6ab08, 0x5bd50c97, 0x36d22fb9, 0x77f0e7da, 0x06fa4f90, 0x256c3fb2, 0x736cdb07)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x2f8b39bb, 0x0cb6ab08, 0x5bd50c97, 0x36d22fb9, 0x77f0e7da, 0x06fa4f90, 0x256c3fb2, 0x736cdb07)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x2f8b39bb, 0x0cb6ab08, 0x5bd50c97, 0x36d22fb9, 0x77f0e7da, 0x06fa4f90, 0x256c3fb2, 0x736cdb07)),
-      mont::Number<8>(BIG_INTEGER_CHUNKS8(0x2f8b39bb, 0x0cb6ab08, 0x5bd50c97, 0x36d22fb9, 0x77f0e7da, 0x06fa4f90, 0x256c3fb2, 0x736cdb07)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0xd9fed2, 0x2c958bd3, 0x14383fb8, 0x55e308c6, 0x024f5623, 0x39d0d22a, 0x4aac4454, 0x3074fa73)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0xd9fed2, 0x2c958bd3, 0x14383fb8, 0x55e308c6, 0x024f5623, 0x39d0d22a, 0x4aac4454, 0x3074fa73)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0xd9fed2, 0x2c958bd3, 0x14383fb8, 0x55e308c6, 0x024f5623, 0x39d0d22a, 0x4aac4454, 0x3074fa73)),
+      mont::Number<8>(BIG_INTEGER_CHUNKS8(0xd9fed2, 0x2c958bd3, 0x14383fb8, 0x55e308c6, 0x024f5623, 0x39d0d22a, 0x4aac4454, 0x3074fa73)),
   };
 
   // Element x = mont::Number<8>(BIG_INTEGER_CHUNKS8(0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101, 0x01010101));

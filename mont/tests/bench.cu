@@ -6,9 +6,9 @@
 using bn256_fr::Element;
 using mont::u32;
 
-const u32 BATCH = 1;
+const u32 BATCH = 128;
 const u32 THREADS = 512;
-const u32 ITERS = 512;
+const u32 ITERS = 2;
 
 __global__ void bench(Element *r, const Element *a, const Element *b)
 {
@@ -22,13 +22,15 @@ __global__ void bench(Element *r, const Element *a, const Element *b)
     r[j] = v[j];
 }
 
-__global__ void bench_tc(Element *r, const Element *a, const Element *b)
+using mont::tc256::debug::Intermediates;
+
+__global__ void bench_tc(Element *r, const Element *a, const Element *b, Intermediates *di)
 {
   using namespace mont::tc256;
   u32 lane_id = threadIdx.x % 32;
   u32 warp_id = threadIdx.x / 32;
 
-  __shared__ Multiplier<bn256_fr::Params, false> mul;
+  __shared__ Multiplier<bn256_fr::Params> mul;
   if (warp_id == 0)
     mul.load();
 
@@ -40,11 +42,14 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b)
   FragmentW fr;
   for (u32 i = 0; i < BATCH; i++)
   {
-    fr = mul(fa[warp_id], fb);
+    if (warp_id == 0 && blockIdx.x == 0)
+      fr = mul.template execute<true>(fa[warp_id], fb, di);
+    else
+      fr = mul(fa[warp_id], fb);
     fb = fr.transpose_to_b();
   }
 
-  if (warp_id == 0)
+  if (warp_id == 0 && blockIdx.x == 0)
     fr.store<0b1111>([r] (u32 i, u32 j, u32 w) { r[i].n.limbs[j] = w; });
 }
 
@@ -57,6 +62,11 @@ float time_it(u32 iters, F f)
   cudaMalloc(&r, sizeof(Element) * 4);
   cudaMalloc(&a, sizeof(Element));
   cudaMalloc(&b, sizeof(Element) * 4);
+
+  auto intermediates = Intermediates::new_device();
+  Intermediates* d_intermediates;
+  cudaMalloc(&d_intermediates, sizeof(Intermediates));
+  cudaMemcpy(d_intermediates, &intermediates, sizeof(Intermediates), cudaMemcpyHostToDevice);
 
   for (u32 i = 0; i < iters; i++)
   {
@@ -72,7 +82,7 @@ float time_it(u32 iters, F f)
     cudaMemcpy(b, hb, sizeof(Element) * 4, cudaMemcpyHostToDevice);
 
     cudaEventRecord(start);
-    f(r, a, b);
+    f(r, a, b, d_intermediates);
     cudaEventRecord(stop);
 
     auto err = cudaDeviceSynchronize();
@@ -93,9 +103,12 @@ float time_it(u32 iters, F f)
     for (u32 j = 0; j < 4; j ++)
       if (hr[j] != hv[j])
       {
-        std::cout << "Computation error: " << ha.n << " ^ " << BATCH << " * " << hb[j].n << " = " << hv[j].n
-          << ", but got " << hr[j] << std::endl;
-        // std::exit(1);
+        std::cout << "Computation error at iteration " << std::dec << i << " : "
+          << ha.n << " ^ " << std::dec << BATCH << " * " << hb[j].n << " = " << hv[j].n
+          << ", but got " << hr[j] << std::endl
+          << "Intermediates:" << std::endl
+          << intermediates.to_host();
+        std::exit(1);
       }
 
     cudaEventSynchronize(stop);
@@ -120,11 +133,11 @@ int main()
 
   u32 grid_size = 8 * deviceProp.multiProcessorCount;
 
-  float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b)
+  float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates* di)
                              { bench<<<grid_size, THREADS>>>(r, a, b); });
   std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time * 1000 << std::endl;
 
-  float total_time_tc = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b)
-                                { bench_tc<<<grid_size, THREADS>>>(r, a, b); });
+  float total_time_tc = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates* di)
+                                { bench_tc<<<grid_size, THREADS>>>(r, a, b, di); });
   std::cout << "Tensor Core: " << THREADS / 8 * ITERS * BATCH * grid_size / total_time_tc * 1000 << std::endl;
 }

@@ -1325,8 +1325,8 @@ namespace mont
       __device__ __forceinline__ void load(const u32 *p)
       {
         u32 lane_id = threadIdx.x % 32;
-        if (lane_id < 8)
-          a[lane_id + 8] = p[lane_id];
+        bool predicate = (lane_id >= 8) && (lane_id < 16);
+        a[lane_id] = predicate ? p[lane_id - 8] : 0;
       }
     };
 
@@ -1370,7 +1370,7 @@ namespace mont
       }
     };
 
-    template <typename Params, bool DEBUG = false>
+    template <typename Params>
     struct Multiplier
     {
       FragmentA m, m_prime;
@@ -1382,12 +1382,18 @@ namespace mont
         m_prime.load(Params::m_prime_wide().limbs);
       }
 
-      __device__ __forceinline__ FragmentW operator()(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
+      template <bool DEBUG = false>
+      __device__ __forceinline__ FragmentW execute(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
       {
         FragmentW w;
         montgomery_multiplication_raw<DEBUG>(
             w.w, x.a, y.b0, y.b1, m.a, m_prime.a, i);
         return w;
+      }
+
+      __device__ __forceinline__ FragmentW operator()(FragmentA x, FragmentB y)
+      {
+        return execute(x, y);
       }
     };
 
