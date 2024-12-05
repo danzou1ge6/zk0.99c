@@ -63,6 +63,10 @@ int main(int argc, char *argv[])
 
   rf >> msm;
 
+  u32* d_points;
+
+  msm::precompute<msm::MsmConfig<>>((u32*)msm.points, msm.len, d_points);
+
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;
 
@@ -71,11 +75,13 @@ int main(int argc, char *argv[])
   cudaEventRecord(start, 0);
 
   Point r;
-  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, (u32*)msm.points, msm.len, r);
+  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, d_points, msm.len, r);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
+
+  cudaFree(d_points);
 
   std::cout << r.to_affine() << std::endl;
 
