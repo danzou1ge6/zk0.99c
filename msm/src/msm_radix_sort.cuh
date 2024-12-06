@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 2, u32 SEGMENTS = 4>
+    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE;
@@ -454,18 +454,39 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(d_points_offset, h_points_offset, sizeof(u32) * (Config::n_windows + 1), cudaMemcpyHostToDevice, stream));
 
         u64 part_len = div_ceil(len, Config::n_parts);
-
         
         cudaEvent_t begin_submsm;
         PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_submsm));
         PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_submsm, stream));
 
-        cudaStream_t child_stream[2];
+        cudaStream_t child_stream[2], copy_stream[2];
         PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[0]));
         if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[1]));
+        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream[1]));
 
         PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[0], begin_submsm, cudaEventWaitDefault));
         if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[1], begin_submsm, cudaEventWaitDefault));
+        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[0], begin_submsm, cudaEventWaitDefault));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[1], begin_submsm, cudaEventWaitDefault));
+
+        cudaEvent_t begin_scaler_copy[2], end_scaler_copy[2], begin_point_copy[2], end_point_copy[2];
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) {
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[1], child_stream[1]));
+        }
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[0], copy_stream[0]));
+        if constexpr (Config::n_parts > 1) {
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[1], copy_stream[1]));
+        }
 
         // double buffer to overlap computation and memory copy
         u32 *cnt_zero[2];
@@ -521,10 +542,13 @@ namespace msm {
             u64 offset = p * part_len;
             u64 cur_len = std::min(part_len, len - offset);
 
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[idx], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, child_stream[idx]));
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[idx], begin_scaler_copy[idx], cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[idx], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, copy_stream[idx]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_scaler_copy[idx], copy_stream[idx]));
             
             PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero[idx], 0, sizeof(u32) * Config::n_windows, child_stream[idx]));
 
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[idx], end_scaler_copy[idx], cudaEventWaitDefault));
             cudaEvent_t start, stop;
             float elapsedTime = 0.0;
             cudaEventCreate(&start);
@@ -538,6 +562,7 @@ namespace msm {
             distribute_windows<Config><<<grid_size, block_size, 0, child_stream[idx]>>>(scalers[idx], cur_len, cnt_zero[idx], indexs[idx] + h_points_per_window[0] * cur_len, d_points_offset);
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[idx], child_stream[idx]));
 
             if constexpr (Config::debug) {
                 cudaEventRecord(stop, child_stream[idx]);
@@ -545,17 +570,7 @@ namespace msm {
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM distribute_windows time:" << elapsedTime << std::endl;
             }
-            // // print indexs and cnt_zero
-            // u64* h_indexs = (u64*)malloc(sizeof(u64) * (Config::actual_windows + h_points_per_window[0]) * cur_len);
-            // u32* h_cnt_zero = (u32*)malloc(sizeof(u32) * Config::n_windows);
-            // PROPAGATE_CUDA_ERROR(cudaMemcpy(h_indexs, indexs, sizeof(u64) * (Config::actual_windows + h_points_per_window[0]) * cur_len, cudaMemcpyDeviceToHost));
-            // PROPAGATE_CUDA_ERROR(cudaMemcpy(h_cnt_zero, cnt_zero, sizeof(u32) * Config::n_windows, cudaMemcpyDeviceToHost));
-            // for (int i = 0; i < h_points_per_window[0] * cur_len; i++) {
-            //     printf("indexs[%d]: key: %d\n", i, h_indexs[i + h_points_per_window[0] * cur_len] & ((1 << Config::s) - 1));
-            // }
-            // for (int i = 0; i < Config::n_windows; i++) {
-            //     printf("cnt_zero[%d]: %d\n", i, h_cnt_zero[i]);
-            // }
+
             if constexpr (Config::debug) {
                 cudaEventRecord(start, child_stream[idx]);
             }
@@ -568,15 +583,6 @@ namespace msm {
                 );
             }
 
-            // PROPAGATE_CUDA_ERROR(cudaMemcpy(h_indexs, indexs, sizeof(u64) * (Config::actual_windows + h_points_per_window[0]) * cur_len, cudaMemcpyDeviceToHost));
-            // PROPAGATE_CUDA_ERROR(cudaMemcpy(h_cnt_zero, cnt_zero, sizeof(u32) * Config::n_windows, cudaMemcpyDeviceToHost));
-            // for (int i = 0; i < h_points_per_window[0] * cur_len; i++) {
-            //     printf("indexs[%d]: key: %d\n", i, h_indexs[i] & ((1 << Config::s) - 1));
-            // }
-            // for (int i = 0; i < Config::n_windows; i++) {
-            //     printf("cnt_zero[%d]: %d\n", i, h_cnt_zero[i]);
-            // }
-
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
             if constexpr (Config::debug) {
                 cudaEventRecord(stop, child_stream[idx]);
@@ -585,9 +591,13 @@ namespace msm {
                 std::cout << "MSM sort time:" << elapsedTime << std::endl;
             }
 
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[idx], begin_point_copy[idx], cudaEventWaitDefault));
             if (p != begin) {
                 PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, child_stream[idx]));
             }
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[idx], copy_stream[idx]));
+
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[idx], end_point_copy[idx], cudaEventWaitDefault));
 
             if constexpr (Config::debug) {
                 cudaEventRecord(start, child_stream[idx]);
@@ -618,6 +628,8 @@ namespace msm {
                 std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
             }
 
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[idx], child_stream[idx]));
+
         }
 
         d_points = points[idx^1];
@@ -643,6 +655,23 @@ namespace msm {
 
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(mutex_buf, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_points_offset, stream));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_submsm));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_submsm[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_submsm[1]));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[0]));
+        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[0]));
+        if constexpr (Config::n_parts > 1) {
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[1]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[1]));
+        }
+        PROPAGATE_CUDA_ERROR(cudaStreamDestroy(child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamDestroy(child_stream[1]));
+        PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream[1]));
 
         cudaEvent_t start, stop;
         float ms;

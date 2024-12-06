@@ -89,6 +89,8 @@ int main(int argc, char *argv[])
 
   cudaFree(d_points);
 
+  cudaStreamDestroy(stream);
+
   std::cout << r.to_affine() << std::endl;
 
   std::cout << "Total cost time:" << elapsedTime << std::endl;
