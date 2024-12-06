@@ -68,7 +68,10 @@ int main(int argc, char *argv[])
 
   u32 *d_points, *h_points_precompute, head;
 
-  msm::precompute<msm::MsmConfig<>>((u32*)msm.points, msm.len, d_points, h_points_precompute, head);
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
+  msm::precompute<msm::MsmConfig<>>((u32*)msm.points, msm.len, d_points, h_points_precompute, head, stream);
 
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;
@@ -78,7 +81,7 @@ int main(int argc, char *argv[])
   cudaEventRecord(start, 0);
 
   Point r;
-  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, d_points, msm.len, r, h_points_precompute, head);
+  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, d_points, msm.len, r, h_points_precompute, head, stream);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);

@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1>
+    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 2, u32 SEGMENTS = 4>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE;
@@ -81,7 +81,7 @@ namespace msm {
         // number of parts to divide the input
         static constexpr u32 n_parts = SEGMENTS;
 
-        static constexpr bool debug = true;
+        static constexpr bool debug = false;
     };
 
     // divide scalers into windows
@@ -143,7 +143,7 @@ namespace msm {
         const u64 *indexs,
         const u32 *points,
         const u32 *cnt_zero,
-        unsigned short *mutex,
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized,
         Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum
     ) {
@@ -220,7 +220,7 @@ namespace msm {
             u32 next_key = next_index & key_mask;
 
             if (next_key != key) {
-                auto mutex_ptr = mutex + key;
+                auto mutex_ptr = mutex.addr(window_id, key - 1);
                 if (first) lock(mutex_ptr);
 
                 if (initialized.get(window_id, key - 1)) {
@@ -258,7 +258,7 @@ namespace msm {
 
         acc = acc + p;
 
-        auto mutex_ptr = mutex + key;
+        auto mutex_ptr = mutex.addr(window_id, key - 1);
         lock(mutex_ptr);
         if (initialized.get(window_id, key - 1)) {
             sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
@@ -421,35 +421,21 @@ namespace msm {
         cudaDeviceProp deviceProp;
         cudaGetDeviceProperties(&deviceProp, 0);
 
-        cudaStream_t stream_copy; // stream for copy
-        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&stream_copy));
-
-        cudaEvent_t scaler_copy_done, scaler_use_done, point_copy_done, point_use_done;
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&scaler_copy_done));
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&scaler_use_done));
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&point_copy_done));
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&point_use_done));
-
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(scaler_use_done, stream));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(point_use_done, stream));
-
-
         Point *buckets_sum_buf;
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&buckets_sum_buf, sizeof(Point) * Config::n_windows * (Config::n_buckets - 1), stream));
         auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets-1>(buckets_sum_buf);
         
-        unsigned short *mutex;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&mutex, sizeof(unsigned short) * Config::n_buckets, stream));
-        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(mutex, 0, sizeof(unsigned short) * Config::n_buckets, stream));
+        unsigned short *mutex_buf;
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&mutex_buf, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
+        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(mutex_buf, 0, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex(mutex_buf);
 
         unsigned short *initialized_buf;
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&initialized_buf, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
         PROPAGATE_CUDA_ERROR(cudaMemsetAsync(initialized_buf, 0, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
         Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized(initialized_buf);
 
-        u32 *cnt_zero;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero, sizeof(u32) * Config::n_windows, stream));         
-
+        // record for number of logical windows in each actual window
         u32 h_points_per_window[Config::n_windows];
         u32 h_points_offset[Config::n_windows + 1];
         h_points_offset[0] = 0;
@@ -462,30 +448,56 @@ namespace msm {
         // points_offset[Config::n_windows] should be the total number of points
         assert(h_points_offset[Config::n_windows] == Config::actual_windows);
 
+        // read only, no need to double buffer
         u32 *d_points_offset;
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_points_offset, sizeof(u32) * (Config::n_windows + 1), stream));
         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(d_points_offset, h_points_offset, sizeof(u32) * (Config::n_windows + 1), cudaMemcpyHostToDevice, stream));
 
         u64 part_len = div_ceil(len, Config::n_parts);
 
+        
+        cudaEvent_t begin_submsm;
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_submsm));
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_submsm, stream));
+
+        cudaStream_t child_stream[2];
+        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[1]));
+
+        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[0], begin_submsm, cudaEventWaitDefault));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[1], begin_submsm, cudaEventWaitDefault));
+
+        // double buffer to overlap computation and memory copy
+        u32 *cnt_zero[2];
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[0], sizeof(u32) * Config::n_windows, child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[1], sizeof(u32) * Config::n_windows, child_stream[1]));
+
         // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
-        u64 *indexs;
+        u64 *indexs[2];
         // window0 is the largest, so we use it size as buffer for sorting
         // possible overflow in bucket_sum does not matter for after sorting there are window0 points empty buffer in tail
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs, sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), stream));
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[0], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[1], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[1]));
 
-        u32 *scalers;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers, sizeof(u32) * Number::LIMBS * part_len, stream));
+        u32 *scalers[2];
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[0], sizeof(u32) * Number::LIMBS * part_len, child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[1], sizeof(u32) * Number::LIMBS * part_len, child_stream[1]));
 
-        void *d_temp_storage = nullptr;
+        void *d_temp_storage[2] = {nullptr, nullptr};
         size_t temp_storage_bytes = 0;
 
         cub::DeviceRadixSort::SortKeys(
-            d_temp_storage, temp_storage_bytes,
-            indexs + h_points_per_window[0] * part_len, indexs, h_points_per_window[0] * part_len, 0, Config::s, stream
+            d_temp_storage[0], temp_storage_bytes,
+            indexs[0] + h_points_per_window[0] * part_len, indexs[0], h_points_per_window[0] * part_len, 0, Config::s
         );
 
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage, temp_storage_bytes, stream));
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[0], temp_storage_bytes, child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[1], temp_storage_bytes, child_stream[1]));
+
+        u32* points[2];
+        points[0] = d_points;
+        d_points = nullptr;
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[1], sizeof(PointAffine) * part_len * Config::n_precompute, child_stream[1]));
 
         int begin, end, stride;
         if (head) {
@@ -499,40 +511,36 @@ namespace msm {
         }
         head ^= 1;
 
+        int idx = 0;
+
         // bit 0 - Config::s for bucket id, the rest for point index
         // max log(2^30(max points) * precompute) + Config::s bits are needed
         static_assert(log2_ceil(Config::n_precompute) + 30 + Config::s <= 64, "Index too large");
         
-        for (int p = begin; p != end; p += stride) {
+        for (int p = begin; p != end; p += stride, idx ^= 1) {
             u64 offset = p * part_len;
             u64 cur_len = std::min(part_len, len - offset);
 
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream_copy, scaler_use_done, cudaEventWaitDefault));
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers, h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, stream_copy));
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(scaler_copy_done, stream_copy));
+            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[idx], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, child_stream[idx]));
             
-            PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero, 0, sizeof(u32) * Config::n_windows, stream));
-
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, scaler_copy_done, cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero[idx], 0, sizeof(u32) * Config::n_windows, child_stream[idx]));
 
             cudaEvent_t start, stop;
             float elapsedTime = 0.0;
             cudaEventCreate(&start);
             cudaEventCreate(&stop);
             if constexpr (Config::debug) {
-                cudaEventRecord(start, stream);
+                cudaEventRecord(start, child_stream[idx]);
             }
             
             u32 block_size = 512;
             u32 grid_size = deviceProp.multiProcessorCount;
-            distribute_windows<Config><<<grid_size, block_size, 0, stream>>>(scalers, cur_len, cnt_zero, indexs + h_points_per_window[0] * cur_len, d_points_offset);
-            PROPAGATE_CUDA_ERROR(cudaDeviceSynchronize());
+            distribute_windows<Config><<<grid_size, block_size, 0, child_stream[idx]>>>(scalers[idx], cur_len, cnt_zero[idx], indexs[idx] + h_points_per_window[0] * cur_len, d_points_offset);
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(scaler_use_done, stream));
 
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, stream);
+                cudaEventRecord(stop, child_stream[idx]);
                 PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM distribute_windows time:" << elapsedTime << std::endl;
@@ -549,14 +557,14 @@ namespace msm {
             //     printf("cnt_zero[%d]: %d\n", i, h_cnt_zero[i]);
             // }
             if constexpr (Config::debug) {
-                cudaEventRecord(start, stream);
+                cudaEventRecord(start, child_stream[idx]);
             }
 
             for (int i = 0; i < Config::n_windows; i++) {
                 cub::DeviceRadixSort::SortKeys(
-                    d_temp_storage, temp_storage_bytes,
-                    indexs + (h_points_per_window[0] + h_points_offset[i]) * cur_len,
-                    indexs + h_points_offset[i] * cur_len, h_points_per_window[i] * cur_len, 0, Config::s, stream
+                    d_temp_storage[idx], temp_storage_bytes,
+                    indexs[idx] + (h_points_per_window[0] + h_points_offset[i]) * cur_len,
+                    indexs[idx] + h_points_offset[i] * cur_len, h_points_per_window[i] * cur_len, 0, Config::s, child_stream[idx]
                 );
             }
 
@@ -571,23 +579,18 @@ namespace msm {
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, stream);
+                cudaEventRecord(stop, child_stream[idx]);
                 PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM sort time:" << elapsedTime << std::endl;
             }
 
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream_copy, point_use_done, cudaEventWaitDefault));
             if (p != begin) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(d_points, h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, stream_copy));
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, child_stream[idx]));
             }
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(point_copy_done, stream_copy));
-
-
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, point_copy_done, cudaEventWaitDefault));
 
             if constexpr (Config::debug) {
-                cudaEventRecord(start, stream);
+                cudaEventRecord(start, child_stream[idx]);
             }
 
             // Do bucket sum
@@ -595,35 +598,51 @@ namespace msm {
             grid_size = deviceProp.multiProcessorCount;
 
             for (u32 i = 0; i < Config::n_windows; i++) {
-                bucket_sum<Config, 8><<<grid_size, block_size, 0, stream>>>(
+                bucket_sum<Config, 8><<<grid_size, block_size, 0, child_stream[idx]>>>(
                     i,
                     h_points_per_window[i] * cur_len,
-                    indexs + h_points_offset[i] * cur_len,
-                    d_points,
-                    cnt_zero,
+                    indexs[idx] + h_points_offset[i] * cur_len,
+                    points[idx],
+                    cnt_zero[idx],
                     mutex,
                     initialized,
                     buckets_sum
                 );
             }
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(point_use_done, stream));
 
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, stream);
-                cudaEventSynchronize(stop);
+                cudaEventRecord(stop, child_stream[idx]);
+                PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
             }
 
         }
 
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(mutex, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers, stream));
+        d_points = points[idx^1];
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[idx], child_stream[idx]));
+        
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[1], child_stream[1]));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[1], child_stream[1]));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero[1], child_stream[1]));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[1], child_stream[1]));
+
+        cudaEvent_t end_submsm[2];
+        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_submsm[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_submsm[1]));
+        PROPAGATE_CUDA_ERROR(cudaEventRecord(end_submsm[0], child_stream[0]));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventRecord(end_submsm[1], child_stream[1]));
+
+        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_submsm[0], cudaEventWaitDefault));
+        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_submsm[1], cudaEventWaitDefault));
+
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(mutex_buf, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_points_offset, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero, stream));
 
         cudaEvent_t start, stop;
         float ms;
