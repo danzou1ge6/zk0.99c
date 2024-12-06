@@ -63,9 +63,12 @@ int main(int argc, char *argv[])
 
   rf >> msm;
 
-  u32* d_points;
+  cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
+  cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-  msm::precompute<msm::MsmConfig<>>((u32*)msm.points, msm.len, d_points);
+  u32 *d_points, *h_points_precompute, head;
+
+  msm::precompute<msm::MsmConfig<>>((u32*)msm.points, msm.len, d_points, h_points_precompute, head);
 
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;
@@ -75,7 +78,7 @@ int main(int argc, char *argv[])
   cudaEventRecord(start, 0);
 
   Point r;
-  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, d_points, msm.len, r);
+  msm::run<msm::MsmConfig<>>((u32*)msm.scalers, d_points, msm.len, r, h_points_precompute, head);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
@@ -88,6 +91,11 @@ int main(int argc, char *argv[])
   std::cout << "Total cost time:" << elapsedTime << std::endl;
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
+
+  cudaHostUnregister((void*)msm.scalers);
+  cudaHostUnregister((void*)msm.points);
+  cudaFreeHost(h_points_precompute);
+  cudaFree(d_points);
 
   return 0;
 }
