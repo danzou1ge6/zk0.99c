@@ -39,7 +39,8 @@ __global__ void bench_bn(Element *r, const Element *a, const Element *b)
 
 using mont::tc256::debug::Intermediates;
 
-__global__ void bench_tc(Element *r, const Element *a, const Element *b, Intermediates *di, bool debug)
+template <bool DEBUG>
+__global__ void bench_tc(Element *r, const Element *a, const Element *b, Intermediates *di)
 {
   using namespace mont::tc256;
   u32 lane_id = threadIdx.x % 32;
@@ -56,7 +57,7 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b, Interme
                                     { return b[i].n.limbs[j]; });
 
   FragmentW fr;
-  if (debug)
+  if (DEBUG)
   {
     for (u32 i = 0; i < BATCH; i++)
     {
@@ -81,7 +82,8 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b, Interme
                      { r[i].n.limbs[j] = w; });
 }
 
-__global__ void bench_bn_tc(Element *r, const Element *a, const Element *b, Intermediates *di, bool debug)
+template <bool DEBUG>
+__global__ void bench_bn_tc(Element *r, const Element *a, const Element *b, Intermediates *di)
 {
   using namespace mont::tc256;
   u32 lane_id = threadIdx.x % 32;
@@ -94,7 +96,7 @@ __global__ void bench_bn_tc(Element *r, const Element *a, const Element *b, Inte
                                     { return b[i].n.limbs[j]; });
 
   FragmentW fr;
-  if (debug)
+  if (DEBUG)
   {
     for (u32 i = 0; i < BATCH; i++)
     {
@@ -199,6 +201,9 @@ int main(int argc, char *argv[])
     debug = true;
   else
     debug = false;
+  
+  if (debug)
+    std::cout << "Debug mode is on" << std::endl;
 
   cudaDeviceProp deviceProp;
   cudaGetDeviceProperties(&deviceProp, 0);
@@ -207,14 +212,16 @@ int main(int argc, char *argv[])
 
   std::cout << "Montgomery Multiplication" << std::endl;
 
-  auto mmul = [](Element &x, Element &y) { return x * y;};
+  auto mmul = [](Element &x, Element &y)
+  { return x * y; };
 
   float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates *di)
                              { bench<<<grid_size, THREADS>>>(r, a, b); }, mmul, false);
   std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time * 1000 << std::endl;
 
   float total_time_tc = time_it(ITERS, [grid_size, debug](Element *r, Element *a, Element *b, Intermediates *di)
-                                { bench_tc<<<grid_size, THREADS>>>(r, a, b, di, debug); }, mmul, debug);
+                                { if (debug) bench_tc<true><<<grid_size, THREADS>>>(r, a, b, di);
+                                  else bench_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, mmul, debug);
   std::cout << "Tensor Core: " << THREADS / 8 * ITERS * BATCH * grid_size / total_time_tc * 1000 << std::endl;
 
   std::cout << "Big Number Multiplication" << std::endl;
@@ -228,10 +235,11 @@ int main(int argc, char *argv[])
   };
 
   float total_time_bn = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates *di)
-                                       { bench_bn<<<grid_size, THREADS>>>(r, a, b); }, bnmul, false);
+                                { bench_bn<<<grid_size, THREADS>>>(r, a, b); }, bnmul, false);
   std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time_bn * 1000 << std::endl;
 
   float total_time_bn_tc = time_it(ITERS, [grid_size, debug](Element *r, Element *a, Element *b, Intermediates *di)
-                                         { bench_bn_tc<<<grid_size, THREADS>>>(r, a, b, di, debug); }, bnmul, debug);
+                                   { if (debug) bench_bn_tc<true><<<grid_size, THREADS>>>(r, a, b, di);
+                                           else bench_bn_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, bnmul, debug);
   std::cout << "Tensor Core: " << THREADS / 8 * ITERS * BATCH * grid_size / total_time_bn_tc * 1000 << std::endl;
 }
