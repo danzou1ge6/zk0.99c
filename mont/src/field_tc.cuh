@@ -1154,6 +1154,61 @@ namespace mont
     }
 
     template <bool DEBUG = false>
+    __device__ __forceinline__ void multiplication_raw(
+        u32 &z,
+        const u32 *st_x,
+        u32 yb0, u32 yb1,
+        debug::Intermediates *intermediates = nullptr
+    )
+    {
+
+      if (DEBUG)
+        debug::store_b_matrix(yb0, yb1, intermediates->yb);
+
+      u32 xa0, xa1, xa2, xa3;
+
+      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa0);
+      u32 sd00, sd01, sd02, sd03;
+      mma_m16n8k32(sd00, sd01, sd02, sd03, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
+
+      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 1);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa1);
+      u32 sd10, sd11, sd12, sd13;
+      mma_m16n8k32(sd10, sd11, sd12, sd13, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
+
+      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 2);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa2);
+      u32 sd20, sd21, sd22, sd23;
+      mma_m16n8k32(sd20, sd21, sd22, sd23, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
+
+      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 3);
+      if (DEBUG)
+        debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa3);
+      u32 sd30, sd31, sd32, sd33;
+      mma_m16n8k32(sd30, sd31, sd32, sd33, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
+
+      if (DEBUG)
+      {
+        debug::store_d_matrix(sd00, sd01, sd02, sd03, intermediates->sd0);
+        debug::store_d_matrix(sd10, sd11, sd12, sd13, intermediates->sd1);
+        debug::store_d_matrix(sd20, sd21, sd22, sd23, intermediates->sd2);
+        debug::store_d_matrix(sd30, sd31, sd32, sd33, intermediates->sd3);
+      }
+
+      u16 rz0, rz1;
+      compact<DEBUG>(rz0, rz1, sd00, sd02, sd10, sd12, &intermediates->tey);
+
+      if (DEBUG)
+        debug::store_z_matrix(rz0, rz1, intermediates->rz);
+
+      shuffle_z_to_w(z, rz0, rz1);
+    }
+
+    template <bool DEBUG = false>
     __device__ __forceinline__ void montgomery_multiplication_raw(
         u32 &z,
         const u32 *st_x,
@@ -1396,6 +1451,14 @@ namespace mont
         return execute(x, y);
       }
     };
+
+    template <bool DEBUG = false>
+    __device__ __forceinline__ FragmentW number_multiplication(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
+    {
+      FragmentW w;
+      multiplication_raw<DEBUG>(w.w, x.a, y.b0, y.b1, i);
+      return w;
+    }
 
   }
 }
