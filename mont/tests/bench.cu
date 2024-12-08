@@ -46,9 +46,11 @@ __global__ void bench_tc(Element *r, const Element *a, const Element *b, Interme
   u32 lane_id = threadIdx.x % 32;
   u32 warp_id = threadIdx.x / 32;
 
-  __shared__ Multiplier<bn256_fr::Params> mul;
+  __shared__ ConstantLoader<bn256_fr::Params> cl;
   if (warp_id == 0)
-    mul.load();
+    cl.load();
+  
+  Multiplier mul(cl);
 
   __shared__ FragmentA fa[THREADS / 32];
   fa[warp_id].load(a->n.limbs);
@@ -122,7 +124,7 @@ __global__ void bench_bn_tc(Element *r, const Element *a, const Element *b, Inte
 }
 
 template <typename F, typename F1>
-float time_it(u32 iters, F f, F1 op, bool print_intermediates)
+float time_it(u32 iters, F f, F1 op, bool print_intermediates, bool check)
 {
   float total_time = 0;
 
@@ -169,7 +171,7 @@ float time_it(u32 iters, F f, F1 op, bool print_intermediates)
     cudaMemcpy(hr, r, sizeof(Element) * 4, cudaMemcpyDeviceToHost);
 
     for (u32 j = 0; j < 4; j++)
-      if (hr[j] != hv[j])
+      if (hr[j] != hv[j] & check)
       {
         std::cout << "Computation error at iteration " << std::dec << i << " : "
                   << ha.n << " ^ " << std::dec << BATCH << " * " << hb[j].n << " = " << hv[j].n
@@ -196,11 +198,16 @@ float time_it(u32 iters, F f, F1 op, bool print_intermediates)
 
 int main(int argc, char *argv[])
 {
-  bool debug;
-  if (argc == 2 && strcmp(argv[1], "debug") == 0)
-    debug = true;
-  else
-    debug = false;
+  auto in_args = [argc, argv](const char* s)
+  {
+    for (int i = 1; i < argc; i ++)
+      if (strcmp(s, argv[i]) == 0)
+        return true;
+    return false;
+  };
+
+  bool debug = in_args("debug");
+  bool correctness_check = in_args("check");
   
   if (debug)
     std::cout << "Debug mode is on" << std::endl;
@@ -216,12 +223,12 @@ int main(int argc, char *argv[])
   { return x * y; };
 
   float total_time = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates *di)
-                             { bench<<<grid_size, THREADS>>>(r, a, b); }, mmul, false);
+                             { bench<<<grid_size, THREADS>>>(r, a, b); }, mmul, false, correctness_check);
   std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time * 1000 << std::endl;
 
   float total_time_tc = time_it(ITERS, [grid_size, debug](Element *r, Element *a, Element *b, Intermediates *di)
                                 { if (debug) bench_tc<true><<<grid_size, THREADS>>>(r, a, b, di);
-                                  else bench_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, mmul, debug);
+                                  else bench_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, mmul, debug, correctness_check);
   std::cout << "Tensor Core: " << THREADS / 8 * ITERS * BATCH * grid_size / total_time_tc * 1000 << std::endl;
 
   std::cout << "Big Number Multiplication" << std::endl;
@@ -235,11 +242,11 @@ int main(int argc, char *argv[])
   };
 
   float total_time_bn = time_it(ITERS, [grid_size](Element *r, Element *a, Element *b, Intermediates *di)
-                                { bench_bn<<<grid_size, THREADS>>>(r, a, b); }, bnmul, false);
+                                { bench_bn<<<grid_size, THREADS>>>(r, a, b); }, bnmul, false, correctness_check);
   std::cout << "CUDA Core  : " << THREADS * 4 * ITERS * BATCH * grid_size / total_time_bn * 1000 << std::endl;
 
   float total_time_bn_tc = time_it(ITERS, [grid_size, debug](Element *r, Element *a, Element *b, Intermediates *di)
                                    { if (debug) bench_bn_tc<true><<<grid_size, THREADS>>>(r, a, b, di);
-                                           else bench_bn_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, bnmul, debug);
+                                           else bench_bn_tc<false><<<grid_size, THREADS>>>(r, a, b, di); }, bnmul, debug, correctness_check);
   std::cout << "Tensor Core: " << THREADS / 8 * ITERS * BATCH * grid_size / total_time_bn_tc * 1000 << std::endl;
 }

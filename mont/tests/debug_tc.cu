@@ -14,8 +14,10 @@ __global__ void kernel(
   using namespace mont::tc256;
   using mont::u32;
 
-  __shared__ Multiplier<bn256_fr::Params> mul;
-  mul.load();
+  __shared__ ConstantLoader<bn256_fr::Params> cl;
+  cl.load();
+
+  Multiplier mul(cl);
 
   __shared__ FragmentA fx; // only one warp here
   fx.load(x->n.limbs);

@@ -53,26 +53,29 @@ namespace mont
     //
     // CAUTION that here `limbs` is assumed to be a 24 u32's array, with the 8 u32's containing the big number lies
     // in u32's 8, 9, ..., 15
-    __device__ __forceinline__ void load_a_matrix(
+    __device__ __forceinline__ void load_a_matrix_shared(
         u32 &a0, u32 &a1, u32 &a2, u32 &a3,
         const u32 *limbs, u32 n_limbs, Stage stage)
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id / 4 + stage * 16;
       u32 j = lane_id % 4;
-      i32 k0 = i / 4 - j;
-      u32 rem = (i & 0b11) + 1;
-      const u32 *p = limbs + 8;
+      u32 rem = (i & 0b11);
+      const u32 *p = limbs;
+      
+      u32 k0 = i / 4 + 8 - j;
+      u32 k1 = k0 - 4;
+      u32 k2 = k0 + 2;
+      u32 k3 = k0 - 2;
 
-      u32 sr = 8 * rem;
-      u32 sl = 32 - sr;
-      a0 = bytes_reversed((p[k0] << sl) | (p[k0 - 1] >> sr));
-      i32 k1 = k0 - 4;
-      a1 = bytes_reversed((p[k1] << sl) | (p[k1 - 1] >> sr));
-      i32 k2 = k0 + 2;
-      a2 = bytes_reversed((p[k2] << sl) | (p[k2 - 1] >> sr));
-      i32 k3 = k0 - 2;
-      a3 = bytes_reversed((p[k3] << sl) | (p[k3 - 1] >> sr));
+      auto f = [rem](u32 &a, u32 lo, u32 hi)
+      {
+        asm("prmt.b32.b4e %0, %1, %2, %3;": "=r"(a): "r"(hi), "r"(lo), "r"(rem));
+      };
+      f(a0, p[k0 - 1], p[k0]);
+      f(a1, p[k1 - 1], p[k1]);
+      f(a2, p[k2 - 1], p[k2]);
+      f(a3, p[k3 - 1], p[k3]);
     }
 
     // Layout of 32x8 B matrix in mma.m16n8k32.s32 (or called B layout) is
@@ -1167,25 +1170,25 @@ namespace mont
 
       u32 xa0, xa1, xa2, xa3;
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 0);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa0);
       u32 sd00, sd01, sd02, sd03;
       mma_m16n8k32(sd00, sd01, sd02, sd03, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 1);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 1);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa1);
       u32 sd10, sd11, sd12, sd13;
       mma_m16n8k32(sd10, sd11, sd12, sd13, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 2);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 2);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa2);
       u32 sd20, sd21, sd22, sd23;
       mma_m16n8k32(sd20, sd21, sd22, sd23, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 3);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 3);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa3);
       u32 sd30, sd31, sd32, sd33;
@@ -1208,13 +1211,40 @@ namespace mont
       shuffle_z_to_w(z, rz0, rz1);
     }
 
+    struct FragmentA
+    {
+      u32 a[24] = {0};
+      FragmentA() = default;
+      __device__ __forceinline__ void load(const u32 *p);
+    };
+
+    struct FragmentAForM
+    {
+      u32 m10, m11, m12, m13;
+      u32 m20, m21, m22, m23;
+      u32 m30, m31, m32, m33;
+
+      __device__ __forceinline__ void load(FragmentA & fma);
+
+    };
+
+    struct FragmentAForMPrime
+    {
+      u32 mp00, mp01, mp02, mp03;
+      u32 mp10, mp11, mp12, mp13;
+
+      __device__ __forceinline__ void load(FragmentA& fmpa);
+    };
+
+
     template <bool DEBUG = false>
     __device__ __forceinline__ void montgomery_multiplication_raw(
         u32 &z,
         const u32 *st_x,
         u32 yb0, u32 yb1,
+        const FragmentAForM fam,
+        const FragmentAForMPrime famp,
         const u32 *st_m,
-        const u32 *st_m_prime,
         debug::Intermediates *intermediates = nullptr)
     {
       // Naming convention: <symbol> <layout> <number>
@@ -1228,25 +1258,25 @@ namespace mont
 
       u32 xa0, xa1, xa2, xa3;
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 0);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 0);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa0);
       u32 sd00, sd01, sd02, sd03;
       mma_m16n8k32(sd00, sd01, sd02, sd03, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 1);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 1);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa1);
       u32 sd10, sd11, sd12, sd13;
       mma_m16n8k32(sd10, sd11, sd12, sd13, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 2);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 2);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa2);
       u32 sd20, sd21, sd22, sd23;
       mma_m16n8k32(sd20, sd21, sd22, sd23, xa0, xa1, xa2, xa3, yb0, yb1, 0, 0, 0, 0);
 
-      load_a_matrix(xa0, xa1, xa2, xa3, st_x, 8, 3);
+      load_a_matrix_shared(xa0, xa1, xa2, xa3, st_x, 8, 3);
       if (DEBUG)
         debug::store_a_matrix(xa0, xa1, xa2, xa3, intermediates->xa3);
       u32 sd30, sd31, sd32, sd33;
@@ -1267,18 +1297,15 @@ namespace mont
       if (DEBUG)
         debug::store_b_matrix(sb0, sb1, intermediates->sb);
 
-      u32 mpa0, mpa1, mpa2, mpa3;
-      load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 0);
       if (DEBUG)
-        debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp0);
+        debug::store_a_matrix(famp.mp00, famp.mp01, famp.mp02, famp.mp03, intermediates->mp0);
       u32 ud00, ud01, ud02, ud03;
-      mma_m16n8k32(ud00, ud01, ud02, ud03, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
+      mma_m16n8k32(ud00, ud01, ud02, ud03, famp.mp00, famp.mp01, famp.mp02, famp.mp03, sb0, sb1, 0, 0, 0, 0);
 
-      load_a_matrix(mpa0, mpa1, mpa2, mpa3, st_m_prime, 8, 1);
       if (DEBUG)
-        debug::store_a_matrix(mpa0, mpa1, mpa2, mpa3, intermediates->mp1);
+        debug::store_a_matrix(famp.mp10, famp.mp11, famp.mp12, famp.mp13, intermediates->mp1);
       u32 ud10, ud11, ud12, ud13;
-      mma_m16n8k32(ud10, ud11, ud12, ud13, mpa0, mpa1, mpa2, mpa3, sb0, sb1, 0, 0, 0, 0);
+      mma_m16n8k32(ud10, ud11, ud12, ud13, famp.mp10, famp.mp11, famp.mp12, famp.mp13, sb0, sb1, 0, 0, 0, 0);
 
       if (DEBUG)
       {
@@ -1304,24 +1331,20 @@ namespace mont
       if (DEBUG)
         debug::store_b_matrix(ub0, ub1, intermediates->ub);
 
-      u32 ma0, ma1, ma2, ma3;
-      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 1);
       if (DEBUG)
-        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma1);
+        debug::store_a_matrix(fam.m10, fam.m11, fam.m12, fam.m13, intermediates->ma1);
       u32 td10, td11, td12, td13;
-      mma_m16n8k32(td10, td11, td12, td13, ma0, ma1, ma2, ma3, ub0, ub1, sd10, 0, sd12, 0);
+      mma_m16n8k32(td10, td11, td12, td13, fam.m10, fam.m11, fam.m12, fam.m13, ub0, ub1, sd10, 0, sd12, 0);
 
+      if (DEBUG)
+        debug::store_a_matrix(fam.m20, fam.m21, fam.m22, fam.m23, intermediates->ma2);
       u32 td20, td21, td22, td23;
-      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 2);
-      if (DEBUG)
-        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma2);
-      mma_m16n8k32(td20, td21, td22, td23, ma0, ma1, ma2, ma3, ub0, ub1, sd20, 0, sd22, 0);
+      mma_m16n8k32(td20, td21, td22, td23,fam.m20, fam.m21, fam.m22, fam.m23, ub0, ub1, sd20, 0, sd22, 0);
 
-      u32 td30, td31, td32, td33;
-      load_a_matrix(ma0, ma1, ma2, ma3, st_m, 8, 3);
       if (DEBUG)
-        debug::store_a_matrix(ma0, ma1, ma2, ma3, intermediates->ma3);
-      mma_m16n8k32(td30, td31, td32, td33, ma0, ma1, ma2, ma3, ub0, ub1, sd30, 0, sd32, 0);
+        debug::store_a_matrix(fam.m30, fam.m31, fam.m32, fam.m33, intermediates->ma3);
+      u32 td30, td31, td32, td33;
+      mma_m16n8k32(td30, td31, td32, td33, fam.m30, fam.m31, fam.m32, fam.m33, ub0, ub1, sd30, 0, sd32, 0);
 
       if (DEBUG)
       {
@@ -1367,23 +1390,18 @@ namespace mont
       if (DEBUG)
         debug::store_w_matrix(rw, intermediates->rw);
 
-      modulo_m_w(z, rw, st_m + 8);
+      modulo_m_w(z, rw, st_m);
 
       if (DEBUG)
         debug::store_w_matrix(z, intermediates->zw);
     }
 
-    struct FragmentA
+    __device__ __forceinline__ void FragmentA::load(const u32 *p)
     {
-      u32 a[24] = {0};
-      FragmentA() = default;
-      __device__ __forceinline__ void load(const u32 *p)
-      {
-        u32 lane_id = threadIdx.x % 32;
-        bool predicate = (lane_id >= 8) && (lane_id < 16);
-        a[lane_id] = predicate ? p[lane_id - 8] : 0;
-      }
-    };
+      u32 lane_id = threadIdx.x % 32;
+      bool predicate = (lane_id >= 8) && (lane_id < 16);
+      a[lane_id] = predicate ? p[lane_id - 8] : 0;
+    }
 
     struct FragmentB
     {
@@ -1426,27 +1444,52 @@ namespace mont
     };
 
     template <typename Params>
-    struct Multiplier
+    struct ConstantLoader
     {
       FragmentA m, m_prime;
-
-      Multiplier() = default;
+      ConstantLoader() = default;
       __device__ __forceinline__ void load()
       {
         m.load(Params::m().limbs);
         m_prime.load(Params::m_prime_wide().limbs);
       }
+    };
+
+    __device__ __forceinline__ void FragmentAForM::load(FragmentA & fma)
+          {
+      load_a_matrix_shared(m10, m11, m12, m13, fma.a, 8, 1);
+      load_a_matrix_shared(m20, m21, m22, m23, fma.a, 8, 2);
+      load_a_matrix_shared(m30, m31, m32, m33, fma.a, 8, 3);
+    }
+
+    __device__ __forceinline__ void FragmentAForMPrime::load(FragmentA& fmpa)
+    {
+      load_a_matrix_shared(mp00, mp01, mp02, mp03, fmpa.a, 8, 0);
+      load_a_matrix_shared(mp10, mp11, mp12, mp13, fmpa.a, 8, 1);
+    }
+
+    template <typename Params>
+    struct Multiplier
+    {
+      FragmentAForM m;
+      FragmentAForMPrime m_prime;
+
+      __device__ Multiplier(ConstantLoader<Params> &cl) 
+      {
+        m.load(cl.m);
+        m_prime.load(cl.m_prime);
+      }
 
       template <bool DEBUG = false>
-      __device__ __forceinline__ FragmentW execute(FragmentA x, FragmentB y, debug::Intermediates *i = nullptr)
+      __device__ __forceinline__ FragmentW execute(FragmentA& x, FragmentB& y, debug::Intermediates *i = nullptr)
       {
         FragmentW w;
         montgomery_multiplication_raw<DEBUG>(
-            w.w, x.a, y.b0, y.b1, m.a, m_prime.a, i);
+            w.w, x.a, y.b0, y.b1, m, m_prime, Params::m().limbs, i);
         return w;
       }
 
-      __device__ __forceinline__ FragmentW operator()(FragmentA x, FragmentB y)
+      __device__ __forceinline__ FragmentW operator()(FragmentA &x, FragmentB& y)
       {
         return execute(x, y);
       }
