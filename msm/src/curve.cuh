@@ -75,7 +75,8 @@ namespace curve
     __device__ __host__ __forceinline__ bool is_on_curve() const &
     {
       Element t0, t1;
-      t0 = Params::a() * x;
+      if constexpr (Params::a().is_zero()) t0 = Element::zero();
+      else t0 = Params::a() * x;
       t1 = Params::b() * z;
       t0 = t0 + t1;
       t0 = z * t0;
@@ -98,7 +99,8 @@ namespace curve
       t3 = t3 + t3;
       z3 = x * z;
       z3 = z3 + z3;
-      x3 = Params::a() * z3;
+      if constexpr (Params::a().is_zero()) x3 = Element::zero();
+      else x3 = Params::a() * z3;
       y3 = Params::b3() * t2;
       y3 = x3 + y3;
       x3 = t1 - y3;
@@ -106,9 +108,11 @@ namespace curve
       y3 = x3 * y3;
       x3 = t3 * x3;
       z3 = Params::b3() * z3;
-      t2 = Params::a() * t2;
+      if constexpr (Params::a().is_zero()) t2 = Element::zero();
+      else t2 = Params::a() * t2;
       t3 = t0 - t2;
-      t3 = Params::a() * t3;
+      if constexpr (Params::a().is_zero()) t3 = Element::zero();
+      else t3 = Params::a() * t3;
       t3 = t3 + z3;
       z3 = t0 + t0;
       t0 = z3 + t0;
@@ -150,7 +154,8 @@ namespace curve
       t5 = t5 * x3;
       x3 = t1 + t2;
       t5 = t5 - x3;
-      z3 = Params::a() * t4;
+      if constexpr (Params::a().is_zero()) z3 = Element::zero();
+      else z3 = Params::a() * t4;
       x3 = Params::b3() * t2;
       z3 = x3 + z3;
       x3 = t1 - z3;
@@ -158,11 +163,13 @@ namespace curve
       y3 = x3 * z3;
       t1 = t0 + t0;
       t1 = t1 + t0;
-      t2 = Params::a() * t2;
+      if constexpr (Params::a().is_zero()) t2 = Element::zero();
+      else t2 = Params::a() * t2;
       t4 = Params::b3() * t4;
       t1 = t1 + t2;
       t2 = t0 - t2;
-      t2 = Params::a() * t2;
+      if constexpr (Params::a().is_zero()) t2 = Element::zero();
+      else t2 = Params::a() * t2;
       t4 = t4 + t2;
       t0 = t1 * t4;
       y3 = y3 + t0;
@@ -333,7 +340,8 @@ namespace curve
     t4 = t4 + x;
     t5 = rhs.y * z;
     t5 = t5 + y;
-    z3 = Params::a() * t4;
+    if constexpr (Params::a().is_zero()) z3 = Element::zero();
+    else z3 = Params::a() * t4;
     x3 = Params::b3() * z;
     z3 = x3 + z3;
     x3 = t1 - z3;
@@ -341,11 +349,13 @@ namespace curve
     y3 = x3 * z3;
     t1 = t0 + t0;
     t1 = t1 + t0;
-    t2 = Params::a() * z;
+    if constexpr (Params::a().is_zero()) t2 = Element::zero();
+    else t2 = Params::a() * z;
     t4 = Params::b3() * t4;
     t1 = t1 + t2;
     t2 = t0 - t2;
-    t2 = Params::a() * t2;
+    if constexpr (Params::a().is_zero()) t2 = Element::zero();
+    else t2 = Params::a() * t2;
     t4 = t4 + t2;
     t0 = t1 * t4;
     y3 = y3 + t0;

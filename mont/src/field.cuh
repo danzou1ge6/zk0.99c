@@ -659,7 +659,7 @@ namespace mont
       return r;
     }
 
-    __host__ __device__ __forceinline__ bool
+    __host__ __device__ __forceinline__ constexpr bool
     is_zero() const &
     {
       bool r = true;
@@ -780,7 +780,7 @@ namespace mont
       return r;
     }
 
-    __host__ __device__ bool
+    __host__ __device__ constexpr bool
     is_zero() const &
     {
       return n.is_zero();
