@@ -678,106 +678,43 @@ namespace mont
     {
       u32 lane_id = threadIdx.x % 32;
       u32 i = lane_id % 4;
+      u32 i1 = lane_id % 8;
       u32 col = lane_id / 4;
       u32 j = col / 2;
       u32 k = col % 2;
       u32 mask = MASK_ALL;
 
-      u16 bx0_hi, bx0_lo;
-      u16 bx1_hi, bx1_lo;
-      u16 bx2_hi, bx2_lo;
-      u16 bx3_hi, bx3_lo;
-      ptx::unpack_b32(bx0_lo, bx0_hi, bx0);
-      ptx::unpack_b32(bx1_lo, bx1_hi, bx1);
-      ptx::unpack_b32(bx2_lo, bx2_hi, bx2);
-      ptx::unpack_b32(bx3_lo, bx3_hi, bx3);
-
-      u32 src_var;
+      u32 src_var, src_lane, got;
 
       by0 = 0;
       by1 = 0;
 
-      // Round 1
-      if (i % 2 == 0)
-        src_var = bx0;
-      else
-        src_var = ptx::pack_b32(bx0_lo, bx1_lo);
-
-      u32 src_lane = (col - k) * 4 + (i * 2 + k) % 4;
-      // if (k == 0)
-      //   src_lane = col * 4 + i * 2;
-      // else
-      //   src_lane = (col - 1) * 4 + (i * 2 + 1) % 4;
-
-      u32 got = __shfl_sync(mask, src_var, src_lane);
-      u16 got_hi, got_lo;
-      ptx::unpack_b32(got_lo, got_hi, got);
-      if (k == 0 && i < 2)
-        by0 = got;
-      else if (k == 1 && i < 2)
-        by0 |= got_lo << 16;
-      else if (k == 1 && i >= 2)
-        by0 |= got_hi << 16;
-
-      // Round 2
-      if (i % 2 == 0)
-        src_var = bx1;
-      else
-        src_var = ptx::pack_b32(bx0_hi, bx1_hi);
-
-      src_lane = (col - k) * 4 + (i * 2 - k) % 4;
-
+      src_var = k == 0 ? bx0 : bx1;
+      src_lane = 8 * j + 2 * i + k;
       got = __shfl_sync(mask, src_var, src_lane);
-      ptx::unpack_b32(got_lo, got_hi, got);
+      by0 |= got << (k * 16);
 
-      if (k == 0 && i >= 2)
-        by0 = got;
-      else if (k == 1 && i == 0)
-        by1 |= got_hi;
-      else if (k == 1 && i == 1)
-        by0 |= got_lo;
-      else if (k == 1 && i == 2)
-        by0 |= got_lo;
-      else if (k == 1 && i == 3)
-        by0 |= got_hi;
-
-      // Round 3
-      if (i % 2 == 0)
-        src_var = bx2;
-      else
-        src_var = ptx::pack_b32(bx2_lo, bx3_lo);
-
-      src_lane = (col - k) * 4 + (i * 2 + k) % 4;
-
+      src_var = k == 0 ? bx2 : bx3;
       got = __shfl_sync(mask, src_var, src_lane);
-      ptx::unpack_b32(got_lo, got_hi, got);
+      by1 |= got << (k * 16);
 
-      if (k == 0 && i < 2)
-        by1 = got;
-      else if (k == 1 && i < 2)
-        by1 |= got_lo << 16;
-      else if (k == 1 && i >= 2)
-        by1 |= got_hi << 16;
+      if (i1 == 7)
+      {
+        bx3 = bx1;
+        bx1 = 0;
+      }
 
-      // Round 4
-      if (i % 2 == 0)
-        src_var = bx3;
-      else
-        src_var = ptx::pack_b32(bx2_hi, bx3_hi);
-
-      src_lane = (col - k) * 4 + (i * 2 - k) % 4;
-
+      src_var = k == 0 ? bx0 : bx1;
+      src_lane = 8 * j + (2 * i - 1) % 8;
       got = __shfl_sync(mask, src_var, src_lane);
-      ptx::unpack_b32(got_lo, got_hi, got);
+      if (k == 1)
+        by0 |= got >> 16;
+      
+      src_var = k == 0 ? bx2 : bx3;
+      got = __shfl_sync(mask, src_var, src_lane);
+      if (k == 1)
+        by1 |= got >> 16;
 
-      if (k == 0 && i >= 2)
-        by1 = got;
-      else if (k == 1 && i == 1)
-        by1 |= got_lo;
-      else if (k == 1 && i == 2)
-        by1 |= got_lo;
-      else if (k == 1 && i == 3)
-        by1 |= got_hi;
     }
 
     // This function composes `transpose_d_to_b` and `shuffle_b_for_mul`.
