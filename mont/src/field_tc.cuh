@@ -1023,16 +1023,12 @@ namespace mont
     // z and r are both in W layout.
     __device__ __forceinline__ void modulo_m_w(
         u32 &z, u32 &r,
-        const u32 *st_m)
+        u32 m_limb)
     {
-      u32 lane_id = threadIdx.x % 32;
-      u32 i = lane_id / 4;
-      u32 j = lane_id % 4;
-
       u32 borrow = 0;
       u32 useless;
-      sub_w(z, borrow, r, st_m[i]);
-      add_w(z, useless, z, borrow ? st_m[i] : 0);
+      sub_w(z, borrow, r, m_limb);
+      add_w(z, useless, z, borrow ? m_limb : 0);
     }
 
     // Shuffle Z layout to W layout
@@ -1181,7 +1177,7 @@ namespace mont
         u32 yb0, u32 yb1,
         const FragmentAForM fam,
         const FragmentAForMPrime famp,
-        const u32 *st_m,
+        const u32 m_limb,
         debug::Intermediates *intermediates = nullptr)
     {
       // Naming convention: <symbol> <layout> <number>
@@ -1327,7 +1323,7 @@ namespace mont
       if (DEBUG)
         debug::store_w_matrix(rw, intermediates->rw);
 
-      modulo_m_w(z, rw, st_m);
+      modulo_m_w(z, rw, m_limb);
 
       if (DEBUG)
         debug::store_w_matrix(z, intermediates->zw);
@@ -1410,11 +1406,16 @@ namespace mont
     {
       FragmentAForM m;
       FragmentAForMPrime m_prime;
+      u32 m_limb;
 
       __device__ Multiplier(ConstantLoader<Params> &cl) 
       {
+        u32 lane_id = threadIdx.x % 32;
+        u32 i = lane_id / 4;
+
         m.load(cl.m);
         m_prime.load(cl.m_prime);
+        m_limb = cl.m.a[i + 8];
       }
 
       template <bool DEBUG = false>
@@ -1422,7 +1423,7 @@ namespace mont
       {
         FragmentW w;
         montgomery_multiplication_raw<DEBUG>(
-            w.w, x.a, y.b0, y.b1, m, m_prime, Params::m().limbs, i);
+            w.w, x.a, y.b0, y.b1, m, m_prime, m_limb, i);
         return w;
       }
 
