@@ -7,7 +7,7 @@ using bn256_fr::Element;
 using mont::u32;
 
 const u32 BATCH = 128;
-const u32 THREADS = 512;
+const u32 THREADS = 256;
 const u32 ITERS = 2;
 
 __global__ void bench(Element *r, const Element *a, const Element *b)
@@ -155,7 +155,13 @@ float time_it(u32 iters, F f, F1 op, bool print_intermediates, bool check)
     f(r, a, b, d_intermediates);
     cudaEventRecord(stop);
 
-    auto err = cudaDeviceSynchronize();
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess)
+    {
+      std::cout << "CUDA error: " << cudaGetErrorString(err) << std::endl;
+      std::exit(1);
+    }
+    err = cudaDeviceSynchronize();
     if (err != cudaSuccess)
     {
       std::cout << "CUDA error: " << cudaGetErrorString(err) << std::endl;
