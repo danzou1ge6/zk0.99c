@@ -265,7 +265,7 @@ namespace curve
       y.store(p + Element::LIMBS);
     }
 
-    __device__ __host__ __forceinline__ Point<Params, Element> to_projective() const &;
+    __device__ __host__ __forceinline__ Point<Params, Element> to_point() const &;
 
     static __device__ __host__ __forceinline__
         PointAffine
@@ -314,7 +314,7 @@ namespace curve
   }
 
   template <class Params, class Element>
-  __device__ __host__ __forceinline__ Point<Params, Element> PointAffine<Params, Element>::to_projective() const &
+  __device__ __host__ __forceinline__ Point<Params, Element> PointAffine<Params, Element>::to_point() const &
   {
     return Point<Params, Element>(x, y, Element::one());
   }
@@ -327,7 +327,7 @@ namespace curve
     if (rhs.is_identity())
       return *this;
     if (is_identity())
-      return rhs.to_projective();
+      return rhs.to_point();
     Element t0, t1, t2, t3, t4, t5, x3, y3, z3;
     t0 = x * rhs.x;
     t1 = y * rhs.y;

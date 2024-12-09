@@ -16,7 +16,7 @@ __global__ void to_affine_kernel(PointAffine *pr, const Point *p)
 __global__ void from_affine_kernel(Point *pr, const PointAffine *p)
 {
   
-  *pr = p->to_projective();
+  *pr = p->to_point();
 }
 
 __global__ void is_on_curve_kernel(bool *r, const Point *p)

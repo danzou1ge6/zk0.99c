@@ -3,6 +3,7 @@
 
 #include "../../mont/src/bn254_scalar.cuh"
 #include "./curve.cuh"
+#include "curve_xyzz.cuh"
 
 namespace bn254
 {
@@ -66,8 +67,10 @@ namespace bn254
     }
   };
 
-  using Point = curve::Point<Params, Element>;
-  using PointAffine = curve::PointAffine<Params, Element>;
+  using Point = curve::EC<Params, Element>::PointXYZZ;
+  using PointAffine = curve::EC<Params, Element>::PointAffine;
+//   using Point = curve::Point<Params, Element>;
+//   using PointAffine = curve::PointAffine<Params, Element>;
 
 }
 

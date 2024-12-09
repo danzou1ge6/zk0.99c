@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1>
+    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 100, u32 SEGMENTS = 1>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE;
@@ -354,7 +354,7 @@ namespace msm {
     __global__ void precompute_kernel(u32 *points, u64 len) {
         u64 gid = threadIdx.x + blockIdx.x * blockDim.x;
         if (gid >= len) return;
-        auto p = PointAffine::load(points + gid * PointAffine::N_WORDS).to_projective();
+        auto p = PointAffine::load(points + gid * PointAffine::N_WORDS).to_point();
         for (u32 i = 1; i < Config::n_precompute; i++) {
             #pragma unroll
             for (u32 j = 0; j < Config::n_windows * Config::s; j++) {
