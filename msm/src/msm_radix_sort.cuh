@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 100, u32 SEGMENTS = 1>
+    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE;
@@ -81,7 +81,7 @@ namespace msm {
         // number of parts to divide the input
         static constexpr u32 n_parts = SEGMENTS;
 
-        static constexpr bool debug = false;
+        static constexpr bool debug = true;
     };
 
     // divide scalers into windows
@@ -110,13 +110,7 @@ namespace msm {
                 u32 point_group = window_id / Config::n_windows;
                 if (bucket_id == 0) {
                     atomicAdd(cnt_zero + physical_window_id, 1);
-                    // printf("window_id: %d, cnt_zero: %d\n", physical_window_id, cnt_zero[physical_window_id]);
                 }
-                // if (i == 9) {
-                //     printf("window_id: %d, bucket_id: %d, point_group: %d\n", physical_window_id, bucket_id, point_group);
-                //     printf("points_offset[%d]: %d\n", physical_window_id, points_offset[physical_window_id]);
-                //     printf("indexs[%lld]: %lld\n", (points_offset[physical_window_id] + point_group) * len + i, bucket_id | ((point_group * len + i) << Config::s));
-                // }
                 indexs[(points_offset[physical_window_id] + point_group) * len + i] = bucket_id | ((point_group * len + i) << Config::s);
             }
         }
@@ -136,6 +130,70 @@ namespace msm {
         atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
     }
 
+    // no async version
+    // template <typename Config, u32 WarpPerBlock>
+    // __global__ void bucket_sum(
+    //     const u32 window_id,
+    //     const u64 len,
+    //     const u64 *indexs,
+    //     const u32 *points,
+    //     const u32 *cnt_zero,
+    //     Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex,
+    //     Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized,
+    //     Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum
+    // ) {
+
+    //     const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
+    //     const u32 threads = blockDim.x * gridDim.x;
+    //     const u32 zero_offset = cnt_zero[window_id];
+    //     const u32 work_len = div_ceil(len - zero_offset, threads);
+    //     const u32 start_id = work_len * gtid;
+    //     const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
+    //     if (start_id >= end_id) return;
+    //     indexs += zero_offset;
+
+    //     auto acc = Point::identity();
+    //     const static u32 key_mask = (1u << Config::s) - 1;
+    //     u32 key = indexs[start_id] & key_mask;
+    //     bool first = true; // only the first bucket and the last bucket may have conflict with other threads
+
+    //     for (u32 i = start_id; i < end_id; i++) {
+    //         u64 this_index = indexs[i];
+    //         u64 pointer = this_index >> Config::s;
+    //         u32 cur_key = this_index & key_mask;
+    //         if (cur_key != key) {
+    //             auto mutex_ptr = mutex.addr(window_id, key - 1);
+    //             if (first) lock(mutex_ptr);
+
+    //             if (initialized.get(window_id, key - 1)) {
+    //                 sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+    //             } else {
+    //                 sum.get(window_id, key - 1) = acc;
+    //                 initialized.get(window_id, key - 1) = 1;
+    //             }
+
+    //             if (first) {
+    //                 first = false;                    
+    //                 unlock(mutex_ptr);
+    //             }
+    //             acc = PointAffine::load(points + pointer * PointAffine::N_WORDS).to_point();
+    //             key = cur_key;
+    //         } else {
+    //             auto p = PointAffine::load(points + pointer * PointAffine::N_WORDS);
+    //             acc = acc + p;
+    //         }
+    //     }
+    //     auto mutex_ptr = mutex.addr(window_id, key - 1);
+    //     lock(mutex_ptr);
+    //     if (initialized.get(window_id, key - 1)) {
+    //         sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+    //     } else {
+    //         sum.get(window_id, key - 1) = acc;
+    //         initialized.get(window_id, key - 1) = 1;
+    //     }
+    //     unlock(mutex_ptr);
+    // }
+
     template <typename Config, u32 WarpPerBlock>
     __global__ void bucket_sum(
         const u32 window_id,
@@ -147,9 +205,9 @@ namespace msm {
         Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized,
         Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum
     ) {
-        __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS + 4]; // +4 for padding and alignment
+        __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
 
-        const static u64 key_mask = (1u << Config::s) - 1;
+        const static u32 key_mask = (1u << Config::s) - 1;
 
         const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
         const u32 threads = blockDim.x * gridDim.x;
@@ -157,18 +215,15 @@ namespace msm {
         indexs += zero_offset;
 
         u32 work_len = div_ceil(len - zero_offset, threads);
-        if (work_len % 2 != 0) work_len++; // we need each thread to read two indexes at a time for 16 byte alignment
 
         const u32 start_id = work_len * gtid;
-        const u32 end_id = min(start_id + work_len, (u32)len - zero_offset);
+        const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
         if (start_id >= end_id) return;
 
-        // for async transfer, 16 byte alignment is needed so we read two indexes at a time
-        // if zero_offset is odd, means the first index is not aligned, so we need to start from the second index
-        // when stage is 1, we need to read the next index for the next iteration
-        int stage = zero_offset & 1u;
+        int stage = 0;
+        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
+        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
 
-        PointAffine p;
         bool first = true; // only the first bucket and the last bucket may have conflict with other threads
         auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
@@ -177,48 +232,37 @@ namespace msm {
         u32 key = index & key_mask;
 
         pip_thread.producer_acquire();
-        cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x]), reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-        if (stage == 0) cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + start_id), sizeof(u64) * 2, pip_thread);
-        else if (stage == 1) cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + start_id + 1), sizeof(u64) * 2, pip_thread);
+        cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
         stage ^= 1;
         pip_thread.producer_commit();
 
         auto acc = Point::identity();
 
         for (u32 i = start_id + 1; i < end_id; i++) {
-            u64 next_index;
-            // printf("pointer: %d\n", pointer);
-
-            pip_thread.consumer_wait();
-            p = PointAffine::load(point_buffer[threadIdx.x]);
-            next_index = reinterpret_cast<const u64*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS)[stage];
+            u64 next_index = indexs[i];
             pointer = next_index >> Config::s;
-            pip_thread.consumer_release();
+
+            uint4 *g2s_ptr, *s2r_ptr;
+            if (stage == 0) {
+                g2s_ptr = smem_ptr0;
+                s2r_ptr = smem_ptr1;
+            } else {
+                g2s_ptr = smem_ptr1;
+                s2r_ptr = smem_ptr0;
+            }
 
             pip_thread.producer_acquire();
-            cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x]), reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-            if (stage == 1 && i + 1 < end_id) {
-                cuda::memcpy_async(reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS), reinterpret_cast<const uint4*>(indexs + i + 1), sizeof(u64) * 2, pip_thread);
-            }
-            stage ^= 1;
+            cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
             pip_thread.producer_commit();
-
-            // printf("key: %d\n", key);
-            // Point tmp = Point::identity();
-            // tmp = tmp + p;
-            // for (u32 j = 0; j < window_id * Config::s; j++) {
-            //    tmp = tmp.self_add();
-            // }
-            // auto pp = tmp.to_affine();
-            // for (u32 j = 0; j < 8; j++) {
-            //     printf("p[%d]: %d ", j, pp.x.n.limbs[j]);
-            // }
-            // printf("\n");
+            stage ^= 1;
+            
+            cuda::pipeline_consumer_wait_prior<1>(pip_thread);
+            auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
+            pip_thread.consumer_release();
 
             acc = acc + p;
 
             u32 next_key = next_index & key_mask;
-
             if (next_key != key) {
                 auto mutex_ptr = mutex.addr(window_id, key - 1);
                 if (first) lock(mutex_ptr);
@@ -240,21 +284,8 @@ namespace msm {
         }
 
         pip_thread.consumer_wait();
-        p = PointAffine::load(point_buffer[threadIdx.x]);
+        auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
         pip_thread.consumer_release();
-
-        // printf("pointer: %d\n", pointer);
-        // printf("key: %d\n", key);
-        // Point tmp = Point::identity();
-        // tmp = tmp + p;
-        // for (u32 j = 0; j < window_id * Config::s; j++) {
-        //     tmp = tmp.self_add();
-        // }
-        // auto pp = tmp.to_affine();
-        // for (u32 j = 0; j < 8; j++) {
-        //     printf("p[%d]: %d ", j, pp.x.n.limbs[j]);
-        // }
-        // printf("\n");
 
         acc = acc + p;
 
