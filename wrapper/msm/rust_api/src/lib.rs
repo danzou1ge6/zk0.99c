@@ -8,18 +8,6 @@ use group::{
 
 pub use halo2curves::{CurveAffine, CurveExt};
 
-pub trait FftGroup<Scalar: Field>:
-    Copy + Send + Sync + 'static + GroupOpsOwned + ScalarMulOwned<Scalar>
-{
-}
-
-impl<T, Scalar> FftGroup<Scalar> for T
-where
-    Scalar: Field,
-    T: Copy + Send + Sync + 'static + GroupOpsOwned + ScalarMulOwned<Scalar>,
-{
-}
-
 pub fn gpu_msm<C: CurveAffine>(
     coeffs: &[C::Scalar], 
     bases: &[C],

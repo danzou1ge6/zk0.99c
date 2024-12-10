@@ -124,7 +124,6 @@ fn compare_with_halo2() {
 
         let mut gpu_result = cpu_result;
 
-        gpu_msm(&coeffs[0][..n], &bases[..n], &mut gpu_result).unwrap();
 
         let start2 = Instant::now();
 
