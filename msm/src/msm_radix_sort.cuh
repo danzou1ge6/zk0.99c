@@ -63,11 +63,11 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 256, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1>
+    template <u32 BITS = 255, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 100, u32 SEGMENTS = 1, bool DEBUG = true>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
-        static constexpr u32 s = WINDOW_SIZE;
-        static constexpr u32 n_buckets = pow2(s);
+        static constexpr u32 s = WINDOW_SIZE; // must <= 31
+        static constexpr u32 n_buckets = pow2(s - 1); // [1, 2^{s-1}] buckets, using signed digit to half the number of buckets
 
         // # of logical windows
         static constexpr u32 actual_windows = div_ceil(lambda, s);
@@ -81,8 +81,21 @@ namespace msm {
         // number of parts to divide the input
         static constexpr u32 n_parts = SEGMENTS;
 
-        static constexpr bool debug = true;
+        static constexpr bool debug = DEBUG;
     };
+
+    template <u32 windows, u32 bits_per_window>
+    __host__ __device__ __forceinline__ void signed_digit(int (&r)[windows]) {
+        static_assert(bits_per_window < 32, "bits_per_window must be less than 32");
+        #pragma unroll
+        for (u32 i = 0; i < windows - 1; i++) {
+            if ((u32)r[i] >= 1u << (bits_per_window - 1)) {
+                r[i] -= 1 << bits_per_window;
+                r[i + 1] += 1;
+            }
+        }
+        assert((u32)r[windows - 1] < 1u << (bits_per_window - 1));
+    }
 
     // divide scalers into windows
     // count number of zeros in each window
@@ -99,19 +112,21 @@ namespace msm {
         
         // Count into block-wide counter
         for (u32 i = tid; i < len; i += stride) {
-            u32 bucket[Config::actual_windows];
+            int bucket[Config::actual_windows];
             auto scaler = Number::load(scalers + i * Number::LIMBS);
             scaler.bit_slice<Config::actual_windows, Config::s>(bucket);
+            signed_digit<Config::actual_windows, Config::s>(bucket);
 
             #pragma unroll
             for (u32 window_id = 0; window_id < Config::actual_windows; window_id++) {
-                auto bucket_id = bucket[window_id];
+                auto sign = bucket[window_id] < 0;
+                auto bucket_id = sign ? -bucket[window_id] : bucket[window_id];
                 u32 physical_window_id = window_id % Config::n_windows;
                 u32 point_group = window_id / Config::n_windows;
                 if (bucket_id == 0) {
                     atomicAdd(cnt_zero + physical_window_id, 1);
                 }
-                indexs[(points_offset[physical_window_id] + point_group) * len + i] = bucket_id | ((point_group * len + i) << Config::s);
+                indexs[(points_offset[physical_window_id] + point_group) * len + i] = bucket_id | (sign << Config::s) | ((point_group * len + i) << (Config::s + 1));
             }
         }
     }
@@ -201,13 +216,14 @@ namespace msm {
         const u64 *indexs,
         const u32 *points,
         const u32 *cnt_zero,
-        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex,
-        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized,
-        Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
+        Array2D<Point, Config::n_windows, Config::n_buckets> sum
     ) {
         __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
 
         const static u32 key_mask = (1u << Config::s) - 1;
+        const static u32 sign_mask = 1u << Config::s;
 
         const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
         const u32 threads = blockDim.x * gridDim.x;
@@ -228,8 +244,9 @@ namespace msm {
         auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
         u64 index = indexs[start_id];
-        u64 pointer = index >> Config::s;
+        u64 pointer = index >> (Config::s + 1);
         u32 key = index & key_mask;
+        u32 sign = (index & sign_mask) != 0;
 
         pip_thread.producer_acquire();
         cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
@@ -240,7 +257,7 @@ namespace msm {
 
         for (u32 i = start_id + 1; i < end_id; i++) {
             u64 next_index = indexs[i];
-            pointer = next_index >> Config::s;
+            pointer = next_index >> (Config::s + 1);
 
             uint4 *g2s_ptr, *s2r_ptr;
             if (stage == 0) {
@@ -260,6 +277,7 @@ namespace msm {
             auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
             pip_thread.consumer_release();
 
+            if (sign) p = p.neg();
             acc = acc + p;
 
             u32 next_key = next_index & key_mask;
@@ -281,12 +299,14 @@ namespace msm {
                 acc = Point::identity();
             }
             key = next_key;
+            sign = (next_index & sign_mask) != 0;
         }
 
         pip_thread.consumer_wait();
         auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
         pip_thread.consumer_release();
 
+        if (sign) p = p.neg();
         acc = acc + p;
 
         auto mutex_ptr = mutex.addr(window_id, key - 1);
@@ -303,21 +323,21 @@ namespace msm {
     template<typename Config, u32 WarpNum = 8>
     __launch_bounds__(256,1)
     __global__ void reduceBuckets(
-        Array2D<Point, Config::n_windows, Config::n_buckets - 1> buckets_sum, 
+        Array2D<Point, Config::n_windows, Config::n_buckets> buckets_sum, 
         Point *reduceMemory,
-        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized
     ) {
 
         assert(gridDim.x % Config::n_windows == 0);
 
-        __shared__ u32 smem[WarpNum][Point::N_WORDS + 4]; // +4 for padding and alignment
+        __shared__ u32 smem[WarpNum][Point::N_WORDS + 4]; // +4 for padding
 
         const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
         u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
 
         u32 wtid = (blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x;
           
-        const u32 buckets_per_thread = div_ceil(Config::n_buckets - 1, total_threads_per_window);
+        const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
 
         Point sum, sum_of_sums;
 
@@ -326,7 +346,7 @@ namespace msm {
 
         for(u32 i=buckets_per_thread; i > 0; i--) {
             u32 loadIndex = wtid * buckets_per_thread + i;
-            if(loadIndex < Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
+            if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
                 sum = sum + buckets_sum.get(window_id, loadIndex - 1);
             }
             sum_of_sums = sum_of_sums + sum;
@@ -453,18 +473,18 @@ namespace msm {
         cudaGetDeviceProperties(&deviceProp, 0);
 
         Point *buckets_sum_buf;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&buckets_sum_buf, sizeof(Point) * Config::n_windows * (Config::n_buckets - 1), stream));
-        auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets-1>(buckets_sum_buf);
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&buckets_sum_buf, sizeof(Point) * Config::n_windows * (Config::n_buckets), stream));
+        auto buckets_sum = Array2D<Point, Config::n_windows, Config::n_buckets>(buckets_sum_buf);
         
         unsigned short *mutex_buf;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&mutex_buf, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
-        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(mutex_buf, 0, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
-        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex(mutex_buf);
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&mutex_buf, sizeof(unsigned short) * (Config::n_buckets) * Config::n_windows, stream));
+        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(mutex_buf, 0, sizeof(unsigned short) * (Config::n_buckets) * Config::n_windows, stream));
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex(mutex_buf);
 
         unsigned short *initialized_buf;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&initialized_buf, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
-        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(initialized_buf, 0, sizeof(unsigned short) * (Config::n_buckets - 1) * Config::n_windows, stream));
-        Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized(initialized_buf);
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&initialized_buf, sizeof(unsigned short) * (Config::n_buckets) * Config::n_windows, stream));
+        PROPAGATE_CUDA_ERROR(cudaMemsetAsync(initialized_buf, 0, sizeof(unsigned short) * (Config::n_buckets) * Config::n_windows, stream));
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized(initialized_buf);
 
         // record for number of logical windows in each actual window
         u32 h_points_per_window[Config::n_windows];
@@ -524,10 +544,13 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[0], sizeof(u32) * Config::n_windows, child_stream[0]));
         if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[1], sizeof(u32) * Config::n_windows, child_stream[1]));
 
+        // indexs is used to store the bucket id, point index and sign
+        // bit 0 - Config::s for bucket id, bit Config::s + 1 for sign, the rest for point index
+        // max log(2^30(max points) * precompute) + Config::s bits are needed
+        static_assert(log2_ceil(Config::n_precompute) + 30 + Config::s + 1 <= 64, "Index too large");
         // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
         u64 *indexs[2];
         // window0 is the largest, so we use it size as buffer for sorting
-        // possible overflow in bucket_sum does not matter for after sorting there are window0 points empty buffer in tail
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[0], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[0]));
         if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[1], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[1]));
 
@@ -564,10 +587,6 @@ namespace msm {
         head ^= 1;
 
         int idx = 0;
-
-        // bit 0 - Config::s for bucket id, the rest for point index
-        // max log(2^30(max points) * precompute) + Config::s bits are needed
-        static_assert(log2_ceil(Config::n_precompute) + 30 + Config::s <= 64, "Index too large");
         
         for (int p = begin; p != end; p += stride, idx ^= 1) {
             u64 offset = p * part_len;

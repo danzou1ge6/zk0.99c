@@ -39,7 +39,7 @@ target("cuda_msm")
     set_kind("static")
     add_values("cuda.build.devlink", true)
 
-    set_languages(("c++17"))
+    set_languages(("c++20"))
     
     add_files("wrapper/msm/c_api/msm_c_api.cu")
     add_headerfiles("wrapper/msm/c_api/*.h")

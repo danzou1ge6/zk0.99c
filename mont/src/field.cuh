@@ -626,8 +626,8 @@ namespace mont
 
     template <u32 windows, u32 bits_per_window>
     __host__ __device__ __forceinline__
-    void bit_slice(u32 (&r)[windows]) {
-      static_assert(bits_per_window <= 32, "Too many bits per window");
+    void bit_slice(int (&r)[windows]) {
+      static_assert(bits_per_window <= 31, "Too many bits per window");
 
       // can be optimized by using hand written __funnelshift sequences
       Number t = *this;
