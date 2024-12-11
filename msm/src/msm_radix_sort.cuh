@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 255, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 100, u32 SEGMENTS = 1, bool DEBUG = true>
+    template <u32 BITS = 255, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1, bool DEBUG = true>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE; // must <= 31
@@ -733,7 +733,7 @@ namespace msm {
 
         u32 grid = div_ceil(deviceProp.multiProcessorCount, Config::n_windows) * Config::n_windows; 
         Point *reduce_buffer;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&reduce_buffer, sizeof(Point) * Config::n_windows * grid, stream));
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&reduce_buffer, sizeof(Point) * grid, stream));
 
         // start reduce
         if constexpr (Config::debug) {
@@ -754,61 +754,31 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(buckets_sum_buf, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(initialized_buf, stream));
 
-        // ruduce all
-        void *d_temp_storage_reduce = nullptr;
-        mont::usize temp_storage_bytes_reduce = 0;
-
-        Point *reduced;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&reduced, sizeof(Point), stream));
-
-        auto add_op = [] __device__ __host__(const Point &a, const Point &b) { return a + b; };
-
-        PROPAGATE_CUDA_ERROR(
-            cub::DeviceReduce::Reduce(
-                d_temp_storage_reduce, 
-                temp_storage_bytes_reduce, 
-                reduce_buffer, 
-                reduced, 
-                Config::n_windows * grid, 
-                add_op,
-                Point::identity(),
-                stream
-            )
-        );
-
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage_reduce, temp_storage_bytes_reduce, stream));
+        // ruduce all host
+        Point *h_reduce_buffer;
+        PROPAGATE_CUDA_ERROR(cudaMallocHost(&h_reduce_buffer, sizeof(Point) * grid));
+        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_reduce_buffer, reduce_buffer, sizeof(Point) * grid, cudaMemcpyDeviceToHost, stream));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(reduce_buffer, stream));
+        PROPAGATE_CUDA_ERROR(cudaStreamSynchronize(stream));
 
         if constexpr (Config::debug) {
             cudaEventRecord(start, stream);
         }
 
-        PROPAGATE_CUDA_ERROR(
-            cub::DeviceReduce::Reduce(
-                d_temp_storage_reduce, 
-                temp_storage_bytes_reduce, 
-                reduce_buffer, 
-                reduced, 
-                Config::n_windows * grid,
-                add_op,
-                Point::identity(),
-                stream
-            )
-        );
+        h_result = Point::identity();
+
+        for (u32 i = 0; i < grid; i++) {
+            h_result = h_result + h_reduce_buffer[i];
+        }
 
         if constexpr (Config::debug) {
             cudaEventRecord(stop, stream);
             cudaEventSynchronize(stop);
             cudaEventElapsedTime(&ms, start, stop);
-            std::cout << "MSM final reduce time:" << ms << std::endl;
+            std::cout << "MSM cpu reduce time:" << ms << std::endl;
         }
-
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage_reduce, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(reduce_buffer, stream));
-
-        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(&h_result, reduced, sizeof(Point), cudaMemcpyDeviceToHost, stream));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(reduced, stream));
 
         return cudaSuccess;
     }
 
-  }
+}
