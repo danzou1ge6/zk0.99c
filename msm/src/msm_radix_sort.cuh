@@ -643,7 +643,7 @@ namespace msm {
 
             PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[idx], begin_point_copy[idx], cudaEventWaitDefault));
             if (p != begin) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, child_stream[idx]));
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, copy_stream[idx]));
             }
             PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[idx], copy_stream[idx]));
 
