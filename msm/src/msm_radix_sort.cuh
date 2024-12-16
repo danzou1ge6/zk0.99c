@@ -211,9 +211,9 @@ namespace msm {
 
     template <typename Config, u32 WarpPerBlock>
     __global__ void bucket_sum(
-        const u32 window_id,
-        const u64 len,
-        const u64 *indexs,
+        const u64 cur_len,
+        const u32 *d_points_offset,
+        const u64 *indexs_global,
         const u32 *points,
         const u32 *cnt_zero,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
@@ -221,103 +221,107 @@ namespace msm {
         Array2D<Point, Config::n_windows, Config::n_buckets> sum
     ) {
         __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
-
         const static u32 key_mask = (1u << Config::s) - 1;
         const static u32 sign_mask = 1u << Config::s;
 
-        const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
-        const u32 threads = blockDim.x * gridDim.x;
-        const u32 zero_offset = cnt_zero[window_id];
-        indexs += zero_offset;
+        for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
+            const u64 len = (d_points_offset[window_id + 1] - d_points_offset[window_id]) * cur_len;
+            auto indexs = indexs_global + d_points_offset[window_id] * cur_len;
 
-        u32 work_len = div_ceil(len - zero_offset, threads);
+            const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
+            const u32 threads = blockDim.x * gridDim.x;
+            const u32 zero_offset = cnt_zero[window_id];
+            indexs += zero_offset;
 
-        const u32 start_id = work_len * gtid;
-        const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
-        if (start_id >= end_id) return;
+            u32 work_len = div_ceil(len - zero_offset, threads);
 
-        int stage = 0;
-        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
-        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
+            const u32 start_id = work_len * gtid;
+            const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
+            if (start_id >= end_id) continue;
 
-        bool first = true; // only the first bucket and the last bucket may have conflict with other threads
-        auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
+            int stage = 0;
+            uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
+            uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
 
-        u64 index = indexs[start_id];
-        u64 pointer = index >> (Config::s + 1);
-        u32 key = index & key_mask;
-        u32 sign = (index & sign_mask) != 0;
+            bool first = true; // only the first bucket and the last bucket may have conflict with other threads
+            auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
-        pip_thread.producer_acquire();
-        cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-        stage ^= 1;
-        pip_thread.producer_commit();
-
-        auto acc = Point::identity();
-
-        for (u32 i = start_id + 1; i < end_id; i++) {
-            u64 next_index = indexs[i];
-            pointer = next_index >> (Config::s + 1);
-
-            uint4 *g2s_ptr, *s2r_ptr;
-            if (stage == 0) {
-                g2s_ptr = smem_ptr0;
-                s2r_ptr = smem_ptr1;
-            } else {
-                g2s_ptr = smem_ptr1;
-                s2r_ptr = smem_ptr0;
-            }
+            u64 index = indexs[start_id];
+            u64 pointer = index >> (Config::s + 1);
+            u32 key = index & key_mask;
+            u32 sign = (index & sign_mask) != 0;
 
             pip_thread.producer_acquire();
-            cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-            pip_thread.producer_commit();
+            cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
             stage ^= 1;
-            
-            cuda::pipeline_consumer_wait_prior<1>(pip_thread);
-            auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
+            pip_thread.producer_commit();
+
+            auto acc = Point::identity();
+
+            for (u32 i = start_id + 1; i < end_id; i++) {
+                u64 next_index = indexs[i];
+                pointer = next_index >> (Config::s + 1);
+
+                uint4 *g2s_ptr, *s2r_ptr;
+                if (stage == 0) {
+                    g2s_ptr = smem_ptr0;
+                    s2r_ptr = smem_ptr1;
+                } else {
+                    g2s_ptr = smem_ptr1;
+                    s2r_ptr = smem_ptr0;
+                }
+
+                pip_thread.producer_acquire();
+                cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
+                pip_thread.producer_commit();
+                stage ^= 1;
+                
+                cuda::pipeline_consumer_wait_prior<1>(pip_thread);
+                auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
+                pip_thread.consumer_release();
+
+                if (sign) p = p.neg();
+                acc = acc + p;
+
+                u32 next_key = next_index & key_mask;
+                if (next_key != key) {
+                    auto mutex_ptr = mutex.addr(window_id, key - 1);
+                    if (first) lock(mutex_ptr);
+
+                    if (initialized.get(window_id, key - 1)) {
+                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                    } else {
+                        sum.get(window_id, key - 1) = acc;
+                        initialized.get(window_id, key - 1) = 1;
+                    }
+
+                    if (first) {
+                        first = false;                    
+                        unlock(mutex_ptr);
+                    }
+                    acc = Point::identity();
+                }
+                key = next_key;
+                sign = (next_index & sign_mask) != 0;
+            }
+
+            pip_thread.consumer_wait();
+            auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
             pip_thread.consumer_release();
 
             if (sign) p = p.neg();
             acc = acc + p;
 
-            u32 next_key = next_index & key_mask;
-            if (next_key != key) {
-                auto mutex_ptr = mutex.addr(window_id, key - 1);
-                if (first) lock(mutex_ptr);
-
-                if (initialized.get(window_id, key - 1)) {
-                    sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-                } else {
-                    sum.get(window_id, key - 1) = acc;
-                    initialized.get(window_id, key - 1) = 1;
-                }
-
-                if (first) {
-                    first = false;                    
-                    unlock(mutex_ptr);
-                }
-                acc = Point::identity();
+            auto mutex_ptr = mutex.addr(window_id, key - 1);
+            lock(mutex_ptr);
+            if (initialized.get(window_id, key - 1)) {
+                sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+            } else {
+                sum.get(window_id, key - 1) = acc;
+                initialized.get(window_id, key - 1) = 1;
             }
-            key = next_key;
-            sign = (next_index & sign_mask) != 0;
+            unlock(mutex_ptr);
         }
-
-        pip_thread.consumer_wait();
-        auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
-        pip_thread.consumer_release();
-
-        if (sign) p = p.neg();
-        acc = acc + p;
-
-        auto mutex_ptr = mutex.addr(window_id, key - 1);
-        lock(mutex_ptr);
-        if (initialized.get(window_id, key - 1)) {
-            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-        } else {
-            sum.get(window_id, key - 1) = acc;
-            initialized.get(window_id, key - 1) = 1;
-        }                
-        unlock(mutex_ptr);
     }
 
     template<typename Config, u32 WarpNum = 8>
@@ -681,18 +685,16 @@ namespace msm {
             block_size = 256;
             grid_size = deviceProp.multiProcessorCount;
 
-            for (u32 i = 0; i < Config::n_windows; i++) {
-                bucket_sum<Config, 8><<<grid_size, block_size, 0, child_stream[idx]>>>(
-                    i,
-                    h_points_per_window[i] * cur_len,
-                    indexs[idx] + h_points_offset[i] * cur_len,
-                    points[idx],
-                    cnt_zero[idx],
-                    mutex,
-                    initialized,
-                    buckets_sum
-                );
-            }
+            bucket_sum<Config, 8><<<grid_size, block_size, 0, child_stream[idx]>>>(
+                cur_len,
+                d_points_offset,
+                indexs[idx],
+                points[idx],
+                cnt_zero[idx],
+                mutex,
+                initialized,
+                buckets_sum
+            );
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
 
             if constexpr (Config::debug) {
