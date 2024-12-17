@@ -63,7 +63,7 @@ namespace msm {
         }
     };
 
-    template <u32 BITS = 255, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1, bool DEBUG = true>
+    template <u32 BITS = 255, u32 WINDOW_SIZE = 22, u32 TARGET_WINDOWS = 3, u32 SEGMENTS = 32, u32 MAX_STAGES = 2, bool DEBUG = false>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE; // must <= 31
@@ -82,6 +82,8 @@ namespace msm {
         static constexpr u32 n_parts = SEGMENTS;
 
         static constexpr bool debug = DEBUG;
+
+        static constexpr u32 stages = std::min(MAX_STAGES, n_parts);
     };
 
     template <u32 windows, u32 bits_per_window>
@@ -103,7 +105,7 @@ namespace msm {
     __global__ void distribute_windows(
         const u32 *scalers,
         const u64 len,
-        u32* cnt_zero,
+        // u32* cnt_zero,
         u64* indexs,
         u32* points_offset
     ) {
@@ -123,9 +125,9 @@ namespace msm {
                 auto bucket_id = sign ? -bucket[window_id] : bucket[window_id];
                 u32 physical_window_id = window_id % Config::n_windows;
                 u32 point_group = window_id / Config::n_windows;
-                if (bucket_id == 0) {
-                    atomicAdd(cnt_zero + physical_window_id, 1);
-                }
+                // if (bucket_id == 0) {
+                //     atomicAdd(cnt_zero + physical_window_id, 1);
+                // }
                 indexs[(points_offset[physical_window_id] + point_group) * len + i] = bucket_id | (sign << Config::s) | ((point_group * len + i) << (Config::s + 1));
             }
         }
@@ -135,7 +137,7 @@ namespace msm {
         u32 time = 1;
         while (atomicCAS(mutex_ptr, (unsigned short int)0, (unsigned short int)1) != 0) {
             __nanosleep(time);
-            if (time < wait_limit) time *= 2;
+            if likely(time < wait_limit) time *= 2;
         }
         __threadfence();
     }
@@ -145,77 +147,13 @@ namespace msm {
         atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
     }
 
-    // no async version
-    // template <typename Config, u32 WarpPerBlock>
-    // __global__ void bucket_sum(
-    //     const u32 window_id,
-    //     const u64 len,
-    //     const u64 *indexs,
-    //     const u32 *points,
-    //     const u32 *cnt_zero,
-    //     Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> mutex,
-    //     Array2D<unsigned short, Config::n_windows, Config::n_buckets - 1> initialized,
-    //     Array2D<Point, Config::n_windows, Config::n_buckets - 1> sum
-    // ) {
-
-    //     const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
-    //     const u32 threads = blockDim.x * gridDim.x;
-    //     const u32 zero_offset = cnt_zero[window_id];
-    //     const u32 work_len = div_ceil(len - zero_offset, threads);
-    //     const u32 start_id = work_len * gtid;
-    //     const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
-    //     if (start_id >= end_id) return;
-    //     indexs += zero_offset;
-
-    //     auto acc = Point::identity();
-    //     const static u32 key_mask = (1u << Config::s) - 1;
-    //     u32 key = indexs[start_id] & key_mask;
-    //     bool first = true; // only the first bucket and the last bucket may have conflict with other threads
-
-    //     for (u32 i = start_id; i < end_id; i++) {
-    //         u64 this_index = indexs[i];
-    //         u64 pointer = this_index >> Config::s;
-    //         u32 cur_key = this_index & key_mask;
-    //         if (cur_key != key) {
-    //             auto mutex_ptr = mutex.addr(window_id, key - 1);
-    //             if (first) lock(mutex_ptr);
-
-    //             if (initialized.get(window_id, key - 1)) {
-    //                 sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-    //             } else {
-    //                 sum.get(window_id, key - 1) = acc;
-    //                 initialized.get(window_id, key - 1) = 1;
-    //             }
-
-    //             if (first) {
-    //                 first = false;                    
-    //                 unlock(mutex_ptr);
-    //             }
-    //             acc = PointAffine::load(points + pointer * PointAffine::N_WORDS).to_point();
-    //             key = cur_key;
-    //         } else {
-    //             auto p = PointAffine::load(points + pointer * PointAffine::N_WORDS);
-    //             acc = acc + p;
-    //         }
-    //     }
-    //     auto mutex_ptr = mutex.addr(window_id, key - 1);
-    //     lock(mutex_ptr);
-    //     if (initialized.get(window_id, key - 1)) {
-    //         sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-    //     } else {
-    //         sum.get(window_id, key - 1) = acc;
-    //         initialized.get(window_id, key - 1) = 1;
-    //     }
-    //     unlock(mutex_ptr);
-    // }
-
-    template <typename Config, u32 WarpPerBlock>
+    template <typename Config, u32 WarpPerBlock, bool IsFirst = true>
     __global__ void bucket_sum(
         const u64 cur_len,
+        const u64 len,
         const u32 *d_points_offset,
-        const u64 *indexs_global,
+        const u64 *indexs,
         const u32 *points,
-        const u32 *cnt_zero,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
         Array2D<Point, Config::n_windows, Config::n_buckets> sum
@@ -224,94 +162,111 @@ namespace msm {
         const static u32 key_mask = (1u << Config::s) - 1;
         const static u32 sign_mask = 1u << Config::s;
 
-        for (u32 window_id = 0; window_id < Config::n_windows; window_id++) {
-            const u64 len = (d_points_offset[window_id + 1] - d_points_offset[window_id]) * cur_len;
-            auto indexs = indexs_global + d_points_offset[window_id] * cur_len;
+        const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
+        const u32 threads = blockDim.x * gridDim.x;
 
-            const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
-            const u32 threads = blockDim.x * gridDim.x;
-            const u32 zero_offset = cnt_zero[window_id];
-            indexs += zero_offset;
+        u32 work_len = div_ceil(len, threads);
 
-            u32 work_len = div_ceil(len - zero_offset, threads);
+        const u32 start_id = work_len * gtid;
+        const u32 end_id = min((u64)start_id + work_len, len);
+        if (start_id >= end_id) return;
 
-            const u32 start_id = work_len * gtid;
-            const u32 end_id = min((u64)start_id + work_len, len - zero_offset);
-            if (start_id >= end_id) continue;
+        int stage = 0;
+        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
+        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
 
-            int stage = 0;
-            uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
-            uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
+        bool first = true; // only the first bucket and the last bucket may have conflict with other threads
+        auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
-            bool first = true; // only the first bucket and the last bucket may have conflict with other threads
-            auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
+        u64 index = indexs[start_id];
+        u64 pointer = index >> (Config::s + 1);
+        u32 key = index & key_mask;
+        u32 sign = (index & sign_mask) != 0;
+        u32 window_id = 0;
+        while (d_points_offset[window_id + 1] * cur_len <= start_id) window_id++;
+        u32 window_limit = d_points_offset[window_id + 1] * cur_len;
 
-            u64 index = indexs[start_id];
-            u64 pointer = index >> (Config::s + 1);
-            u32 key = index & key_mask;
-            u32 sign = (index & sign_mask) != 0;
+        pip_thread.producer_acquire();
+        cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
+        stage ^= 1;
+        pip_thread.producer_commit();
 
-            pip_thread.producer_acquire();
-            cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-            stage ^= 1;
-            pip_thread.producer_commit();
+        auto acc = Point::identity();
 
-            auto acc = Point::identity();
+        for (u32 i = start_id + 1; i < end_id; i++) {
+            u64 next_index = indexs[i];
+            pointer = next_index >> (Config::s + 1);
 
-            for (u32 i = start_id + 1; i < end_id; i++) {
-                u64 next_index = indexs[i];
-                pointer = next_index >> (Config::s + 1);
-
-                uint4 *g2s_ptr, *s2r_ptr;
-                if (stage == 0) {
-                    g2s_ptr = smem_ptr0;
-                    s2r_ptr = smem_ptr1;
-                } else {
-                    g2s_ptr = smem_ptr1;
-                    s2r_ptr = smem_ptr0;
-                }
-
-                pip_thread.producer_acquire();
-                cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-                pip_thread.producer_commit();
-                stage ^= 1;
-                
-                cuda::pipeline_consumer_wait_prior<1>(pip_thread);
-                auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
-                pip_thread.consumer_release();
-
-                if (sign) p = p.neg();
-                acc = acc + p;
-
-                u32 next_key = next_index & key_mask;
-                if (next_key != key) {
-                    auto mutex_ptr = mutex.addr(window_id, key - 1);
-                    if (first) lock(mutex_ptr);
-
-                    if (initialized.get(window_id, key - 1)) {
-                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-                    } else {
-                        sum.get(window_id, key - 1) = acc;
-                        initialized.get(window_id, key - 1) = 1;
-                    }
-
-                    if (first) {
-                        first = false;                    
-                        unlock(mutex_ptr);
-                    }
-                    acc = Point::identity();
-                }
-                key = next_key;
-                sign = (next_index & sign_mask) != 0;
+            uint4 *g2s_ptr, *s2r_ptr;
+            if (stage == 0) {
+                g2s_ptr = smem_ptr0;
+                s2r_ptr = smem_ptr1;
+            } else {
+                g2s_ptr = smem_ptr1;
+                s2r_ptr = smem_ptr0;
             }
 
-            pip_thread.consumer_wait();
-            auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
+            pip_thread.producer_acquire();
+            cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
+            pip_thread.producer_commit();
+            stage ^= 1;
+            
+            cuda::pipeline_consumer_wait_prior<1>(pip_thread);
+            auto p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
             pip_thread.consumer_release();
 
             if (sign) p = p.neg();
             acc = acc + p;
 
+            u32 next_key = next_index & key_mask;
+            u32 next_window_id = window_id;
+            if unlikely(i >= window_limit) {
+                next_window_id++;
+                window_limit = d_points_offset[next_window_id + 1] * cur_len;
+            }
+            if unlikely(next_key != key || next_window_id != window_id) {
+                if likely(key != 0) {
+                    unsigned short *mutex_ptr;
+                    if unlikely(first) {
+                        mutex_ptr = mutex.addr(window_id, key - 1);
+                        lock(mutex_ptr);
+                        if (initialized.get(window_id, key - 1)) {
+                            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                        } else {
+                            sum.get(window_id, key - 1) = acc;
+                            initialized.get(window_id, key - 1) = 1;
+                        }
+                        unlock(mutex_ptr);
+                    } else {
+                        if constexpr (IsFirst) {
+                            sum.get(window_id, key - 1) = acc;
+                            initialized.get(window_id, key - 1) = 1;
+                        } else {
+                            if (initialized.get(window_id, key - 1)) {
+                                sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                            } else {
+                                sum.get(window_id, key - 1) = acc;
+                                initialized.get(window_id, key - 1) = 1;
+                            }
+                        }
+                    }
+                }
+                first = false;
+                acc = Point::identity();
+            }
+            key = next_key;
+            sign = (next_index & sign_mask) != 0;
+            window_id = next_window_id;
+        }
+
+        pip_thread.consumer_wait();
+        auto p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
+        pip_thread.consumer_release();
+
+        if (sign) p = p.neg();
+        acc = acc + p;
+
+        if likely(key != 0) {
             auto mutex_ptr = mutex.addr(window_id, key - 1);
             lock(mutex_ptr);
             if (initialized.get(window_id, key - 1)) {
@@ -518,7 +473,6 @@ namespace msm {
         u32 h_points_per_window[Config::n_windows];
         u32 h_points_offset[Config::n_windows + 1];
         h_points_offset[0] = 0;
-        #pragma unroll
         for (u32 i = 0; i < Config::n_windows; i++) {
             h_points_per_window[i] = div_ceil(Config::actual_windows - i, Config::n_windows);
             h_points_offset[i + 1] = h_points_offset[i] + h_points_per_window[i];
@@ -533,74 +487,41 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(d_points_offset, h_points_offset, sizeof(u32) * (Config::n_windows + 1), cudaMemcpyHostToDevice, stream));
 
         u64 part_len = div_ceil(len, Config::n_parts);
-        
-        cudaEvent_t begin_submsm;
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_submsm));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_submsm, stream));
-
-        cudaStream_t child_stream[2], copy_stream[2];
-        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream[1]));
-
-        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[0], begin_submsm, cudaEventWaitDefault));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[1], begin_submsm, cudaEventWaitDefault));
-        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[0], begin_submsm, cudaEventWaitDefault));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[1], begin_submsm, cudaEventWaitDefault));
-
-        cudaEvent_t begin_scaler_copy[2], end_scaler_copy[2], begin_point_copy[2], end_point_copy[2];
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) {
-            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[1], child_stream[1]));
-        }
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[0], copy_stream[0]));
-        if constexpr (Config::n_parts > 1) {
-            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[1], copy_stream[1]));
-        }
-
-        // double buffer to overlap computation and memory copy
-        u32 *cnt_zero[2];
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[0], sizeof(u32) * Config::n_windows, child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero[1], sizeof(u32) * Config::n_windows, child_stream[1]));
 
         // indexs is used to store the bucket id, point index and sign
         // bit 0 - Config::s for bucket id, bit Config::s + 1 for sign, the rest for point index
         // max log(2^30(max points) * precompute) + Config::s bits are needed
         static_assert(log2_ceil(Config::n_precompute) + 30 + Config::s + 1 <= 64, "Index too large");
         // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
-        u64 *indexs[2];
+        u64 *indexs[Config::stages];
         // window0 is the largest, so we use it size as buffer for sorting
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[0], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[1], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), child_stream[1]));
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[i], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), stream));
+        }
 
-        u32 *scalers[2];
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[0], sizeof(u32) * Number::LIMBS * part_len, child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[1], sizeof(u32) * Number::LIMBS * part_len, child_stream[1]));
+        u32 *scalers[Config::stages];
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[i], sizeof(u32) * Number::LIMBS * part_len, stream));
+        }
 
-        void *d_temp_storage[2] = {nullptr, nullptr};
+        void *d_temp_storage[Config::stages];
         size_t temp_storage_bytes = 0;
 
         cub::DeviceRadixSort::SortKeys(
-            d_temp_storage[0], temp_storage_bytes,
+            nullptr, temp_storage_bytes,
             indexs[0] + h_points_per_window[0] * part_len, indexs[0], h_points_per_window[0] * part_len, 0, Config::s
         );
 
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[0], temp_storage_bytes, child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[1], temp_storage_bytes, child_stream[1]));
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[i], temp_storage_bytes, stream));
+        }
 
-        u32* points[2];
+        u32* points[Config::stages];
         points[0] = d_points;
         d_points = nullptr;
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[1], sizeof(PointAffine) * part_len * Config::n_precompute, child_stream[1]));
+        for (int i = 1; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[i], sizeof(PointAffine) * part_len * Config::n_precompute, stream));
+        }
 
         int begin, end, stride;
         if (head) {
@@ -615,82 +536,100 @@ namespace msm {
         head ^= 1;
 
         int idx = 0;
+
+        cudaStream_t copy_stream;
+        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream));
+
+        cudaEvent_t begin_scaler_copy[Config::stages], end_scaler_copy[Config::stages], begin_point_copy[Config::stages], end_point_copy[Config::stages];
+
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[i], stream));
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[i], stream));
+        }
         
-        for (int p = begin; p != end; p += stride, idx ^= 1) {
+        for (int p = begin; p != end; p += stride) {
             u64 offset = p * part_len;
             u64 cur_len = std::min(part_len, len - offset);
 
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[idx], begin_scaler_copy[idx], cudaEventWaitDefault));
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[idx], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, copy_stream[idx]));
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_scaler_copy[idx], copy_stream[idx]));
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_scaler_copy[idx], cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[idx], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, copy_stream));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_scaler_copy[idx], copy_stream));
             
-            PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero[idx], 0, sizeof(u32) * Config::n_windows, child_stream[idx]));
-
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[idx], end_scaler_copy[idx], cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_scaler_copy[idx], cudaEventWaitDefault));
             cudaEvent_t start, stop;
             float elapsedTime = 0.0;
             cudaEventCreate(&start);
             cudaEventCreate(&stop);
             if constexpr (Config::debug) {
-                cudaEventRecord(start, child_stream[idx]);
+                cudaEventRecord(start, stream);
             }
             
             u32 block_size = 512;
             u32 grid_size = deviceProp.multiProcessorCount;
-            distribute_windows<Config><<<grid_size, block_size, 0, child_stream[idx]>>>(scalers[idx], cur_len, cnt_zero[idx], indexs[idx] + h_points_per_window[0] * cur_len, d_points_offset);
+            distribute_windows<Config><<<grid_size, block_size, 0, stream>>>(scalers[idx], cur_len, indexs[idx] + h_points_per_window[0] * cur_len, d_points_offset);
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[idx], child_stream[idx]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[idx], stream));
 
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, child_stream[idx]);
+                cudaEventRecord(stop, stream);
                 PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM distribute_windows time:" << elapsedTime << std::endl;
             }
 
             if constexpr (Config::debug) {
-                cudaEventRecord(start, child_stream[idx]);
+                cudaEventRecord(start, stream);
             }
 
             for (int i = 0; i < Config::n_windows; i++) {
                 cub::DeviceRadixSort::SortKeys(
                     d_temp_storage[idx], temp_storage_bytes,
                     indexs[idx] + (h_points_per_window[0] + h_points_offset[i]) * cur_len,
-                    indexs[idx] + h_points_offset[i] * cur_len, h_points_per_window[i] * cur_len, 0, Config::s, child_stream[idx]
+                    indexs[idx] + h_points_offset[i] * cur_len, h_points_per_window[i] * cur_len, 0, Config::s, stream
                 );
             }
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, child_stream[idx]);
+                cudaEventRecord(stop, stream);
                 PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM sort time:" << elapsedTime << std::endl;
             }
 
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream[idx], begin_point_copy[idx], cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[idx], cudaEventWaitDefault));
             if (p != begin) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, copy_stream[idx]));
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[idx], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, copy_stream));
             }
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[idx], copy_stream[idx]));
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[idx], copy_stream));
 
-            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[idx], end_point_copy[idx], cudaEventWaitDefault));
+            PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_point_copy[idx], cudaEventWaitDefault));
 
             if constexpr (Config::debug) {
-                cudaEventRecord(start, child_stream[idx]);
+                cudaEventRecord(start, stream);
             }
 
             // Do bucket sum
             block_size = 256;
             grid_size = deviceProp.multiProcessorCount;
 
-            bucket_sum<Config, 8><<<grid_size, block_size, 0, child_stream[idx]>>>(
+            auto kernel = bucket_sum<Config, 8, true>;
+
+            if (p != begin) {
+                kernel = bucket_sum<Config, 8, false>;
+            }
+
+            kernel<<<grid_size, block_size, 0, stream>>>(
                 cur_len,
+                cur_len * Config::actual_windows,
                 d_points_offset,
                 indexs[idx],
                 points[idx],
-                cnt_zero[idx],
                 mutex,
                 initialized,
                 buckets_sum
@@ -698,56 +637,35 @@ namespace msm {
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
 
             if constexpr (Config::debug) {
-                cudaEventRecord(stop, child_stream[idx]);
+                cudaEventRecord(stop, stream);
                 PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop));
                 cudaEventElapsedTime(&elapsedTime, start, stop);
                 std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
             }
 
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[idx], child_stream[idx]));
-
+            PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[idx], stream));
+            if (p + stride != end) idx = (idx + 1) % Config::stages;
         }
 
-        d_points = points[idx^1];
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[idx], child_stream[idx]));
+        d_points = points[idx];
+
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[i], stream));
+            PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[i], stream));
+            PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[i], stream));
+            if (i != idx) PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[i], stream));
+        }
         
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[1], child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[1], child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero[1], child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[1], child_stream[1]));
-
-        cudaEvent_t end_submsm[2];
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_submsm[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_submsm[1]));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(end_submsm[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventRecord(end_submsm[1], child_stream[1]));
-
-        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_submsm[0], cudaEventWaitDefault));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_submsm[1], cudaEventWaitDefault));
-
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(mutex_buf, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_points_offset, stream));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_submsm));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_submsm[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_submsm[1]));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[0]));
-        if constexpr (Config::n_parts > 1) {
-            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[1]));
+        for (int i = 0; i < Config::stages; i++) {
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[i]));
+            PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[i]));
         }
-        PROPAGATE_CUDA_ERROR(cudaStreamDestroy(child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamDestroy(child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream[1]));
+
+        PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream));
 
         cudaEvent_t start, stop;
         float ms;
@@ -806,5 +724,4 @@ namespace msm {
 
         return cudaSuccess;
     }
-
 }
