@@ -27,6 +27,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaStreamCreate(&stream);
 
     msm::precompute<Config>((u32*)points, len, h_points_precompute, head, stream);
+    cudaDeviceSynchronize();
 
     cudaEvent_t start, stop;
     float elapsedTime = 0.0;

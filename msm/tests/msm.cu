@@ -74,6 +74,7 @@ int main(int argc, char *argv[])
   cudaStreamCreate(&stream);
 
   msm::precompute<Config>((u32*)msm.points, msm.len, h_points_precompute, head, stream);
+  cudaDeviceSynchronize();
 
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;

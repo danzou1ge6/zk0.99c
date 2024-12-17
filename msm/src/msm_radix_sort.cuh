@@ -64,8 +64,8 @@ namespace msm {
     };
 
     template <u32 BITS = 255, u32 WINDOW_SIZE = 22,
-    u32 TARGET_WINDOWS = 3, u32 SEGMENTS = 32,
-    u32 SCALER_STAGES = 3, u32 POINT_STAGES = 2, bool DEBUG = false>
+    u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1,
+    u32 SCALER_STAGES = 2, u32 POINT_STAGES = 2, bool DEBUG = true>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE; // must <= 31
@@ -76,6 +76,8 @@ namespace msm {
         
         // stride for precomputation(same as # of windows), if >= actual_windows, no precomputation; if = 1, precompute all
         static constexpr u32 n_windows = actual_windows < TARGET_WINDOWS ? actual_windows : TARGET_WINDOWS;
+
+        static constexpr u32 window_bits = log2_ceil(n_windows);
         
         // lines of points to be stored in memory, 1 for no precomputation
         static constexpr u32 n_precompute = div_ceil(actual_windows, n_windows);
@@ -109,7 +111,7 @@ namespace msm {
     __global__ void distribute_windows(
         const u32 *scalers,
         const u64 len,
-        // u32* cnt_zero,
+        u32* cnt_zero,
         u64* indexs,
         u32* points_offset
     ) {
@@ -129,10 +131,12 @@ namespace msm {
                 auto bucket_id = sign ? -bucket[window_id] : bucket[window_id];
                 u32 physical_window_id = window_id % Config::n_windows;
                 u32 point_group = window_id / Config::n_windows;
-                // if (bucket_id == 0) {
-                //     atomicAdd(cnt_zero + physical_window_id, 1);
-                // }
-                indexs[(points_offset[physical_window_id] + point_group) * len + i] = bucket_id | (sign << Config::s) | ((point_group * len + i) << (Config::s + 1));
+                if (bucket_id == 0) {
+                    atomicAdd(cnt_zero, 1);
+                }
+                u64 index = bucket_id | (sign << Config::s) | (physical_window_id << (Config::s + 1)) 
+                | ((point_group * len + i) << (Config::s + 1 + Config::window_bits));
+                indexs[(points_offset[physical_window_id] + point_group) * len + i] = index;
             }
         }
     }
@@ -151,11 +155,10 @@ namespace msm {
         atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
     }
 
-    template <typename Config, u32 WarpPerBlock, bool IsFirst = true>
+    template <typename Config, u32 WarpPerBlock>
     __global__ void bucket_sum(
-        const u64 cur_len,
         const u64 len,
-        const u32 *d_points_offset,
+        const u32 *cnt_zero,
         const u64 *indexs,
         const u32 *points,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
@@ -165,15 +168,18 @@ namespace msm {
         __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
         const static u32 key_mask = (1u << Config::s) - 1;
         const static u32 sign_mask = 1u << Config::s;
+        const static u32 window_mask = (1u << Config::window_bits) - 1;
 
         const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
         const u32 threads = blockDim.x * gridDim.x;
+        const u32 zero_num = *cnt_zero;
 
-        u32 work_len = div_ceil(len, threads);
-
+        u32 work_len = div_ceil(len - zero_num, threads);
         const u32 start_id = work_len * gtid;
-        const u32 end_id = min((u64)start_id + work_len, len);
+        const u32 end_id = min((u64)start_id + work_len, len - zero_num);
         if (start_id >= end_id) return;
+
+        indexs += zero_num;
 
         int stage = 0;
         uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
@@ -183,12 +189,10 @@ namespace msm {
         auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
         u64 index = indexs[start_id];
-        u64 pointer = index >> (Config::s + 1);
+        u64 pointer = index >> (Config::s + 1 + Config::window_bits);
         u32 key = index & key_mask;
         u32 sign = (index & sign_mask) != 0;
-        u32 window_id = 0;
-        while (d_points_offset[window_id + 1] * cur_len <= start_id) window_id++;
-        u32 window_limit = d_points_offset[window_id + 1] * cur_len;
+        u32 window_id = (index >> (Config::s + 1)) & window_mask;
 
         pip_thread.producer_acquire();
         cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
@@ -199,7 +203,7 @@ namespace msm {
 
         for (u32 i = start_id + 1; i < end_id; i++) {
             u64 next_index = indexs[i];
-            pointer = next_index >> (Config::s + 1);
+            pointer = next_index >> (Config::s + 1 + Config::window_bits);
 
             uint4 *g2s_ptr, *s2r_ptr;
             if (stage == 0) {
@@ -223,38 +227,22 @@ namespace msm {
             acc = acc + p;
 
             u32 next_key = next_index & key_mask;
-            u32 next_window_id = window_id;
-            if unlikely(i >= window_limit) {
-                next_window_id++;
-                window_limit = d_points_offset[next_window_id + 1] * cur_len;
-            }
+            u32 next_window_id = (next_index >> (Config::s + 1)) & window_mask;
+
             if unlikely(next_key != key || next_window_id != window_id) {
-                if likely(key != 0) {
-                    unsigned short *mutex_ptr;
-                    if unlikely(first) {
-                        mutex_ptr = mutex.addr(window_id, key - 1);
-                        lock(mutex_ptr);
-                        if (initialized.get(window_id, key - 1)) {
-                            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-                        } else {
-                            sum.get(window_id, key - 1) = acc;
-                            initialized.get(window_id, key - 1) = 1;
-                        }
-                        unlock(mutex_ptr);
-                    } else {
-                        if constexpr (IsFirst) {
-                            sum.get(window_id, key - 1) = acc;
-                            initialized.get(window_id, key - 1) = 1;
-                        } else {
-                            if (initialized.get(window_id, key - 1)) {
-                                sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-                            } else {
-                                sum.get(window_id, key - 1) = acc;
-                                initialized.get(window_id, key - 1) = 1;
-                            }
-                        }
-                    }
+                unsigned short *mutex_ptr;
+                if unlikely(first) {
+                    mutex_ptr = mutex.addr(window_id, key - 1);
+                    lock(mutex_ptr);
                 }
+
+                if (initialized.get(window_id, key - 1)) {
+                    sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                } else {
+                    sum.get(window_id, key - 1) = acc;
+                    initialized.get(window_id, key - 1) = 1;
+                }
+                if unlikely(first) unlock(mutex_ptr);
                 first = false;
                 acc = Point::identity();
             }
@@ -270,17 +258,15 @@ namespace msm {
         if (sign) p = p.neg();
         acc = acc + p;
 
-        if likely(key != 0) {
-            auto mutex_ptr = mutex.addr(window_id, key - 1);
-            lock(mutex_ptr);
-            if (initialized.get(window_id, key - 1)) {
-                sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-            } else {
-                sum.get(window_id, key - 1) = acc;
-                initialized.get(window_id, key - 1) = 1;
-            }
-            unlock(mutex_ptr);
+        auto mutex_ptr = mutex.addr(window_id, key - 1);
+        lock(mutex_ptr);
+        if (initialized.get(window_id, key - 1)) {
+            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+        } else {
+            sum.get(window_id, key - 1) = acc;
+            initialized.get(window_id, key - 1) = 1;
         }
+        unlock(mutex_ptr);
     }
 
     template<typename Config, u32 WarpNum = 8>
@@ -491,33 +477,31 @@ namespace msm {
 
         u64 part_len = div_ceil(len, Config::n_parts);
 
-        // indexs is used to store the bucket id, point index and sign
-        // bit 0 - Config::s for bucket id, bit Config::s + 1 for sign, the rest for point index
-        // max log(2^30(max points) * precompute) + Config::s bits are needed
-        static_assert(log2_ceil(Config::n_precompute) + 30 + Config::s + 1 <= 64, "Index too large");
-        // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
-        u64 *indexs[Config::scaler_stages];
-        // window0 is the largest, so we use it size as buffer for sorting
-        for (int i = 0; i < Config::scaler_stages; i++) {
-            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs[i], sizeof(u64) * (part_len * (Config::actual_windows + h_points_per_window[0])), stream));
-        }
+        u32 *cnt_zero;
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero, sizeof(u32), stream));
 
+        // indexs is used to store the bucket id, point index and sign
+        // Config::s bits for bucket id, 1 bit for sign, Config::window_bits for window id, the rest for point index
+        // max log(2^30(max points) * precompute) + Config::s bits are needed
+        static_assert(log2_ceil(Config::n_precompute) + 30 + Config::window_bits + Config::s + 1 <= 64, "Index too large");
+        // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
+        u64 *indexs;
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs, sizeof(u64) * Config::actual_windows * part_len * 2, stream));
         u32 *scalers[Config::scaler_stages];
         for (int i = 0; i < Config::scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[i], sizeof(u32) * Number::LIMBS * part_len, stream));
         }
 
-        void *d_temp_storage[Config::scaler_stages];
+        void *d_temp_storage;
         size_t temp_storage_bytes = 0;
 
         cub::DeviceRadixSort::SortKeys(
             nullptr, temp_storage_bytes,
-            indexs[0] + h_points_per_window[0] * part_len, indexs[0], h_points_per_window[0] * part_len, 0, Config::s
+            indexs + part_len * Config::actual_windows, indexs,
+            Config::actual_windows * part_len, 0, Config::s, stream
         );
 
-        for (int i = 0; i < Config::scaler_stages; i++) {
-            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage[i], temp_storage_bytes, stream));
-        }
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage, temp_storage_bytes, stream));
 
         u32* points[Config::point_stages];
         if (on_gpu) points[0] = d_points;
@@ -571,6 +555,8 @@ namespace msm {
             PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_scaler_copy[stage_scaler], cudaEventWaitDefault));
             PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[stage_scaler], h_scalers + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, copy_stream));
             PROPAGATE_CUDA_ERROR(cudaEventRecord(end_scaler_copy[stage_scaler], copy_stream));
+
+            PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero, 0, sizeof(u32), stream));
             
             PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_scaler_copy[stage_scaler], cudaEventWaitDefault));
             cudaEvent_t start, stop;
@@ -583,7 +569,13 @@ namespace msm {
             
             u32 block_size = 512;
             u32 grid_size = deviceProp.multiProcessorCount;
-            distribute_windows<Config><<<grid_size, block_size, 0, stream>>>(scalers[stage_scaler], cur_len, indexs[stage_scaler] + h_points_per_window[0] * cur_len, d_points_offset);
+            distribute_windows<Config><<<grid_size, block_size, 0, stream>>>(
+                scalers[stage_scaler],
+                cur_len,
+                cnt_zero,
+                indexs + part_len * Config::actual_windows,
+                d_points_offset
+            );
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
             PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[stage_scaler], stream));
@@ -599,13 +591,11 @@ namespace msm {
                 cudaEventRecord(start, stream);
             }
 
-            for (int i = 0; i < Config::n_windows; i++) {
-                cub::DeviceRadixSort::SortKeys(
-                    d_temp_storage[stage_scaler], temp_storage_bytes,
-                    indexs[stage_scaler] + (h_points_per_window[0] + h_points_offset[i]) * cur_len,
-                    indexs[stage_scaler] + h_points_offset[i] * cur_len, h_points_per_window[i] * cur_len, 0, Config::s, stream
-                );
-            }
+            cub::DeviceRadixSort::SortKeys(
+                d_temp_storage, temp_storage_bytes,
+                indexs + part_len * Config::actual_windows, indexs,
+                Config::actual_windows * cur_len, 0, Config::s, stream
+            );
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
             if constexpr (Config::debug) {
@@ -631,17 +621,10 @@ namespace msm {
             block_size = 256;
             grid_size = deviceProp.multiProcessorCount;
 
-            auto kernel = bucket_sum<Config, 8, true>;
-
-            if (p != begin) {
-                kernel = bucket_sum<Config, 8, false>;
-            }
-
-            kernel<<<grid_size, block_size, 0, stream>>>(
-                cur_len,
+            bucket_sum<Config, 8><<<grid_size, block_size, 0, stream>>>(
                 cur_len * Config::actual_windows,
-                d_points_offset,
-                indexs[stage_scaler],
+                cnt_zero,
+                indexs,
                 points[stage_point],
                 mutex,
                 initialized,
@@ -667,13 +650,15 @@ namespace msm {
         else d_points = nullptr;
 
         for (int i = 0; i < Config::scaler_stages; i++) {
-            PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs[i], stream));
             PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[i], stream));
-            PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage[i], stream));
         }
 
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs, stream));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage, stream));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero, stream));
+
         for (int i = 0; i < Config::point_stages; i++) {
-            if (keep_points && i != stage_point) {
+            if ((!keep_points) || i != stage_point) {
                 PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[i], stream));
             }
         }
