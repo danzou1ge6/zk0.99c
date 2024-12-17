@@ -21,10 +21,12 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     u32 *d_points, *h_points_precompute, head;
 
+    using Config = msm::MsmConfig<255, 22, 3, 32, 2, 2, false>;
+
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
-    msm::precompute<msm::MsmConfig<>>((u32*)points, len, d_points, h_points_precompute, head, stream);
+    msm::precompute<Config>((u32*)points, len, h_points_precompute, head, stream);
 
     cudaEvent_t start, stop;
     float elapsedTime = 0.0;
@@ -34,13 +36,11 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaEventRecord(start, 0);
 
     Point r;
-    msm::run<msm::MsmConfig<>>((u32*)scalers, d_points, len, r, h_points_precompute, head, stream);
+    msm::run<Config>(len, (u32*)scalers, h_points_precompute, r, false, false, d_points, head, stream);
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&elapsedTime, start, stop);
-
-    cudaFree(d_points);
 
     cudaStreamDestroy(stream);
 
@@ -56,13 +56,13 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     auto r_affine = r.to_affine();
 
     for(int i=0;i<Element::LIMBS;++i) {
-      res[i] = r_affine.x.n.limbs[i];
+        res[i] = r_affine.x.n.limbs[i];
     }
     for(int i = 0; i < Element::LIMBS; ++i) {
-      res[i+Element::LIMBS] = r_affine.y.n.limbs[i];
+        res[i+Element::LIMBS] = r_affine.y.n.limbs[i];
     }
     for(int i = 0; i < Element::LIMBS; ++i) {
-      res[i + Element::LIMBS * 2] = Element::one().n.limbs[i];
+        res[i + Element::LIMBS * 2] = Element::one().n.limbs[i];
     }
 
     return success;

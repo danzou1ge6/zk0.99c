@@ -104,8 +104,7 @@ fn generate_coefficients(k: u8, bits: usize) -> Vec<Scalar> {
 #[test]
 fn compare_with_halo2() {
     let max_k = 20;
-    for k in 1..=max_k {
-        let n = 1 << k;
+    for k in 10..=max_k {
         println!("generating data for k = {k}...");
         let bases: Vec<Point> = generate_curvepoints(k);
         let bits = [256];

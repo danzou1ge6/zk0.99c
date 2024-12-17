@@ -1,10 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-use group::ff::Field;
-use group::{
-    ff::{PrimeField},
-    GroupOpsOwned, ScalarMulOwned,
-};
+use group::ff::PrimeField;
 
 pub use halo2curves::{CurveAffine, CurveExt};
 

@@ -938,13 +938,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zk0d99c_cuda_api"
-version = "0.1.0"
-dependencies = [
- "bindgen",
-]
-
-[[package]]
 name = "zk0d99c_msm"
 version = "0.1.0"
 dependencies = [
