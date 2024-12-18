@@ -76,6 +76,16 @@ int main(int argc, char *argv[])
     cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffine), cudaHostAllocDefault);
   }
 
+  int batch_size = 2;
+  const u32 **scalers = new const u32*[batch_size];
+  scalers[0] = (u32*)msm.scalers;
+
+  for (int i = 1; i < batch_size; i++) {
+    cudaHostAlloc(&scalers[i], msm.len * sizeof(Element), cudaHostAllocDefault);
+    memcpy((void*)scalers[i], (void*)msm.scalers, msm.len * sizeof(Element));
+  }
+  Point *r = new Point[batch_size];
+
   cudaStream_t stream;
   cudaStreamCreate(&stream);
 
@@ -88,16 +98,25 @@ int main(int argc, char *argv[])
   cudaEventCreate(&stop);
   cudaEventRecord(start, 0);
 
-  Point r;
-  msm::run<Config>(msm.len, (u32*)msm.scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
+  msm::run<Config>(msm.len, batch_size, scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
 
+  for (int i = 1; i < batch_size; i++) {
+    cudaFreeHost((void*)scalers[i]);
+  }
+
+  delete [] scalers;
+
   cudaStreamDestroy(stream);
 
-  std::cout << r.to_affine() << std::endl;
+  for (int i = 0; i < batch_size; i++) {
+    std::cout << r[i].to_affine() << std::endl;
+  }
+
+  delete [] r;
 
   std::cout << "Total cost time:" << elapsedTime << std::endl;
   cudaEventDestroy(start);
