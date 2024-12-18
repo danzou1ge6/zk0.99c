@@ -88,9 +88,9 @@ namespace msm {
 
         static constexpr bool debug = DEBUG;
 
-        static constexpr u32 scaler_stages = std::min(SCALER_STAGES, n_parts);
+        static constexpr u32 scaler_stages = SCALER_STAGES;
 
-        static constexpr u32 point_stages = std::min(POINT_STAGES, n_parts);
+        static constexpr u32 point_stages = POINT_STAGES;
     };
 
     template <u32 windows, u32 bits_per_window>
@@ -534,6 +534,7 @@ namespace msm {
         }
 
         u32 stage_scaler = 0, stage_point = 0;
+        u32 stage_point_transporting = 0;
         u32 points_per_transfer;
 
         for (int p = begin; p != end; p += stride) {
@@ -599,22 +600,49 @@ namespace msm {
                     std::cout << "MSM sort time:" << elapsedTime << std::endl;
                 }
 
-                PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[stage_point], cudaEventWaitDefault));
+                // wait before the first point copy
+                if (points_transported == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[stage_point_transporting], cudaEventWaitDefault));
+                
                 if (j == 0) {
                     u32 point_left = cur_len - points_transported;
+                    // printf("point_left: %d\n", point_left);
+                    // for (int j = 0; j < cur_len; j++) {
+                    //     std::cout << reinterpret_cast<const PointAffine*>(h_points[0])[j + offset] << std::endl;
+                    // }
                     if (point_left > 0) for (int i = 0; i < Config::n_precompute; i++) {
-                        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[stage_point] + (i * cur_len + points_transported) * PointAffine::N_WORDS, h_points[i] + offset * PointAffine::N_WORDS + points_transported * PointAffine::N_WORDS, sizeof(PointAffine) * point_left, cudaMemcpyHostToDevice, copy_stream));
+                        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(
+                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffine::N_WORDS,
+                            h_points[i] + (offset + points_transported) * PointAffine::N_WORDS,
+                            sizeof(PointAffine) * point_left, cudaMemcpyHostToDevice, copy_stream
+                        ));
                     }
+                    PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[stage_point_transporting], copy_stream));
                     points_transported = 0;
+                    stage_point_transporting = (stage_point_transporting + 1) % Config::point_stages;
                 } else if(p + stride != end) {
+                    u64 next_offset = (p + stride) * part_len;
+
                     for (int i = 0; i < Config::n_precompute; i++) {
-                        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[stage_point] + (i * cur_len + points_transported) * PointAffine::N_WORDS, h_points[i] + offset * PointAffine::N_WORDS + points_transported * PointAffine::N_WORDS, sizeof(PointAffine) * points_per_transfer, cudaMemcpyHostToDevice, copy_stream));
+                        PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(
+                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffine::N_WORDS,
+                            h_points[i] + (next_offset + points_transported) * PointAffine::N_WORDS,
+                            sizeof(PointAffine) * points_per_transfer, cudaMemcpyHostToDevice, copy_stream
+                        ));
                     }
                     points_transported += points_per_transfer;
                 }
-                PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[stage_point], copy_stream));
 
-                PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_point_copy[stage_point], cudaEventWaitDefault));
+                if (j == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_point_copy[stage_point], cudaEventWaitDefault));
+
+                // if (j == 0) {
+                //     PointAffine *h_points = new PointAffine[cur_len];
+                //     cudaStreamSynchronize(stream);
+                //     cudaMemcpy((u32*)h_points, points[stage_point], sizeof(PointAffine) * cur_len, cudaMemcpyDeviceToHost);
+                //     for (int i = 0; i < cur_len; i++) {
+                //         std::cout << h_points[i] << std::endl;
+                //     }
+                //     delete[] h_points;
+                // }
 
                 if constexpr (Config::debug) {
                     cudaEventRecord(start, stream);
@@ -642,7 +670,7 @@ namespace msm {
                     std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
                 }
 
-                PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[stage_point], stream));
+                if (j == batches - 1) PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[stage_point], stream));
 
                 stage_scaler = (stage_scaler + 1) % Config::scaler_stages;
             }
