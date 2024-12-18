@@ -19,15 +19,20 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaHostRegister((void*)scalers, len * sizeof(Element), cudaHostRegisterDefault);
     cudaHostRegister((void*)points, len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-    u32 *d_points, *h_points_precompute, head;
+    u32 *d_points, head;
 
     using Config = msm::MsmConfig<255, 22, 3, 32, 2, 2, false>;
+
+    u32 *h_points[Config::n_precompute];
+    h_points[0] = (u32*)points;
+    for (u32 i = 1; i < Config::n_precompute; i++) {
+        cudaHostAlloc(&h_points[i], len * sizeof(PointAffine), cudaHostAllocDefault);
+    }
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
-    msm::precompute<Config>((u32*)points, len, h_points_precompute, head, stream);
-    cudaDeviceSynchronize();
+    msm::precompute<Config>(h_points, len, stream);
 
     cudaEvent_t start, stop;
     float elapsedTime = 0.0;
@@ -37,7 +42,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaEventRecord(start, 0);
 
     Point r;
-    msm::run<Config>(len, (u32*)scalers, h_points_precompute, r, false, false, d_points, head, stream);
+    msm::run<Config>(len, (u32*)scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -51,8 +56,9 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     cudaHostUnregister((void*)scalers);
     cudaHostUnregister((void*)points);
-    cudaFreeHost(h_points_precompute);
-
+    for (u32 i = 1; i < Config::n_precompute; i++) {
+        cudaFreeHost(h_points[i]);
+    }
     auto r_affine = r.to_affine();
 
     for(int i=0;i<Element::LIMBS;++i) {

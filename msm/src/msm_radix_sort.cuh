@@ -367,61 +367,35 @@ namespace msm {
 
     template <typename Config>
     cudaError_t precompute(
-        const u32 *h_points,
+        u32 *h_points[Config::n_precompute],
         u64 len,
-        u32 *&h_points_precompute,
-        u32 &head, // d_points store head or tail
         cudaStream_t stream = 0
     ) {
         cudaError_t err;
-        u64 part_len = div_ceil(len, Config::n_parts);
-        head = 1;
-        PROPAGATE_CUDA_ERROR(cudaHostAlloc(&h_points_precompute, sizeof(PointAffine) * len * Config::n_precompute, cudaHostAllocDefault));
+        u64 part_len = std::min(1ul << 19, len);
 
         if constexpr (Config::n_precompute == 1) {
-            memcpy(h_points_precompute, h_points, sizeof(PointAffine) * len);
             return cudaSuccess;
         }
 
-        cudaEvent_t begin_precompute;
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_precompute));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_precompute, stream));
-        cudaStream_t child_stream[2];
-        PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamCreate(&child_stream[1]));
-        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[0], begin_precompute, cudaEventWaitDefault));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(child_stream[1], begin_precompute, cudaEventWaitDefault));
+        u32 *points;
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points, sizeof(PointAffine) * part_len * Config::n_precompute, stream));
 
-        u32 *points[2];
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[0], sizeof(PointAffine) * part_len * Config::n_precompute, child_stream[0]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[1], sizeof(PointAffine) * part_len * Config::n_precompute, child_stream[1]));
-
-        u32 stage = 0;
-
-        for (int i = Config::n_parts - 1; i >= 0; i--) {
+        for (int i = 0; i * part_len < len; i++) {
             u64 offset = i * part_len;
             u64 cur_len = std::min(part_len, len - offset);
 
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[stage], h_points + offset * PointAffine::N_WORDS, sizeof(PointAffine) * part_len, cudaMemcpyHostToDevice, child_stream[stage]));
+            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points, h_points[0] + offset * PointAffine::N_WORDS, sizeof(PointAffine) * part_len, cudaMemcpyHostToDevice, stream));
 
             u32 grid = div_ceil(cur_len, 256);
             u32 block = 256;
-            precompute_kernel<Config><<<grid, block, 0, child_stream[stage]>>>(points[stage], cur_len);
+            precompute_kernel<Config><<<grid, block, 0, stream>>>(points, cur_len);
 
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, points[stage], sizeof(PointAffine) * part_len * Config::n_precompute, cudaMemcpyDeviceToHost, child_stream[stage]));
-            stage ^= 1;
+            for (int j = 1; j < Config::n_precompute; j++) {
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_points[j] + offset * PointAffine::N_WORDS, points + j * cur_len * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len, cudaMemcpyDeviceToHost, stream));
+            }
         }
-        PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[stage^1], child_stream[stage^1]));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[stage], child_stream[stage]));
-        cudaEvent_t end_precompute[2];
-        PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_precompute[0]));
-        PROPAGATE_CUDA_ERROR(cudaEventRecord(end_precompute[0], child_stream[0]));
-        if constexpr (Config::n_parts > 1) {
-            PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_precompute[1]));
-            PROPAGATE_CUDA_ERROR(cudaEventRecord(end_precompute[1], child_stream[1]));
-        }
-        PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_precompute[0], cudaEventWaitDefault));
-        if constexpr (Config::n_parts > 1) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_precompute[1], cudaEventWaitDefault));
+        PROPAGATE_CUDA_ERROR(cudaFreeAsync(points, stream));
 
         return cudaSuccess;
     }
@@ -431,7 +405,7 @@ namespace msm {
     __host__ cudaError_t run(
         const u64 len,
         const u32 *h_scalers,
-        const u32 *h_points_precompute,
+        const u32 *h_points[Config::n_precompute],
         Point &h_result,
         bool on_gpu,
         bool keep_points,
@@ -607,7 +581,9 @@ namespace msm {
 
             PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[stage_point], cudaEventWaitDefault));
             if (!on_gpu || p != begin) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[stage_point], h_points_precompute + offset * Config::n_precompute * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len * Config::n_precompute, cudaMemcpyHostToDevice, copy_stream));
+                for (int i = 0; i < Config::n_precompute; i++) {
+                    PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points[stage_point] + i * cur_len * PointAffine::N_WORDS, h_points[i] + offset * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len, cudaMemcpyHostToDevice, copy_stream));
+                }
             }
             PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[stage_point], copy_stream));
 
