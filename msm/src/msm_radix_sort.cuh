@@ -65,8 +65,7 @@ namespace msm {
     };
 
     template <u32 BITS = 255, u32 WINDOW_SIZE = 22,
-    u32 TARGET_WINDOWS = 1, u32 SEGMENTS = 1,
-    u32 SCALER_STAGES = 2, u32 POINT_STAGES = 2, bool DEBUG = true>
+    u32 TARGET_WINDOWS = 1, bool DEBUG = true>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 s = WINDOW_SIZE; // must <= 31
@@ -83,14 +82,7 @@ namespace msm {
         // lines of points to be stored in memory, 1 for no precomputation
         static constexpr u32 n_precompute = div_ceil(actual_windows, n_windows);
 
-        // number of parts to divide the input
-        static constexpr u32 n_parts = SEGMENTS;
-
         static constexpr bool debug = DEBUG;
-
-        static constexpr u32 scaler_stages = SCALER_STAGES;
-
-        static constexpr u32 point_stages = POINT_STAGES;
     };
 
     template <u32 windows, u32 bits_per_window>
@@ -366,6 +358,14 @@ namespace msm {
         }
     }
 
+    // template <typename Config>
+    // class MSM {
+    //     Point **buckets_sum_buf;
+    //     unsigned short *mutex_buf;
+    //     unsigned short **initialized_buf;
+
+    // };
+
     template <typename Config>
     cudaError_t precompute(
         u32 *h_points[Config::n_precompute],
@@ -404,15 +404,18 @@ namespace msm {
 
     template <typename Config>
     __host__ cudaError_t run(
-        const u64 len,
-        const u32 batches,
-        const u32 **h_scalers,
-        const u32 *h_points[Config::n_precompute],
+        const u64 len, // length of scalers of the sub-msm
+        const u32 batches, // number of batches to do in one run
+        const u32 n_parts, // number of parts to split the input
+        const u32 scaler_stages,
+        const u32 point_stages,
+        const u32 **h_scalers, // scalers of the batch
+        const u32 *h_points[Config::n_precompute], // points of the batch
         Point *h_result,
         bool on_gpu,
         bool keep_points,
-        u32 *&d_points,
-        u32 &head,
+        u32 *&d_points, // first part of points
+        bool &head,
         cudaStream_t stream = 0
     ) {
         cudaError_t err;
@@ -457,7 +460,7 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_points_offset, sizeof(u32) * (Config::n_windows + 1), stream));
         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(d_points_offset, h_points_offset, sizeof(u32) * (Config::n_windows + 1), cudaMemcpyHostToDevice, stream));
 
-        u64 part_len = div_ceil(len, Config::n_parts);
+        u64 part_len = div_ceil(len, n_parts);
 
         u32 *cnt_zero;
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&cnt_zero, sizeof(u32), stream));
@@ -469,8 +472,8 @@ namespace msm {
         // for sorting, after sort, points with same bucket id are gathered, gives pointer to original index
         u64 *indexs;
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&indexs, sizeof(u64) * Config::actual_windows * part_len * 2, stream));
-        u32 *scalers[Config::scaler_stages];
-        for (int i = 0; i < Config::scaler_stages; i++) {
+        u32 **scalers = new u32*[scaler_stages];
+        for (int i = 0; i < scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[i], sizeof(u32) * Number::LIMBS * part_len, stream));
         }
 
@@ -485,10 +488,11 @@ namespace msm {
 
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage, temp_storage_bytes, stream));
 
-        u32* points[Config::point_stages];
+        u32 **points;
+        points = new u32*[point_stages];
         if (on_gpu) points[0] = d_points;
         else PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[0], sizeof(PointAffine) * part_len * Config::n_precompute, stream));
-        for (int i = 1; i < Config::point_stages; i++) {
+        for (int i = 1; i < point_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[i], sizeof(PointAffine) * part_len * Config::n_precompute, stream));
         }
 
@@ -496,21 +500,22 @@ namespace msm {
         u32 points_transported; // how many points is on gpu?
         if (!on_gpu) {
             begin = 0;
-            end = Config::n_parts;
+            end = n_parts;
             stride = 1;
-            if (keep_points) head = 0;
+            if (keep_points) head = false;
             points_transported = 0; // no points are on gpu
         } else {
             if (head) {
                 begin = 0;
-                end = Config::n_parts;
+                end = n_parts;
                 stride = 1;
+                head = false;
             } else {
-                begin = Config::n_parts - 1;
+                begin = n_parts - 1;
                 end = -1;
                 stride = -1;
+                head = true;
             }
-            head ^= 1;
             u64 offset = begin * part_len;
             u64 cur_len = std::min(part_len, len - offset);
             points_transported = cur_len; // all points in segment 0 are on gpu
@@ -519,15 +524,20 @@ namespace msm {
         cudaStream_t copy_stream;
         PROPAGATE_CUDA_ERROR(cudaStreamCreate(&copy_stream));
 
-        cudaEvent_t begin_scaler_copy[Config::scaler_stages], end_scaler_copy[Config::scaler_stages];
-        cudaEvent_t begin_point_copy[Config::point_stages], end_point_copy[Config::point_stages];
+        cudaEvent_t *begin_scaler_copy, *end_scaler_copy;
+        begin_scaler_copy = new cudaEvent_t[scaler_stages];
+        end_scaler_copy = new cudaEvent_t[scaler_stages];
 
-        for (int i = 0; i < Config::scaler_stages; i++) {
+        cudaEvent_t *begin_point_copy, *end_point_copy;
+        begin_point_copy = new cudaEvent_t[point_stages];
+        end_point_copy = new cudaEvent_t[point_stages];
+
+        for (int i = 0; i < scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_scaler_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_scaler_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_scaler_copy[i], stream));
         }
-        for (int i = 0; i < Config::point_stages; i++) {
+        for (int i = 0; i < point_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaEventCreate(&begin_point_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventCreate(&end_point_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[i], stream));
@@ -605,10 +615,6 @@ namespace msm {
                 
                 if (j == 0) {
                     u32 point_left = cur_len - points_transported;
-                    // printf("point_left: %d\n", point_left);
-                    // for (int j = 0; j < cur_len; j++) {
-                    //     std::cout << reinterpret_cast<const PointAffine*>(h_points[0])[j + offset] << std::endl;
-                    // }
                     if (point_left > 0) for (int i = 0; i < Config::n_precompute; i++) {
                         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(
                             points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffine::N_WORDS,
@@ -618,7 +624,7 @@ namespace msm {
                     }
                     PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[stage_point_transporting], copy_stream));
                     points_transported = 0;
-                    stage_point_transporting = (stage_point_transporting + 1) % Config::point_stages;
+                    stage_point_transporting = (stage_point_transporting + 1) % point_stages;
                 } else if(p + stride != end) {
                     u64 next_offset = (p + stride) * part_len;
 
@@ -633,16 +639,6 @@ namespace msm {
                 }
 
                 if (j == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_point_copy[stage_point], cudaEventWaitDefault));
-
-                // if (j == 0) {
-                //     PointAffine *h_points = new PointAffine[cur_len];
-                //     cudaStreamSynchronize(stream);
-                //     cudaMemcpy((u32*)h_points, points[stage_point], sizeof(PointAffine) * cur_len, cudaMemcpyDeviceToHost);
-                //     for (int i = 0; i < cur_len; i++) {
-                //         std::cout << h_points[i] << std::endl;
-                //     }
-                //     delete[] h_points;
-                // }
 
                 if constexpr (Config::debug) {
                     cudaEventRecord(start, stream);
@@ -672,41 +668,47 @@ namespace msm {
 
                 if (j == batches - 1) PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[stage_point], stream));
 
-                stage_scaler = (stage_scaler + 1) % Config::scaler_stages;
+                stage_scaler = (stage_scaler + 1) % scaler_stages;
             }
 
             if (p + stride != end) {
-                stage_point = (stage_point + 1) % Config::point_stages;
+                stage_point = (stage_point + 1) % point_stages;
             }
         }
 
         if (keep_points) d_points = points[stage_point];
         else d_points = nullptr;
 
-        for (int i = 0; i < Config::scaler_stages; i++) {
+        for (int i = 0; i < scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaFreeAsync(scalers[i], stream));
         }
+        delete[] scalers;
 
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(indexs, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_temp_storage, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(cnt_zero, stream));
 
-        for (int i = 0; i < Config::point_stages; i++) {
+        for (int i = 0; i < point_stages; i++) {
             if ((!keep_points) || i != stage_point) {
                 PROPAGATE_CUDA_ERROR(cudaFreeAsync(points[i], stream));
             }
         }
+        delete[] points;
         
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(mutex_buf, stream));
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_points_offset, stream));
-        for (int i = 0; i < Config::scaler_stages; i++) {
+        for (int i = 0; i < scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_scaler_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_scaler_copy[i]));
         }
-        for (int i = 0; i < Config::point_stages; i++) {
+        delete[] begin_scaler_copy;
+        delete[] end_scaler_copy;
+        for (int i = 0; i < point_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaEventDestroy(begin_point_copy[i]));
             PROPAGATE_CUDA_ERROR(cudaEventDestroy(end_point_copy[i]));
         }
+        delete[] begin_point_copy;
+        delete[] end_point_copy;
 
         PROPAGATE_CUDA_ERROR(cudaStreamDestroy(copy_stream));
 

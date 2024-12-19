@@ -66,9 +66,14 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-  u32 *d_points, head;
+  u32 *d_points;
+  bool head;
 
   using Config = msm::MsmConfig<>;
+  u32 batch_size = 2;
+  u32 parts = 8;
+  u32 stage_scalers = 2;
+  u32 stage_points = 2;
 
   u32 *h_points[Config::n_precompute];
   h_points[0] = (u32*)msm.points;
@@ -76,7 +81,6 @@ int main(int argc, char *argv[])
     cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffine), cudaHostAllocDefault);
   }
 
-  int batch_size = 2;
   const u32 **scalers = new const u32*[batch_size];
   scalers[0] = (u32*)msm.scalers;
 
@@ -98,7 +102,7 @@ int main(int argc, char *argv[])
   cudaEventCreate(&stop);
   cudaEventRecord(start, 0);
 
-  msm::run<Config>(msm.len, batch_size, scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
+  msm::run<Config>(msm.len, batch_size, parts, stage_scalers, stage_points, scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
