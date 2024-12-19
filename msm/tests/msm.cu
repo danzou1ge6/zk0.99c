@@ -66,16 +66,13 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-  u32 *d_points;
-  bool head;
-
-  using Config = msm::MsmConfig<>;
-  u32 batch_size = 2;
+  using Config = msm::MsmConfig<255, 22, 2, false>;
+  u32 batch_size = 4;
   u32 parts = 8;
   u32 stage_scalers = 2;
   u32 stage_points = 2;
 
-  u32 *h_points[Config::n_precompute];
+  std::array<u32*, Config::n_precompute> h_points;
   h_points[0] = (u32*)msm.points;
   for (u32 i = 1; i < Config::n_precompute; i++) {
     cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffine), cudaHostAllocDefault);
@@ -90,11 +87,17 @@ int main(int argc, char *argv[])
   }
   Point *r = new Point[batch_size];
 
+  msm::MSM<Config> msm_solver(msm.len, batch_size, parts, stage_scalers, stage_points);
+
+  std::cout << "start precompute" << std::endl;
+
   cudaStream_t stream;
   cudaStreamCreate(&stream);
+  msm_solver.precompute(std::move(h_points), stream);
 
-  msm::precompute<Config>(h_points, msm.len, stream);
-
+  std::cout << "Precompute done" << std::endl;
+  msm_solver.alloc_gpu();
+  std::cout << "Alloc GPU done" << std::endl;
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;
 
@@ -102,12 +105,12 @@ int main(int argc, char *argv[])
   cudaEventCreate(&stop);
   cudaEventRecord(start, 0);
 
-  msm::run<Config>(msm.len, batch_size, parts, stage_scalers, stage_points, scalers, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
+  msm_solver.run(scalers, r, stream);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
-
+  std::cout << "Run done" << std::endl;
   for (int i = 1; i < batch_size; i++) {
     cudaFreeHost((void*)scalers[i]);
   }
@@ -127,10 +130,6 @@ int main(int argc, char *argv[])
   cudaEventDestroy(stop);
 
   cudaHostUnregister((void*)msm.scalers);
-  cudaHostUnregister((void*)msm.points);
-  for (u32 i = 1; i < Config::n_precompute; i++) {
-    cudaFreeHost(h_points[i]);
-  }
 
   return 0;
 }

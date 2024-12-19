@@ -17,24 +17,23 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     bool success = true;
     
     cudaHostRegister((void*)scalers, len * sizeof(Element), cudaHostRegisterDefault);
-    cudaHostRegister((void*)points, len * sizeof(PointAffine), cudaHostRegisterDefault);
 
     printf("Host register done\n");
 
     u32 *d_points;
     bool head;
 
-    using Config = msm::MsmConfig<255, 22, 1, false>;
-    u32 batch_size = 2;
+    using Config = msm::MsmConfig<255, 22, 2, false>;
+    u32 batch_size = 4;
     u32 parts = 8;
     u32 stage_scalers = 2;
     u32 stage_points = 2;
 
-    u32 *h_points[Config::n_precompute];
-    h_points[0] = (u32*)points;
-    for (u32 i = 1; i < Config::n_precompute; i++) {
+    std::array<u32*, Config::n_precompute> h_points;
+    for (u32 i = 0; i < Config::n_precompute; i++) {
         cudaHostAlloc(&h_points[i], len * sizeof(PointAffine), cudaHostAllocDefault);
     }
+    memcpy((void*)h_points[0], (void*)points, len * sizeof(PointAffine));
 
     printf("host alloc points done\n");
 
@@ -52,11 +51,15 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
+    msm::MSM<Config> msm_solver(len, batch_size, parts, stage_scalers, stage_points);
+
     printf("start precompute\n");
 
-    msm::precompute<Config>(h_points, len, stream);
+    msm_solver.precompute(std::move(h_points), stream);
 
     printf("Precompute done\n");
+
+    msm_solver.alloc_gpu();
 
     cudaEvent_t start, stop;
     float elapsedTime = 0.0;
@@ -65,7 +68,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-    msm::run<Config>(len, batch_size, parts, stage_scalers, stage_points, scaler_batches, const_cast<const u32 **>(h_points), r, false, false, d_points, head, stream);
+    msm_solver.run(scaler_batches, r, stream);
 
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
@@ -86,10 +89,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
     cudaEventDestroy(stop);
 
     cudaHostUnregister((void*)scalers);
-    cudaHostUnregister((void*)points);
-    for (u32 i = 1; i < Config::n_precompute; i++) {
-        cudaFreeHost(h_points[i]);
-    }
+
     auto r_affine = r[0].to_affine();
 
     for(int i=0;i<Element::LIMBS;++i) {
