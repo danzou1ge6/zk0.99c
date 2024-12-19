@@ -68,6 +68,7 @@ int main(int argc, char *argv[])
 
   using Config = msm::MsmConfig<255, 22, 2, false>;
   u32 batch_size = 4;
+  u32 batch_per_run = 2;
   u32 parts = 8;
   u32 stage_scalers = 2;
   u32 stage_points = 2;
@@ -87,7 +88,7 @@ int main(int argc, char *argv[])
   }
   Point *r = new Point[batch_size];
 
-  msm::MSM<Config> msm_solver(msm.len, batch_size, parts, stage_scalers, stage_points);
+  msm::MSM<Config> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points);
 
   std::cout << "start precompute" << std::endl;
 
@@ -105,7 +106,7 @@ int main(int argc, char *argv[])
   cudaEventCreate(&stop);
   cudaEventRecord(start, 0);
 
-  msm_solver.run(scalers, r, stream);
+  msm_solver.msm(batch_size, scalers, r, stream);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
