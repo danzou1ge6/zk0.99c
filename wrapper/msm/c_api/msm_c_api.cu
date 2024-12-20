@@ -20,9 +20,6 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     printf("Host register done\n");
 
-    u32 *d_points;
-    bool head;
-
     using Config = msm::MsmConfig<255, 22, 1, false>;
     u32 batch_size = 4;
     u32 batch_per_run = 2;

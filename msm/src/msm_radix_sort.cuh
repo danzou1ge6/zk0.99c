@@ -197,6 +197,8 @@ namespace msm {
 
         auto acc = Point::identity();
 
+        auto minus = Point::identity();
+
         for (u32 i = start_id + 1; i < end_id; i++) {
             u64 next_index = indexs[i];
             pointer = next_index >> (Config::s + 1 + Config::window_bits);
@@ -226,21 +228,29 @@ namespace msm {
             u32 next_window_id = (next_index >> (Config::s + 1)) & window_mask;
 
             if unlikely(next_key != key || next_window_id != window_id) {
-                unsigned short *mutex_ptr;
                 if unlikely(first) {
+                    unsigned short *mutex_ptr;
                     mutex_ptr = mutex.addr(window_id, key - 1);
                     lock(mutex_ptr);
-                }
-
-                if (initialized.get(window_id, key - 1)) {
-                    sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                    if (initialized.get(window_id, key - 1)) {
+                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                    } else {
+                        sum.get(window_id, key - 1) = acc;
+                        initialized.get(window_id, key - 1) = 1;
+                    }
+                    unlock(mutex_ptr);
+                    first = false;
                 } else {
                     sum.get(window_id, key - 1) = acc;
                     initialized.get(window_id, key - 1) = 1;
                 }
-                if unlikely(first) unlock(mutex_ptr);
-                first = false;
-                acc = Point::identity();
+
+                if (initialized.get(next_window_id, next_key - 1)) {
+                    acc = sum.get(next_window_id, next_key - 1);
+                } else {
+                    acc = Point::identity();
+                }
+                minus = acc;
             }
             key = next_key;
             sign = (next_index & sign_mask) != 0;
@@ -253,6 +263,7 @@ namespace msm {
 
         if (sign) p = p.neg();
         acc = acc + p;
+        acc = acc - minus;
 
         auto mutex_ptr = mutex.addr(window_id, key - 1);
         lock(mutex_ptr);
@@ -363,6 +374,7 @@ namespace msm {
 
     template <typename Config>
     class MSM {
+        int device;
         u32 *h_points[Config::n_precompute];
         Point **d_buckets_sum_buf;
         Array2D<Point, Config::n_windows, Config::n_buckets> *buckets_sum;
@@ -400,7 +412,6 @@ namespace msm {
 
         cudaError_t run(const u32 batches, const u32 **h_scalers, bool first_run, cudaStream_t stream) {
             cudaError_t err;
-            if (!allocated) PROPAGATE_CUDA_ERROR(alloc_gpu(stream));
 
             u64 part_len = div_ceil(len, parts);
 
@@ -600,11 +611,11 @@ namespace msm {
  
         public:
 
-        MSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages)
+        MSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, int device = 0)
         : len(len), batch_per_run(batch_per_run), parts(parts), max_scaler_stages(scaler_stages), max_point_stages(point_stages),
-        stage_scaler(0), stage_point(0), stage_point_transporting(0) {
+        stage_scaler(0), stage_point(0), stage_point_transporting(0), device(device) {
             cudaDeviceProp deviceProp;
-            cudaGetDeviceProperties(&deviceProp, 0);
+            cudaGetDeviceProperties(&deviceProp, device);
             num_sm = deviceProp.multiProcessorCount;
             reduce_blocks = div_ceil(num_sm, Config::n_windows) * Config::n_windows;
             d_buckets_sum_buf = new Point*[batch_per_run];
@@ -667,6 +678,7 @@ namespace msm {
 
         cudaError_t alloc_gpu(cudaStream_t stream = 0) {
             cudaError_t err;
+            PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
             u64 part_len = div_ceil(len, parts);
             for (u32 i = 0; i < batch_per_run; i++) {
                 PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_buckets_sum_buf[i], sizeof(Point) * Config::n_windows * Config::n_buckets, stream));
@@ -709,6 +721,7 @@ namespace msm {
 
         cudaError_t free_gpu(cudaStream_t stream = 0) {
             cudaError_t err;
+            PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
             if (!allocated) return cudaSuccess;
             for (u32 i = 0; i < batch_per_run; i++) {
                 PROPAGATE_CUDA_ERROR(cudaFreeAsync(d_buckets_sum_buf[i], stream));
@@ -744,6 +757,8 @@ namespace msm {
             // note: this function is not async, it will block until all computation is done
             // this is because the host reduce is done on the cpu
             cudaError_t err;
+            PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
+            if (!allocated) PROPAGATE_CUDA_ERROR(alloc_gpu(stream));
             // TODO: use thread pool
             std::thread host_reduce_thread; // overlap host reduce with GPU computation
 
@@ -791,6 +806,8 @@ namespace msm {
 
             host_reduce_thread.join();
 
+            PROPAGATE_CUDA_ERROR(cudaGetLastError());
+
             return cudaSuccess;
         }
 
@@ -816,4 +833,42 @@ namespace msm {
             delete [] h_reduce_buffer;
         }
     };
+
+    // template <typename Config>
+    // class MultiGPUMSM {
+    //     const u32 max_cards_per_msm;
+    //     u32 cards, parts, scaler_stages, point_stages, batch_per_run;
+    //     u64 len;
+    //     std::vector<std::vector<MSM<Config>>> msm_instances; // first dim for batch parallelism, second dim for msm parallelism
+    //     std::vector<std::vector<cudaStream_t>> streams;
+    //     public:
+    //     MultiGPUMSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, u32 max_cards_per_msm)
+    //     : len(len), batch_per_run(batch_per_run), parts(parts), scaler_stages(scaler_stages), point_stages(point_stages), max_cards_per_msm(max_cards_per_msm) {
+    //         cudaGetDeviceCount(&cards);
+
+    //         for (u32 i = 0; i < cards; i += max_cards_per_msm) {
+    //             u32 cur_cards = std::min(max_cards_per_msm, cards - i);
+    //             u64 part_len = div_ceil(len, parts);
+    //             msm_instances.emplace_back();
+    //             streams.emplace_back();
+    //             for (u32 j = 0; j < cur_cards; j++) {
+    //                 u64 cur_len = std::min(part_len, len - j * part_len);
+    //                 msm_instances[i].emplace_back(cur_len, batch_per_run, parts, scaler_stages, point_stages, i + j);
+    //                 streams[i].emplace_back();
+    //             }
+    //         }
+    //     }
+
+    //     cudaError_t precompute(std::array<u32*, Config::n_precompute> &&input_points) {
+    //         cudaError_t err;
+    //         for (u32 i = 0; i < msm_instances.size(); i++) {
+    //             // input_points.
+    //             for (u32 j = 0; j < msm_instances[i].size(); j++) {
+    //                 // PROPAGATE_CUDA_ERROR(cudaStreamCreate(&streams[i][j]));
+    //                 // PROPAGATE_CUDA_ERROR(msm_instances[i][j].precompute());
+    //             }
+    //         }
+    //         return cudaSuccess;
+    //     }
+    // };
 }
