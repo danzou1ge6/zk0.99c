@@ -79,22 +79,29 @@ int main(int argc, char *argv[])
     cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffine), cudaHostAllocDefault);
   }
 
-  const u32 **scalers = new const u32*[batch_size];
-  scalers[0] = (u32*)msm.scalers;
-
-  for (int i = 1; i < batch_size; i++) {
-    cudaHostAlloc(&scalers[i], msm.len * sizeof(Element), cudaHostAllocDefault);
-    memcpy((void*)scalers[i], (void*)msm.scalers, msm.len * sizeof(Element));
+  
+  std::vector<u32*> scalers_batches;
+  for (int i = 0; i < batch_size; i++) {
+    scalers_batches.push_back((u32*)msm.scalers);
   }
-  Point *r = new Point[batch_size];
 
-  msm::MSM<Config> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points);
+  std::vector<Point> r(batch_size);
+
+  std::vector<u32> cards;
+  int card_count;
+  cudaGetDeviceCount(&card_count);
+  for (int i = 0; i < card_count; i++) {
+    cards.push_back(i);
+  }
+
+  msm::MultiGPUMSM<Config> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
   std::cout << "start precompute" << std::endl;
 
   cudaStream_t stream;
   cudaStreamCreate(&stream);
-  msm_solver.precompute(std::move(h_points), stream);
+  msm::MSMPrecompute<Config>::precompute(msm.len, h_points, 4);
+  msm_solver.set_points(h_points);
 
   std::cout << "Precompute done" << std::endl;
   msm_solver.alloc_gpu();
@@ -106,17 +113,12 @@ int main(int argc, char *argv[])
   cudaEventCreate(&stop);
   cudaEventRecord(start, 0);
 
-  msm_solver.msm(batch_size, scalers, r, stream);
+  msm_solver.msm(scalers_batches, r);
 
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
   std::cout << "Run done" << std::endl;
-  for (int i = 1; i < batch_size; i++) {
-    cudaFreeHost((void*)scalers[i]);
-  }
-
-  delete [] scalers;
 
   cudaStreamDestroy(stream);
 
@@ -124,13 +126,15 @@ int main(int argc, char *argv[])
     std::cout << r[i].to_affine() << std::endl;
   }
 
-  delete [] r;
-
   std::cout << "Total cost time:" << elapsedTime << std::endl;
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
 
   cudaHostUnregister((void*)msm.scalers);
+  cudaHostUnregister((void*)msm.points);
+  for (u32 i = 1; i < Config::n_precompute; i++) {
+    cudaFreeHost(h_points[i]);
+  }
 
   return 0;
 }
