@@ -3,7 +3,7 @@
 
 namespace runtime {
     enum FieldType {
-        BN256_FR,
+        BN254_FR,
         PASTA_FP,
     };
 

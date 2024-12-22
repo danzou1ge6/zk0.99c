@@ -1,4 +1,5 @@
 #include "../../mont/src/bn254_scalar.cuh"
+#include "../../mont/src/bn254_fr.cuh"
 #include "bn254.cuh"
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda/pipeline>
@@ -20,10 +21,6 @@
 
 namespace msm {
 
-    using bn254::Point;
-    using bn254::PointAffine;
-    using bn254_scalar::Element;
-    using bn254_scalar::Number;
     using mont::u32;
     using mont::u64;
     using mont::usize;
@@ -103,7 +100,7 @@ namespace msm {
 
     // divide scalers into windows
     // count number of zeros in each window
-    template <typename Config>
+    template <typename Config, typename Number = bn254_fr::Number>
     __global__ void distribute_windows(
         const u32 *scalers,
         const u64 len,
@@ -151,7 +148,7 @@ namespace msm {
         atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
     }
 
-    template <typename Config, u32 WarpPerBlock>
+    template <typename Config, u32 WarpPerBlock, typename Point, typename PointAffine>
     __global__ void bucket_sum(
         const u64 len,
         const u32 *cnt_zero,
@@ -277,7 +274,7 @@ namespace msm {
         unlock(mutex_ptr);
     }
 
-    template<typename Config, u32 WarpNum = 8>
+    template<typename Config, u32 WarpPerBlock, typename Point>
     __launch_bounds__(256,1)
     __global__ void reduceBuckets(
         Array2D<Point, Config::n_windows, Config::n_buckets> buckets_sum, 
@@ -287,7 +284,7 @@ namespace msm {
 
         assert(gridDim.x % Config::n_windows == 0);
 
-        __shared__ u32 smem[WarpNum][Point::N_WORDS + 4]; // +4 for padding
+        __shared__ u32 smem[WarpPerBlock][Point::N_WORDS + 4]; // +4 for padding
 
         const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
         u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
@@ -336,18 +333,18 @@ namespace msm {
 
         if (warp_id > 0) return;
 
-        if (threadIdx.x < WarpNum) {
+        if (threadIdx.x < WarpPerBlock) {
             sum_of_sums = Point::load(smem[threadIdx.x]);
         } else {
             sum_of_sums = Point::identity();
         }
 
         // Reduce in warp1
-        if constexpr (WarpNum > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        if constexpr (WarpNum > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        if constexpr (WarpNum > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        if constexpr (WarpNum > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        if constexpr (WarpNum > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
 
         // Store to global memory
         if (threadIdx.x == 0) {
@@ -358,7 +355,7 @@ namespace msm {
         }
     }
 
-    template <typename Config>
+    template <typename Config, typename Point, typename PointAffine>
     __global__ void precompute_kernel(u32 *points, u64 len) {
         u64 gid = threadIdx.x + blockIdx.x * blockDim.x;
         if (gid >= len) return;
@@ -373,7 +370,7 @@ namespace msm {
         }
     }
 
-    template <typename Config>
+    template <typename Config, typename Number, typename Point, typename PointAffine>
     class MSM {
         int device;
         std::array<const u32*, Config::n_precompute> h_points;
@@ -550,7 +547,7 @@ namespace msm {
                     block_size = 256;
                     grid_size = num_sm;
 
-                    bucket_sum<Config, 8><<<grid_size, block_size, 0, stream>>>(
+                    bucket_sum<Config, 8, Point, PointAffine><<<grid_size, block_size, 0, stream>>>(
                         cur_len * Config::actual_windows,
                         cnt_zero,
                         indexs,
@@ -804,7 +801,7 @@ namespace msm {
         }
     };
 
-    template <typename Config>
+    template <typename Config, typename Point = bn254::Point, typename PointAffine = bn254::PointAffine>
     class MSMPrecompute {
         static cudaError_t run(u64 len, u64 part_len, std::array<u32*, Config::n_precompute> h_points, cudaStream_t stream = 0) {
             cudaError_t err;
@@ -821,7 +818,7 @@ namespace msm {
 
                 u32 grid = div_ceil(cur_len, 256);
                 u32 block = 256;
-                precompute_kernel<Config><<<grid, block, 0, stream>>>(points, cur_len);
+                precompute_kernel<Config, Point, PointAffine><<<grid, block, 0, stream>>>(points, cur_len);
 
                 for (int j = 1; j < Config::n_precompute; j++) {
                     PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_points[j] + offset * PointAffine::N_WORDS, points + j * cur_len * PointAffine::N_WORDS, sizeof(PointAffine) * cur_len, cudaMemcpyDeviceToHost, stream));
@@ -863,12 +860,12 @@ namespace msm {
     };
 
     // each msm will be decomposed into multiple msm instances, each instance will be run on a single GPU
-    template <typename Config>
+    template <typename Config, typename Number = bn254_fr::Number, typename Point = bn254::Point, typename PointAffine = bn254::PointAffine>
     class MultiGPUMSM {
         u32 parts, scaler_stages, point_stages, batch_per_run;
         u64 len, part_len;
         const std::vector<u32> cards;
-        std::vector<MSM<Config>> msm_instances;
+        std::vector<MSM<Config, Number, Point, PointAffine>> msm_instances;
         std::vector<cudaStream_t> streams;
         // TODO: use thread pool
         std::vector<std::thread> threads;
@@ -935,7 +932,7 @@ namespace msm {
                 results[i].resize(h_result.size());
             }
             
-            auto run_msm = [](MSM<Config> &msm, const std::vector<u32*> &h_scalers, std::vector<Point> &h_result, cudaStream_t stream) {
+            auto run_msm = [](MSM<Config, Number, Point, PointAffine> &msm, const std::vector<u32*> &h_scalers, std::vector<Point> &h_result, cudaStream_t stream) {
                 msm.msm(h_scalers, h_result, stream);
             };
 

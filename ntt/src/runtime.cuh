@@ -2,7 +2,7 @@
 
 #include "self_sort_in_place_ntt.cuh"
 #include "../../wrapper/ntt/c_api/ntt_c_api.h"
-#include "../../mont/src/bn256_fr.cuh"
+#include "../../mont/src/bn254_fr.cuh"
 #include "../../mont/src/pasta_fp.cuh"
 #include <cstddef>
 #include <map>
@@ -113,7 +113,7 @@ namespace runtime {
                         cudaMemGetInfo(&avail, &total);
                         auto instance_memory = 8ull * sizeof(uint) * (1 << id.log_len);
                         avail -= instance_memory / 2;
-                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<bn256_fr::Element> >(omega, id.log_len, false, avail / instance_memory, id.inverse, id.process, inv_n, zeta);
+                        ntt_kernel = std::make_shared<ntt::self_sort_in_place_ntt<bn254_fr::Element> >(omega, id.log_len, false, avail / instance_memory, id.inverse, id.process, inv_n, zeta);
                     }
                     ntt_kernels->insert(std::make_pair(id, ntt_kernel));
                     wlock.unlock();
