@@ -1,5 +1,5 @@
 #include "../src/bn254.cuh"
-#include "../src/msm_radix_sort.cuh"
+#include "../src/msm.cuh"
 #include "../../mont/src/bn254_scalar.cuh"
 
 #include <iostream>
@@ -94,13 +94,13 @@ int main(int argc, char *argv[])
     cards.push_back(i);
   }
 
-  msm::MultiGPUMSM<Config> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
+  msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
   std::cout << "start precompute" << std::endl;
 
   cudaStream_t stream;
   cudaStreamCreate(&stream);
-  msm::MSMPrecompute<Config>::precompute(msm.len, h_points, 4);
+  msm::MSMPrecompute<Config, Point, PointAffine>::precompute(msm.len, h_points, 4);
   msm_solver.set_points(h_points);
 
   std::cout << "Precompute done" << std::endl;
