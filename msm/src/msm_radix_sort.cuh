@@ -100,7 +100,7 @@ namespace msm {
 
     // divide scalers into windows
     // count number of zeros in each window
-    template <typename Config, typename Number = bn254_fr::Number>
+    template <typename Config, typename Number>
     __global__ void distribute_windows(
         const u32 *scalers,
         const u64 len,
@@ -473,7 +473,7 @@ namespace msm {
                     
                     u32 block_size = 512;
                     u32 grid_size = num_sm;
-                    distribute_windows<Config><<<grid_size, block_size, 0, stream>>>(
+                    distribute_windows<Config, Number><<<grid_size, block_size, 0, stream>>>(
                         scalers[stage_scaler],
                         cur_len,
                         cnt_zero,
