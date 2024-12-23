@@ -901,7 +901,8 @@ namespace msm {
             if (!allocated) return cudaSuccess;
             for (u32 i = 0; i < cards.size(); i++) {
                 PROPAGATE_CUDA_ERROR(cudaSetDevice(cards[i]));
-                PROPAGATE_CUDA_ERROR(msm_instances[i].free_gpu());
+                PROPAGATE_CUDA_ERROR(msm_instances[i].free_gpu(streams[i]));
+                PROPAGATE_CUDA_ERROR(cudaStreamSynchronize(streams[i]));
                 PROPAGATE_CUDA_ERROR(cudaStreamDestroy(streams[i]));
             }
             allocated = false;
@@ -957,6 +958,10 @@ namespace msm {
                 }
             }
             return cudaSuccess;
+        }
+
+        ~MultiGPUMSM() {
+            free_gpu();
         }
     };
 }
