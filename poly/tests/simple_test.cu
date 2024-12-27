@@ -1,12 +1,12 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include "../src/poly.cuh"
-#include "../../mont/src/bn256_fr.cuh"
+#include "../../mont/src/bn254_fr.cuh"
 #include <iostream>
 
 using mont::u32;
 using mont::u64;
-using Field = bn256_fr::Element;
+using Field = bn254_fr::Element;
 using Number = mont::Number<Field::LIMBS>;
 
 u64 len = 1 << 24;

@@ -3,8 +3,8 @@
 #include <iostream>
 #include <ctime>
 
-#include "../src/bn256_fr.cuh"
-using bn256_fr::Element;
+#include "../src/bn254_fr.cuh"
+using bn254_fr::Element;
 
 using Number = mont::Number<8>;
 using Number2 = mont::Number<16>;

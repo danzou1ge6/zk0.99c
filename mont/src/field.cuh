@@ -21,21 +21,21 @@ namespace mont
   // Arithmatics on host, in raw pointer form
   namespace host_arith
   {
-    __host__ u32 addc(u32 a, u32 b, u32 &carry)
+    __host__ __forceinline__ u32 addc(u32 a, u32 b, u32 &carry)
     {
       u64 ret = (u64)a + (u64)b + (u64)carry;
       carry = (u32)(ret >> 32);
       return ret;
     }
 
-    __host__ u32 subb(u32 a, u32 b, u32 &borrow)
+    __host__ __forceinline__ u32 subb(u32 a, u32 b, u32 &borrow)
     {
       u64 ret = (u64)a - (u64)b - (u64)(borrow >> 31);
       borrow = (u32)(ret >> 32);
       return ret;
     }
 
-    __host__ u32 madc(u32 a, u32 b, u32 c, u32 &carry)
+    __host__ __forceinline__ u32 madc(u32 a, u32 b, u32 c, u32 &carry)
     {
       u64 ret = (u64)b * (u64)c + (u64)a + (u64)carry;
       carry = (u32)(ret >> 32);
@@ -43,7 +43,7 @@ namespace mont
     }
 
     template <usize N>
-    __host__ u32 sub(u32 *r, const u32 *a, const u32 *b)
+    __host__ __forceinline__ u32 sub(u32 *r, const u32 *a, const u32 *b)
     {
       u32 carry = 0;
 #pragma unroll
@@ -53,7 +53,7 @@ namespace mont
     }
 
     template <usize N>
-    __host__ u32 add(u32 *r, const u32 *a, const u32 *b)
+    __host__ __forceinline__ u32 add(u32 *r, const u32 *a, const u32 *b)
     {
       u32 carry = 0;
 #pragma unroll
@@ -63,7 +63,7 @@ namespace mont
     }
 
     template <usize N>
-    __host__ void sub_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    __host__ __forceinline__ void sub_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
     {
       u32 borrow = sub<N>(r, a, b);
       if (borrow)
@@ -71,14 +71,14 @@ namespace mont
     }
 
     template <usize N>
-    __host__ void add_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
+    __host__ __forceinline__ void add_modulo(u32 *r, const u32 *a, const u32 *b, const u32 *m)
     {
       add<N>(r, a, b);
       sub_modulo<N>(r, r, m, m);
     }
 
     template <usize N>
-    __host__ void multiply(u32 *r, const u32 *a, const u32 *b)
+    __host__ __forceinline__ void multiply(u32 *r, const u32 *a, const u32 *b)
     {
       u32 carry = 0;
 
@@ -100,7 +100,7 @@ namespace mont
     }
 
     template <usize N>
-    __host__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
+    __host__ __forceinline__ void montgomery_reduction(u32 *a, const u32 *m, const u32 m_prime)
     {
       u32 k, carry;
       u32 carry2 = 0;
@@ -119,7 +119,7 @@ namespace mont
     }
 
     template <usize N, bool MODULO>
-    __host__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
+    __host__ __forceinline__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
     {
       u32 product[2 * N];
       multiply<N>(product, a, b);
@@ -130,7 +130,7 @@ namespace mont
     }
 
     template <usize N>
-    __host__ void random(u32 *r, const u32 *m)
+    __host__ __forceinline__ void random(u32 *r, const u32 *m)
     {
       if constexpr (N == 0)
         return;
@@ -522,11 +522,11 @@ namespace mont
     static const usize LIMBS = LIMBS_;
     u32 limbs[LIMBS];
 
-    __device__ __host__
+    __device__ __host__ __forceinline__ 
     Number() {}
 
     // Constructor: `Number x = {0, 1, 2, 3, 4, 5, 6, 7}` in little endian
-    constexpr Number(const std::initializer_list<uint32_t> &values) : limbs{}
+    constexpr __forceinline__ Number(const std::initializer_list<uint32_t> &values) : limbs{}
     {
       size_t i = 0;
       for (auto value : values)
@@ -755,8 +755,8 @@ namespace mont
 
     Number<LIMBS> n;
 
-    __host__ __device__ Element() {}
-    constexpr __host__ __device__ Element(Number<LIMBS> n) : n(n) {}
+    __host__ __device__ __forceinline__  Element() {}
+    constexpr __host__ __device__ __forceinline__ Element(Number<LIMBS> n) : n(n) {}
 
     static __host__ __device__ __forceinline__
         Element
@@ -773,7 +773,7 @@ namespace mont
     }
 
     // Addition identity on field
-    static __host__ __device__
+    static __host__ __device__ __forceinline__ 
         Element
         zero()
     {
@@ -782,7 +782,7 @@ namespace mont
       return r;
     }
 
-    __host__ __device__ constexpr bool
+    __host__ __device__ __forceinline__  constexpr bool
     is_zero() const &
     {
       return n.is_zero();
@@ -1011,7 +1011,7 @@ namespace mont
     }
 
     // Generate a random field element
-    static __host__
+    static __host__ __forceinline__ 
         Element
         host_random()
     {
@@ -1021,8 +1021,8 @@ namespace mont
     }
   };
 
-  template <usize LIMBS>
-  std::istream &
+  template <usize LIMBS> 
+  __forceinline__  std::istream &
   operator>>(std::istream &is, Number<LIMBS> &n)
   {
     is >> std::hex;
@@ -1035,7 +1035,7 @@ namespace mont
   }
 
   template <usize LIMBS>
-  std::ostream &
+  __forceinline__  std::ostream &
   operator<<(std::ostream &os, const Number<LIMBS> &n)
   {
     os << "0x";
@@ -1046,7 +1046,7 @@ namespace mont
   }
 
   template <class Params>
-  std::ostream &
+  __forceinline__  std::ostream &
   operator<<(std::ostream &os, const Element<Params> &e)
   {
     auto n = e.to_number();
@@ -1091,7 +1091,7 @@ namespace mont
     }
   }
 
-  constexpr u32 pow2_ceiling(u32 x)
+  __forceinline__ constexpr u32 pow2_ceiling(u32 x)
   {
     u32 r = 2;
     while (r < x)
