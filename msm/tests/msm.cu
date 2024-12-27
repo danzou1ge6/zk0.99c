@@ -93,6 +93,8 @@ int main(int argc, char *argv[])
   cudaStreamDestroy(stream);
 
   std::cout << r.to_affine() << std::endl;
+  if (!r.is_on_curve())
+    std::cout << "Error: point is not on curve" << std::endl;
 
   std::cout << "Total cost time:" << elapsedTime << std::endl;
   cudaEventDestroy(start);

@@ -1,7 +1,7 @@
 from random import randint
 import math
 
-from common import *
+from .common import *
 
 def m_magic(m: int, n_words: int) -> int:
     x, y, gcd = ext_gcd(m, 2 ** (n_words * 32))
@@ -20,6 +20,7 @@ def params(bits: int, m: int) -> str:
     s += f"// {m}\n"
     s +=  "const auto params = Params {\n"
     s += f"  .m = BIG_INTEGER_CHUNKS8({chunks(m, n_words=n_words)}),\n"
+    s += f"  .mm2 = BIG_INTEGER_CHUNKS8({chunks(m * 2, n_words=n_words)}),\n"
     s += f"  .r_mod = BIG_INTEGER_CHUNKS8({chunks(r_mod, n_words=n_words)}),\n"
     s += f"  .r2_mod = BIG_INTEGER_CHUNKS8({chunks(r2_mod, n_words=n_words)}),\n"
     s += f"  .m_prime = {m_prime}\n"
@@ -65,6 +66,6 @@ def one_sample(bits: int, m: int) -> str:
     return s
 
 if __name__ == "__main__":
-    p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+    p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
     print(one_sample(256, p))
 

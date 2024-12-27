@@ -5,9 +5,9 @@
 using bn254_scalar::Element;
 using mont::u32;
 
-const u32 BATCH = 128;
+const u32 BATCH = 1;
 const u32 THREADS = 512;
-const u32 ITERS = 2;
+const u32 ITERS = 2000;
 
 __global__ void bench(Element *r, const Element *a)
 {

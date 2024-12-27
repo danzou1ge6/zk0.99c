@@ -118,14 +118,15 @@ namespace mont
       }
     }
 
-    template <usize N>
+    template <usize N, bool MODULO>
     __host__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
     {
       u32 product[2 * N];
       multiply<N>(product, a, b);
       montgomery_reduction<N>(product, m, m_prime);
       memcpy(r, product + N, N * sizeof(u32));
-      sub_modulo<N>(r, r, m, m);
+      if (MODULO)
+        sub_modulo<N>(r, r, m, m);
     }
 
     template <usize N>
@@ -498,7 +499,7 @@ namespace mont
 
     // Computes `r = a * b mod m`.
     // `r`, `a`, `b`, `m` all have limbs `N`
-    template <usize N>
+    template <usize N, bool MODULO>
     __device__ __forceinline__ void montgomery_multiplication(u32 *r, const u32 *a, const u32 *b, const u32 *m, const u32 m_prime)
     {
       __align__(16) u32 prod[2 * N];
@@ -507,7 +508,8 @@ namespace mont
 #pragma unroll
       for (usize i = N; i < 2 * N; i++)
         r[i - N] = prod[i];
-      sub_modulo<N>(r, r, m, m);
+      if (MODULO)
+        sub_modulo<N>(r, r, m, m);
     }
   }
 
@@ -808,24 +810,33 @@ namespace mont
     }
 
     // Field multiplication
+    template<bool MODULO = true>
     __host__ __device__ __forceinline__
         Element
-        operator*(const Element &rhs) const &
+        mul(const Element &rhs) const &
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+      device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+      host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
 
     __host__ __device__ __forceinline__
         Element
+        operator*(const Element &rhs) const &
+    {
+      return mul<true>(rhs);
+    }
+
+    template<bool MODULO = true>
+    __host__ __device__ __forceinline__
+        Element
         square() const &
     {
-      return *this * *this;
+      return mul<MODULO>(*this);
     }
 
     // Field addition
@@ -856,6 +867,45 @@ namespace mont
       return r;
     }
 
+    __device__ __host__ __forceinline__
+        Element
+        sub_modulo_mm2(const Element &rhs) const &
+    {
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#endif
+      return r;
+    }
+
+    __device__ __host__ __forceinline__
+        Element
+        add_modulo_mm2(const Element &rhs) const &
+    {
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#else
+      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#endif
+      return r;
+    }
+
+    __device__ __host__ __forceinline__
+        Element
+        modulo_m() const &
+    {
+      Element r;
+#ifdef __CUDA_ARCH__
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
+#endif
+      return r;
+    }
+
     __host__ __device__ __forceinline__
         Element
         neg() const &
@@ -878,9 +928,9 @@ namespace mont
     {
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
+      device_arith::montgomery_multiplication<LIMBS, true>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
+      host_arith::montgomery_multiplication<LIMBS, true>(r.n.limbs, n.limbs, Params::r2_mod().limbs, Params::m().limbs, Params::m_prime);
 #endif
       return r;
     }
@@ -947,6 +997,17 @@ namespace mont
     __host__ __device__ __forceinline__ Element invert() const &
     {
       return this->pow(Params::m_sub2());
+    }
+    
+    __host__ __device__ __forceinline__ bool lt_2m() const &
+    {
+      auto m = ParamsType::mm2();
+      for (int i = LIMBS - 1; i >= 0; i --)
+        if (n.limbs[i] < m.limbs[i])
+          return true;
+        else if (n.limbs[i] > m.limbs[i])
+          return false;
+      return false;
     }
 
     // Generate a random field element

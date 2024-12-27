@@ -119,6 +119,29 @@ __global__ void bn_slr(u32 *r, const u32 *a, const u32 *b)
   nr.store(r);
 }
 
+__global__ void mont_add_mm2(u32 *r, const u32 *a, const u32 *b)
+{
+  auto ea = Element::load(a);
+  auto eb = Element::load(b);
+  auto er = ea.add_modulo_mm2(eb);
+  er.store(r);
+}
+
+__global__ void mont_sub_mm2(u32 *r, const u32 *a, const u32 *b)
+{
+  auto ea = Element::load(a);
+  auto eb = Element::load(b);
+  auto er = ea.sub_modulo_mm2(eb);
+  er.store(r);
+}
+
+__global__ void mont_modulo_m(u32 *r, const u32 *a, const u32 *b)
+{
+  auto ea = Element::load(a);
+  auto er = ea.modulo_m();
+  er.store(r);
+}
+
 template <u32 WORDS>
 void test_mont_kernel(const u32 r[WORDS], const u32 a[WORDS],
                       const u32 b[WORDS], void kernel(u32 *, const u32 *, const u32 *))
@@ -499,4 +522,28 @@ TEST_CASE("Convert to and from Montgomery (host)")
   auto n = e.to_number();
   auto e1 = Element::from_number(n);
   REQUIRE(e1 == e);
+}
+
+namespace instance3 {
+  const u32 x[WORDS] = BIG_INTEGER_CHUNKS8(0x31ed3847, 0xcfae97c3, 0x94d0daed, 0xbaa91e44, 0xaa4cf8c3, 0x67de9f72, 0x53222181, 0x6cc4902a);
+  const u32 y[WORDS] = BIG_INTEGER_CHUNKS8(0x3567be11, 0xea6cb86f, 0x5be9dde9, 0x2bb995ae, 0x4e9d604b, 0xe30cf8cf, 0xaf50a0b4, 0x322ac735);
+  const u32 r_sub[WORDS] = BIG_INTEGER_CHUNKS8(0x5d4e171b, 0xa7a51fa7, 0xa9878871, 0x91f23950, 0xac176908, 0x784487c5, 0x2b956bf5, 0x1a99c8f7);
+  const u32 r_add[WORDS] = BIG_INTEGER_CHUNKS8(0x68c5973, 0xf7b80fdf, 0x801a2d69, 0xe3600338, 0xa882887e, 0x5778b71f, 0x7aaed70d, 0xbeef575d);
+  const u32 x_mod_m[WORDS] = BIG_INTEGER_CHUNKS8(0x188e9d4, 0xee7cf799, 0xdc809537, 0x3927c5e7, 0x8219107a, 0xee252ee1, 0x0f402bed, 0x7cc49029);
+
+  TEST_CASE("Subtraction modulo mm2")
+  {
+    test_mont_kernel<WORDS>(r_sub, x, y, [](u32 *r, const u32 *a, const u32 *b)
+                            { mont_sub_mm2<<<1, 1>>>(r, a, b); });
+  }
+  TEST_CASE("Addition modulo mm2")
+  {
+    test_mont_kernel<WORDS>(r_add, x, y, [](u32 *r, const u32 *a, const u32 *b)
+                            { mont_add_mm2<<<1, 1>>>(r, a, b); });
+  }
+  TEST_CASE("Modulo m")
+  {
+    test_mont_kernel<WORDS>(x_mod_m, x, y, [](u32 *r, const u32 *a, const u32 *b)
+                            { mont_modulo_m<<<1, 1>>>(r, a, b); });
+  }
 }

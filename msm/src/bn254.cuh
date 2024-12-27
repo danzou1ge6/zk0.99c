@@ -2,7 +2,6 @@
 #define BN254_H
 
 #include "../../mont/src/bn254_scalar.cuh"
-#include "./curve.cuh"
 #include "curve_xyzz.cuh"
 
 namespace bn254
@@ -65,13 +64,40 @@ namespace bn254
       return host_constants::b3;
 #endif
     }
+
+    static constexpr __device__ __host__ __forceinline__
+        bool
+        allow_lazy_modulo()
+    {
+        return true;
+    }
   };
 
   using Point = curve::EC<Params, Element>::PointXYZZ;
   using PointAffine = curve::EC<Params, Element>::PointAffine;
-//   using Point = curve::Point<Params, Element>;
-//   using PointAffine = curve::PointAffine<Params, Element>;
+//   using PointEager = curve::EC<Params<false>, Element>::PointXYZZ;
+//   using PointAffineEager = curve::EC<Params<false>, Element>::PointAffine;
 
+//   __host__ __device__ PointEager eager_from_lazy(const Point &lazy)
+//   {
+//     auto lazy_n = lazy.normalized();
+//     return PointEager(lazy_n.x, lazy_n.y, lazy_n.zz, lazy_n.zzz);
+//   }
+
+//   __host__ __device__ PointAffineEager eager_from_lazy(const PointAffine &lazy)
+//   {
+//     return PointAffineEager(lazy.x, lazy.y);
+//   }
+
+//   __host__ __device__ Point lazy_from_eager(const PointEager &eager)
+//   {
+//     return Point(eager.x, eager.y, eager.zz, eager.zzz);
+//   }
+
+//   __host__ __device__ PointAffine lazy_from_eager(const PointAffineEager &eager)
+//   {
+//     return PointAffine(eager.x, eager.y);
+//   }
 }
 
 #endif

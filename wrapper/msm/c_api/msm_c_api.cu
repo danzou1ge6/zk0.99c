@@ -21,7 +21,7 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     u32 *d_points, *h_points_precompute, head;
 
-    using Config = msm::MsmConfig<255, 22, 3, 32, 2, 2, false>;
+    using Config = msm::MsmConfig<255, 22, 1, 1, 2, 2, true>;
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);

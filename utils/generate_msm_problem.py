@@ -5,7 +5,7 @@ from sys import argv
 if __name__ == "__main__":
     msm_len = 2 ** int(argv[1])
 
-    wf = open(f'msm/tests/msm{argv[1]}.input', 'w')
+    wf = open(argv[2], 'w')
 
     wf.write(f"{msm_len}\n")
 
