@@ -40,7 +40,7 @@ target("cuda_msm")
     add_values("cuda.build.devlink", true)
 
     set_languages(("c++20"))
-    
+    add_files("msm/src/fast_compile/*.cu")
     add_files("wrapper/msm/c_api/msm_c_api.cu")
     add_headerfiles("wrapper/msm/c_api/*.h")
     add_cugencodes("native")

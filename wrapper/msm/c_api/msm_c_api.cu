@@ -1,5 +1,5 @@
 #include "./msm_c_api.h"
-#include "../../../msm/src/msm_radix_sort.cuh"
+#include "../../../msm/src/msm.cuh"
 #include "../../../msm/src/bn254.cuh"
 #include "../../../mont/src/bn254_scalar.cuh"
 
@@ -9,6 +9,7 @@
 using mont::u32;
 using bn254::Point;
 using bn254::PointAffine;
+using bn254_scalar::Number;
 using bn254_scalar::Element;
 
 
@@ -16,14 +17,14 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
 
     bool success = true;
     
-    cudaHostRegister((void*)scalers, len * sizeof(Element), cudaHostRegisterDefault);
+    cudaHostRegister((void*)scalers, len * sizeof(Number), cudaHostRegisterDefault);
     cudaHostRegister((void*)points, len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-    using Config = msm::MsmConfig<255, 22, 1, false>;
-    u32 batch_size = 4;
-    u32 batch_per_run = 4;
+    using Config = msm::MsmConfig<255, 16, 8, false>;
+    u32 batch_size = 1;
+    u32 batch_per_run = 1;
     u32 parts = 8;
-    u32 stage_scalers = 2;
+    u32 stage_scalers = 3;
     u32 stage_points = 2;
 
     std::array<u32*, Config::n_precompute> h_points;
@@ -47,13 +48,13 @@ bool cuda_msm(unsigned int len, const unsigned int* scalers, const unsigned int*
         cards.push_back(i);
     }
 
-    msm::MultiGPUMSM<Config> msm_solver(len, batch_per_run, parts, stage_scalers, stage_points, cards);
+    msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
     std::cout << "start precompute" << std::endl;
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
-    msm::MSMPrecompute<Config>::precompute(len, h_points, 4);
+    msm::MSMPrecompute<Config, Point, PointAffine>::precompute(len, h_points);
     msm_solver.set_points(h_points);
 
     std::cout << "Precompute done" << std::endl;
