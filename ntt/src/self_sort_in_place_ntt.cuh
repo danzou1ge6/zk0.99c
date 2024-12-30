@@ -2480,38 +2480,33 @@ namespace ntt {
         const u32 io_group_id = lid / cur_io_group;
         int io_st, io_ed, io_stride;
 
-        if ((io_group_id / 2) & 1) {
-            io_st = lid_start;
-            io_ed = lid_start + cur_io_group;
-            io_stride = 1;
-        } else {
-            io_st = lid_start + cur_io_group - 1;
-            io_ed = ((int)lid_start) - 1;
-            io_stride = -1;
-        }
+        io_st = lid_start;
+        io_ed = lid_start + cur_io_group;
+        io_stride = 1;
+
         // Read data
         for (int i = io_st; i != io_ed; i += io_stride) {
             for (u32 j = 0; j < io_per_thread; j++) {
                 u32 io = io_id + j * cur_io_group;
                 if (io * 4 < WORDS) {
                     u32 group_id = i & (subblock_sz - 1);
-                    u64 gpos = group_id << (lgp + 1);
+                    u64 gpos = group_id << (lgp);
                     uint4 a, b;
                     if (!process) {
                         a = reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
-                        b = reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
+                        b = reinterpret_cast<uint4*> (x + (gpos+ (end_stride << (deg - 1))) * WORDS)[io];
                     } else {
                         a = gpos >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
-                        b = gpos + end_stride >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io];
+                        b = (gpos+ (end_stride << (deg - 1))) >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + (gpos+ (end_stride << (deg - 1))) * WORDS)[io];
                     }
-                    u[(i << 1) + (0 + io * 4) * shared_read_stride] = a.x;
-                    u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride] = b.x;
-                    u[(i << 1) + (1 + io * 4) * shared_read_stride] = a.y;
-                    u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride] = b.y;
-                    u[(i << 1) + (2 + io * 4) * shared_read_stride] = a.z;
-                    u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride] = b.z;
-                    u[(i << 1) + (3 + io * 4) * shared_read_stride] = a.w;
-                    u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride] = b.w;
+                    u[(i) + (0 + io * 4) * shared_read_stride] = a.x;
+                    u[(i) + (1 << (deg - 1)) + (0 + io * 4) * shared_read_stride] = b.x;
+                    u[(i) + (1 + io * 4) * shared_read_stride] = a.y;
+                    u[(i) + (1 << (deg - 1)) + (1 + io * 4) * shared_read_stride] = b.y;
+                    u[(i) + (2 + io * 4) * shared_read_stride] = a.z;
+                    u[(i) + (1 << (deg - 1)) + (2 + io * 4) * shared_read_stride] = b.z;
+                    u[(i) + (3 + io * 4) * shared_read_stride] = a.w;
+                    u[(i) + (1 << (deg - 1)) + (3 + io * 4) * shared_read_stride] = b.w;
                 }
             }
         }
