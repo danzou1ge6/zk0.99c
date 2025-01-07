@@ -66,12 +66,12 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-  using Config = msm::MsmConfig<255, 22, 2, false>;
+  using Config = msm::MsmConfig<255, 20, 13, false>;
   u32 batch_size = 4;
-  u32 batch_per_run = 2;
-  u32 parts = 8;
-  u32 stage_scalers = 2;
-  u32 stage_points = 2;
+  u32 batch_per_run;
+  u32 parts;
+  u32 stage_scalers;
+  u32 stage_points;
 
   std::array<u32*, Config::n_precompute> h_points;
   h_points[0] = (u32*)msm.points;
@@ -94,41 +94,52 @@ int main(int argc, char *argv[])
     cards.push_back(i);
   }
 
-  msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
+  for(batch_per_run = 1; batch_per_run <= batch_size; batch_per_run *= 2)
+  {
+    stage_scalers = batch_per_run;
+    stage_points = batch_per_run;
 
-  std::cout << "start precompute" << std::endl;
+    for(parts = 1; parts <= 32; parts *= 2)
+    {
+      msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
-  cudaStream_t stream;
-  cudaStreamCreate(&stream);
-  msm::MSMPrecompute<Config, Point, PointAffine>::precompute(msm.len, h_points, 4);
-  msm_solver.set_points(h_points);
+      std::cout << "start precompute" << std::endl;
 
-  std::cout << "Precompute done" << std::endl;
-  msm_solver.alloc_gpu();
-  std::cout << "Alloc GPU done" << std::endl;
-  cudaEvent_t start, stop;
-  float elapsedTime = 0.0;
+      cudaStream_t stream;
+      cudaStreamCreate(&stream);
+      msm::MSMPrecompute<Config, Point, PointAffine>::precompute(msm.len, h_points, 4);
+      msm_solver.set_points(h_points);
 
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
-  cudaEventRecord(start, 0);
+      std::cout << "Precompute done" << std::endl;
+      msm_solver.alloc_gpu();
+      std::cout << "Alloc GPU done" << std::endl;
+      cudaEvent_t start, stop;
+      float elapsedTime = 0.0;
 
-  msm_solver.msm(scalers_batches, r);
+      cudaEventCreate(&start);
+      cudaEventCreate(&stop);
+      cudaEventRecord(start, 0);
 
-  cudaEventRecord(stop, 0);
-  cudaEventSynchronize(stop);
-  cudaEventElapsedTime(&elapsedTime, start, stop);
-  std::cout << "Run done" << std::endl;
+      msm_solver.msm(scalers_batches, r);
 
-  cudaStreamDestroy(stream);
+      cudaEventRecord(stop, 0);
+      cudaEventSynchronize(stop);
+      cudaEventElapsedTime(&elapsedTime, start, stop);
+      std::cout << "Run done" << std::endl;
 
-  for (int i = 0; i < batch_size; i++) {
-    std::cout << r[i].to_affine() << std::endl;
+      cudaStreamDestroy(stream);
+
+      for (int i = 0; i < batch_size; i++) {
+        std::cout << r[i].to_affine() << std::endl;
+      }
+
+      std::cout << "window_size:0x" << Config::s << " alpha:0x" << Config::n_windows << " parts:0x" << parts << " batchs_per_run:0x" << batch_per_run << std::endl;
+      std::cout << "Total cost time:" << elapsedTime << std::endl;
+      cudaEventDestroy(start);
+      cudaEventDestroy(stop);
+    }
   }
-
-  std::cout << "Total cost time:" << elapsedTime << std::endl;
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+  
 
   cudaHostUnregister((void*)msm.scalers);
   cudaHostUnregister((void*)msm.points);
