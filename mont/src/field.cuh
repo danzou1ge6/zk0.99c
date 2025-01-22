@@ -744,6 +744,17 @@ namespace mont
     {
       return *this * *this;
     }
+
+    __device__ __forceinline__ Number shuffle_down(const u32 delta) const &
+    {
+      Number res;
+      #pragma unroll
+      for (usize i = 0; i < LIMBS; i++)
+      {
+        res.limbs[i] = __shfl_down_sync(0xFFFFFFFF, limbs[i], delta);
+      }
+      return res;
+    }
   };
 
   // An element on field defined by `Params`
@@ -1018,6 +1029,13 @@ namespace mont
       Element r;
       host_arith::random<LIMBS>(r.n.limbs, Params::m().limbs);
       return r;
+    }
+
+    __device__ __forceinline__ Element shuffle_down(const u32 delta) const &
+    {
+      Element res;
+      res.n = n.shuffle_down(delta);
+      return res;
     }
   };
 

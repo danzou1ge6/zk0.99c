@@ -13,7 +13,7 @@ namespace poly {
     static const u32 warp_size = 32;
 
     template <typename Field>
-    __global__ void NaiveAdd(u32 * a, u32 * b, u32 * dst, u32 len) {
+    __global__ void NaiveAdd(const u32 * a, const u32 * b, u32 * dst, u32 len) {
         u64 index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= len) return;
         auto a_val = Field::load(a + index * Field::LIMBS);
@@ -22,7 +22,7 @@ namespace poly {
     }
 
     template <typename Field>
-    __global__ void NaiveMul(u32 * a, u32 * b, u32 * dst, u32 len) {
+    __global__ void NaiveMul(const u32 * a, const u32 * b, u32 * dst, u32 len) {
         u64 index = blockIdx.x * blockDim.x + threadIdx.x;
         if (index >= len) return;
         auto a_val = Field::load(a + index * Field::LIMBS);
@@ -31,7 +31,7 @@ namespace poly {
     }
 
     template <typename Field, u32 io_group>
-    __global__ void Add(u32 * a, u32 * b, u32 * dst, u32 len) {       
+    __global__ void Add(const u32 * a, const u32 * b, u32 * dst, u32 len) {       
         using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
         extern __shared__ typename WarpExchangeT::TempStorage temp_storage[];
 
@@ -55,7 +55,7 @@ namespace poly {
     }
 
     template <typename Field, u32 io_group>
-    __global__ void Mul(u32 * a, u32 * b, u32 * dst, u32 len) {       
+    __global__ void Mul(const u32 * a, const u32 * b, u32 * dst, u32 len) {       
         using WarpExchangeT = cub::WarpExchange<u32, io_group, io_group>;
         extern __shared__ typename WarpExchangeT::TempStorage temp_storage[];
 

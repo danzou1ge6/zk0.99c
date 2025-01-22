@@ -217,16 +217,12 @@ namespace curve
       return res;
     }
 
-    __device__ __host__ __forceinline__ Point shuffle_down(const u32 delta) const &
+    __device__ __forceinline__ Point shuffle_down(const u32 delta) const &
     {
       Point res;
-      #pragma unroll
-      for (usize i = 0; i < Element::LIMBS; i++)
-      {
-        res.x.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n.limbs[i], delta);
-        res.y.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n.limbs[i], delta);
-        res.z.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, z.n.limbs[i], delta);
-      }
+      res.x.n = x.n.shuffle_down(delta);
+      res.y.n = y.n.shuffle_down(delta);
+      res.z.n = z.n.shuffle_down(delta);
       return res;
     }
   };

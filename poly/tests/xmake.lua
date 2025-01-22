@@ -1,5 +1,0 @@
-target("test-poly")
-    set_languages(("c++20"))
-    add_files("simple_test.cu")
-    add_packages("doctest")
-    add_headerfiles("../src/*.cuh")
