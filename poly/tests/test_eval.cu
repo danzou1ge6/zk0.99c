@@ -15,8 +15,8 @@ Field* gen_poly(uint len) {
 
 Field eval_cpu(Field * poly, Field x, uint len) {
     Field res = Field::zero();
-    for (uint i = 0; i < len; i++) {
-        res = res + poly[i] * x.pow(i);
+    for (int i = len - 1; i >= 0; i--) {
+        res = res * x + poly[i];
     }
     return res;
 }
@@ -77,5 +77,6 @@ TEST_CASE("eval") {
 
     cudaFree(poly_d);
     cudaFree(res_d);
+    cudaFree(temp_buf);
     delete [] poly;
 }

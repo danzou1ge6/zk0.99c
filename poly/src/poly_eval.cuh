@@ -87,7 +87,7 @@ cudaError_t NaiveEval(const u32 *poly, u32* temp_buf, u32* res, Field x, u64 len
 }
 
 template <typename Field>
-__global__ void init_buf(u32 *temp_buf, Field x, u64 len) {
+__global__ void init_pow_series(u32 *temp_buf, Field x, u64 len) {
     u64 index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= len) return;
     if (index == 0) {
@@ -97,8 +97,8 @@ __global__ void init_buf(u32 *temp_buf, Field x, u64 len) {
     }
 }
 
-template <typename Field>
-cudaError_t Eval(const u32 *poly, u32* temp_buf, u32* res, Field x, u64 len, cudaStream_t stream) {
+template<typename Field>
+cudaError_t get_pow_series(u32 *pow_series, Field x, u64 len, cudaStream_t stream) {
     u32 threads = 256;
     u32 blocks = (len + threads - 1) / threads;
 
@@ -107,23 +107,23 @@ cudaError_t Eval(const u32 *poly, u32* temp_buf, u32* res, Field x, u64 len, cud
     cudaEventCreate(&end);
 
     cudaEventRecord(start);
-    init_buf<Field><<<blocks, threads>>>(temp_buf, x, len);
+    init_pow_series<Field><<<blocks, threads, 0, stream>>>(pow_series, x, len);
     cudaEventRecord(end);
     cudaEventSynchronize(end);
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, end);
-    std::cout << "init_buf: " << milliseconds << "ms" << std::endl;
+    std::cout << "init_pow_series: " << milliseconds << "ms" << std::endl;
 
     void *d_temp_scan = nullptr;
     usize temp_scan_size = 0;
 
     auto mul_op = [] __device__ __host__(const Field &a, const Field &b) { return a * b; };
 
-    cub::DeviceScan::InclusiveScan(d_temp_scan, temp_scan_size, reinterpret_cast<Field*>(temp_buf), mul_op, len, stream);
+    cub::DeviceScan::InclusiveScan(d_temp_scan, temp_scan_size, reinterpret_cast<Field*>(pow_series), mul_op, len, stream);
     cudaMallocAsync(&d_temp_scan, temp_scan_size, stream);
 
     cudaEventRecord(start);
-    cub::DeviceScan::InclusiveScan(d_temp_scan, temp_scan_size, reinterpret_cast<Field*>(temp_buf), mul_op, len, stream);
+    cub::DeviceScan::InclusiveScan(d_temp_scan, temp_scan_size, reinterpret_cast<Field*>(pow_series), mul_op, len, stream);
     cudaEventRecord(end);
     cudaEventSynchronize(end);
     milliseconds = 0;
@@ -131,8 +131,25 @@ cudaError_t Eval(const u32 *poly, u32* temp_buf, u32* res, Field x, u64 len, cud
     std::cout << "scan: " << milliseconds << "ms" << std::endl;
 
     cudaFreeAsync(d_temp_scan, stream);
+    return cudaSuccess;
+}
 
+template <typename Field>
+cudaError_t Eval(const u32 *poly, u32* temp_buf, u32* res, Field x, u64 len, cudaStream_t stream) {
+    get_pow_series<Field>(temp_buf, x, len, stream);
+    u32 threads = 256;
+    u32 blocks = (len + threads - 1) / threads;
+    cudaEvent_t start, end;
+    cudaEventCreate(&start);
+    cudaEventCreate(&end);
+
+    cudaEventRecord(start);
     NaiveMul<Field><<<blocks, threads, 0, stream>>>(poly, temp_buf, temp_buf, len);
+    cudaEventRecord(end);
+    cudaEventSynchronize(end);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, end);
+    std::cout << "mul: " << milliseconds << "ms" << std::endl;
 
     // ruduce all
     void *d_temp_storage_reduce = nullptr;
