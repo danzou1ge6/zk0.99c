@@ -360,8 +360,21 @@ namespace msm {
             }
 
             for (int j = 0; j < batches; j++) {
+                cudaEvent_t start1, stop1;
+                float elapsedTime1 = 0.0;
+                cudaEventCreate(&start1);
+                cudaEventCreate(&stop1);
                 PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_scaler_copy[stage_scaler], cudaEventWaitDefault));
+                if constexpr (Config::debug) {
+                    cudaEventRecord(start1, copy_stream);
+                }
                 PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(scalers[stage_scaler], *(h_scalers + j) + offset * Number::LIMBS, sizeof(u32) * Number::LIMBS * cur_len, cudaMemcpyHostToDevice, copy_stream));
+                if constexpr (Config::debug) {
+                    cudaEventRecord(stop1, copy_stream);
+                    PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop1));
+                    cudaEventElapsedTime(&elapsedTime1, start1, stop1);
+                    std::cout << "Scaler transfering time:" << elapsedTime1 << std::endl;
+                }
                 PROPAGATE_CUDA_ERROR(cudaEventRecord(end_scaler_copy[stage_scaler], copy_stream));
 
                 PROPAGATE_CUDA_ERROR(cudaMemsetAsync(cnt_zero, 0, sizeof(u32), stream));
@@ -415,7 +428,9 @@ namespace msm {
 
                 // wait before the first point copy
                 if (points_transported == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[stage_point_transporting], cudaEventWaitDefault));
-                
+                if constexpr (Config::debug) {
+                    cudaEventRecord(start1, copy_stream);
+                }
                 if (j == 0) {
                     u32 point_left = cur_len - points_transported;
                     if (point_left > 0) for (int i = 0; i < Config::n_precompute; i++) {
@@ -439,6 +454,12 @@ namespace msm {
                         ));
                     }
                     points_transported += points_per_transfer;
+                }
+                if constexpr (Config::debug) {
+                    cudaEventRecord(stop1, copy_stream);
+                    PROPAGATE_CUDA_ERROR(cudaEventSynchronize(stop1));
+                    cudaEventElapsedTime(&elapsedTime1, start1, stop1);
+                    std::cout << "Point transfering time:" << elapsedTime1 << std::endl;
                 }
 
                 if (j == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(stream, end_point_copy[stage_point], cudaEventWaitDefault));

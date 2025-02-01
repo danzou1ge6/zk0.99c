@@ -12,6 +12,14 @@ using bn254_scalar::Number;
 using mont::u32;
 using mont::u64;
 
+#ifndef WINDOW_S
+#define WINDOW_S 16
+#endif
+
+#ifndef ALPHA
+#define ALPHA 16
+#endif
+
 struct MsmProblem
 {
   u32 len;
@@ -66,8 +74,8 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
-  using Config = msm::MsmConfig<255, 20, 13, false>;
-  u32 batch_size = 4;
+  using Config = msm::MsmConfig<255, WINDOW_S, ALPHA, false>;
+  u32 batch_size = 16;
   u32 batch_per_run;
   u32 parts;
   u32 stage_scalers;

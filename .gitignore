@@ -7,3 +7,4 @@
 **/*.input
 lib/
 **/target/
+results_*
