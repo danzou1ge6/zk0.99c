@@ -3318,9 +3318,9 @@ namespace ntt {
 
             if (log_len == 0) return first_err;
 
-            cudaEvent_t start, end;
-            CUDA_CHECK(cudaEventCreate(&start));
-            CUDA_CHECK(cudaEventCreate(&end));
+            // cudaEvent_t start, end;
+            // CUDA_CHECK(cudaEventCreate(&start));
+            // CUDA_CHECK(cudaEventCreate(&end));
             
             // this->sem.acquire();
 
@@ -3338,24 +3338,24 @@ namespace ntt {
             }
 
             u32 * x;
-            if (data_on_gpu) {
+            // if (data_on_gpu) {
                 x = data;
-            } else {
-                CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
-                if (process && !inverse) {
-                    CUDA_CHECK(cudaMemcpyAsync(x, data, start_n * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
-                } else {
-                    CUDA_CHECK(cudaMemcpyAsync(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
-                }
-            }
+            // } else {
+            //     CUDA_CHECK(cudaMallocAsync(&x, len * WORDS * sizeof(u32), stream));
+            //     if (process && !inverse) {
+            //         CUDA_CHECK(cudaMemcpyAsync(x, data, start_n * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+            //     } else {
+            //         CUDA_CHECK(cudaMemcpyAsync(x, data, len * WORDS * sizeof(u32), cudaMemcpyHostToDevice, stream));
+            //     }
+            // }
 
-            if (debug) {
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
-                CUDA_CHECK(cudaGetLastError());
-                CUDA_CHECK(cudaEventRecord(start));
-            }
+            // if (debug) {
+            //     dim3 block(768);
+            //     dim3 grid((len - 1) / block.x + 1);
+            //     number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
+            //     CUDA_CHECK(cudaGetLastError());
+            //     CUDA_CHECK(cudaEventRecord(start));
+            // }
 
             int log_stride = log_len - 1;
             constexpr u32 io_group = 1 << (log2_int(WORDS - 1) + 1);
@@ -3609,35 +3609,35 @@ namespace ntt {
                 log_stride -= deg;
             }
 
-            // manually tackle log_len == 1 case because the stage2 kernel won't run
-            if (log_len == 1) {
-                post_process_len_2<Field><<< 1, 1, 0, stream >>>(x, inverse, process, inv_n_d, zeta_d);
-            }
+            // // manually tackle log_len == 1 case because the stage2 kernel won't run
+            // if (log_len == 1) {
+            //     post_process_len_2<Field><<< 1, 1, 0, stream >>>(x, inverse, process, inv_n_d, zeta_d);
+            // }
 
-            if (debug) {
-                CUDA_CHECK(cudaEventRecord(end));
-                CUDA_CHECK(cudaEventSynchronize(end));
-                CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
-                CUDA_CHECK(cudaGetLastError());
-            }
+            // if (debug) {
+            //     CUDA_CHECK(cudaEventRecord(end));
+            //     CUDA_CHECK(cudaEventSynchronize(end));
+            //     CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
+            //     dim3 block(768);
+            //     dim3 grid((len - 1) / block.x + 1);
+            //     element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
+            //     CUDA_CHECK(cudaGetLastError());
+            // }
 
-            CUDA_CHECK(cudaEventDestroy(start));
-            CUDA_CHECK(cudaEventDestroy(end));
+            // CUDA_CHECK(cudaEventDestroy(start));
+            // CUDA_CHECK(cudaEventDestroy(end));
 
-            // rlock.unlock();
+            // // rlock.unlock();
 
-            if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+            // if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
-            if (!data_on_gpu) CUDA_CHECK(cudaFreeAsync(x, stream));
+            // if (!data_on_gpu) CUDA_CHECK(cudaFreeAsync(x, stream));
 
-            if (!data_on_gpu) CUDA_CHECK(cudaStreamSynchronize(stream));
+            // if (!data_on_gpu) CUDA_CHECK(cudaStreamSynchronize(stream));
 
-            // this->sem.release();
+            // // this->sem.release();
 
-            if (debug) CUDA_CHECK(clean_gpu(stream));
+            // if (debug) CUDA_CHECK(clean_gpu(stream));
 
             return first_err;
         }
