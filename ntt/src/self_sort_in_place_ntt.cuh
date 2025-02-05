@@ -2477,7 +2477,6 @@ namespace ntt {
         const u32 cur_io_group = io_group < lsize ? io_group : lsize;
         const u32 io_per_thread = io_group / cur_io_group;
 
-        const u32 io_group_id = lid / cur_io_group;
         int io_st, io_ed, io_stride;
 
         io_st = lid_start;
@@ -3323,15 +3322,19 @@ namespace ntt {
             CUDA_CHECK(cudaEventCreate(&start));
             CUDA_CHECK(cudaEventCreate(&end));
             
-            this->sem.acquire();
+            // this->sem.acquire();
 
-            std::shared_lock<std::shared_mutex> rlock(this->mtx);
-            {
-                while(!this->on_gpu) {
-                    rlock.unlock();
-                    CUDA_CHECK(to_gpu(stream));
-                    rlock.lock();
-                }
+            // std::shared_lock<std::shared_mutex> rlock(this->mtx);
+            // {
+            //     while(!this->on_gpu) {
+            //         rlock.unlock();
+            //         CUDA_CHECK(to_gpu(stream));
+            //         rlock.lock();
+            //     }
+            // }
+
+            if (!this->on_gpu) {
+                CUDA_CHECK(to_gpu(stream));
             }
 
             u32 * x;
@@ -3624,7 +3627,7 @@ namespace ntt {
             CUDA_CHECK(cudaEventDestroy(start));
             CUDA_CHECK(cudaEventDestroy(end));
 
-            rlock.unlock();
+            // rlock.unlock();
 
             if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
@@ -3632,7 +3635,7 @@ namespace ntt {
 
             if (!data_on_gpu) CUDA_CHECK(cudaStreamSynchronize(stream));
 
-            this->sem.release();
+            // this->sem.release();
 
             if (debug) CUDA_CHECK(clean_gpu(stream));
 
