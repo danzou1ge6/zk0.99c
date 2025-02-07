@@ -6,7 +6,7 @@ using namespace ntt;
 typedef bn254_fr::Element Field;
 
 int main () {
-    for (int k = 24; k <= 24; k += 2) {
+    for (int k = 20; k <= 28; k += 2) {
         auto omega = Field::host_random();
 
         cooley_turkey_ntt<Field> ntt(reinterpret_cast<u32*>(&omega), k, false);

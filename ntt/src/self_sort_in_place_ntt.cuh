@@ -3,6 +3,7 @@
 #include "ntt.cuh"
 #include <cassert>
 #include <cstdio>
+#include "cooley_turkey_ntt.cuh"
 
 namespace ntt {
     template <typename Field, u32 io_group>
@@ -3406,14 +3407,35 @@ namespace ntt {
                         kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d);
                         CUDA_CHECK(cudaGetLastError());
                     } else {
-                        auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
-                        SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
+                        // auto kernel = (log_stride == log_len - 1 && (process && (!inverse))) ? 
+                        // SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
-                        u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+                        // u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
                         
-                        kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
+                        // kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
                         
-                        CUDA_CHECK(cudaGetLastError());
+                        // CUDA_CHECK(cudaGetLastError());
+
+                        // u32 group_num = 1;
+
+                u32 block_sz = (1 << (deg - 1)) * group_num;
+                assert(block_sz <= (1 << max_threads_stage_log));
+                u32 block_num = len / 2 / block_sz;
+                assert(block_num * 2 * block_sz == len);
+
+                dim3 block(block_sz);
+                dim3 grid(block_num);
+
+                auto kernel = ntt_shfl_co<Field>;// SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
+
+                u32 shared_size = sizeof(Field)  * block_sz;
+
+                // kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
+
+                kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, roots_d);
+                        
+                CUDA_CHECK(cudaGetLastError());
+
                     }
                     break;
                 }

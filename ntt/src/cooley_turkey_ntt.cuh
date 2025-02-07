@@ -127,7 +127,7 @@ namespace ntt {
     }
 
     template <typename Field>
-    __global__ void ntt_shfl_co (u32 * data, u32 log_len, u32 log_stride, u32 deg, u32 * roots) {
+    __global__ void ntt_shfl_co (u32_E * data, u32 log_len, u32 log_stride, u32 deg, u32 * roots) {
         const static usize WORDS = Field::LIMBS;
         static_assert(WORDS % 4 == 0);
         using barrier = cuda::barrier<cuda::thread_scope_block>;
@@ -218,6 +218,7 @@ namespace ntt {
             }
             
             u32 lanemask = 1 << (deg - i - 2);
+            tmp = ((lid / lanemask) & 1) ? a : b;
             #pragma unroll
             for (u32 j = 0; j < WORDS; j += 4) {
                 uint4 seg = uint4 {tmp.n.limbs[j], tmp.n.limbs[j + 1], tmp.n.limbs[j + 2], tmp.n.limbs[j + 3]};
@@ -448,7 +449,7 @@ namespace ntt {
         }
 
         public:            
-        u32 max_threads_stage_log = 8;
+        u32 max_threads_stage_log = 10;
         float milliseconds = 0;
 
         cooley_turkey_ntt(
@@ -607,7 +608,7 @@ namespace ntt {
 
                 auto kernel = ntt_shfl_co<Field>;// SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
-                u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+                u32 shared_size = sizeof(Field)  * block_sz;
 
                 // kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
 

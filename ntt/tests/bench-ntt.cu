@@ -5,7 +5,7 @@ using namespace ntt;
 typedef bn254_fr::Element Field;
 
 int main () {
-    for (int k = 24; k <= 24; k += 2) {
+    for (int k = 20; k <= 28; k += 2) {
         auto omega = Field::host_random();
         auto config = self_sort_in_place_ntt<Field>::SSIP_config();
         
@@ -23,7 +23,7 @@ int main () {
         cudaMemcpy(data_d, data, (1ll << k) * sizeof(Field), cudaMemcpyHostToDevice);
 
         // warm up, because the jit compilation is slow
-        // for (int i = 0; i < 10; i++) ntt.ntt(reinterpret_cast<u32*>(data_d), 0, 0, true);
+        for (int i = 0; i < 10; i++) ntt.ntt(reinterpret_cast<u32*>(data_d), 0, 0, true);
 
         cudaEvent_t start, stop;
         cudaEventCreate(&start);
