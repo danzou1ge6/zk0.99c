@@ -1,5 +1,6 @@
-#include "../src/self_sort_in_place_ntt.cuh"
+#include "../src/recompute_ntt.cuh"
 #include "../../mont/src/bn254_fr.cuh"
+#include "../src/cooley_turkey_ntt.cuh"
 
 using namespace ntt;
 typedef bn254_fr::Element Field;
@@ -7,11 +8,8 @@ typedef bn254_fr::Element Field;
 int main () {
     for (int k = 24; k <= 24; k += 2) {
         auto omega = Field::host_random();
-        auto config = self_sort_in_place_ntt<Field>::SSIP_config();
-        
-        config.max_threads_stage1_log = 8;
-        config.max_threads_stage2_log = 8;
-        self_sort_in_place_ntt<Field> ntt(reinterpret_cast<u32*>(&omega), k, false, 1, false, false, nullptr, nullptr, config);
+
+        cooley_turkey_ntt<Field> ntt(reinterpret_cast<u32*>(&omega), k, false);
         ntt.to_gpu();
         
         Field *data, *data_d;
@@ -29,7 +27,7 @@ int main () {
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
 
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
             cudaEventRecord(start);
             ntt.ntt(reinterpret_cast<u32*>(data_d), 0, 0, true);
             cudaEventRecord(stop);

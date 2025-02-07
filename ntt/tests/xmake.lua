@@ -18,6 +18,14 @@ target("test-ntt-recompute")
     add_files("../../ntt/tests/test-recompute.cu")
     add_cugencodes("native")
 
+target("test-ntt-ct")
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_files("../../ntt/tests/test-ct.cu")
+    add_cugencodes("native")
+
 target("test-ntt-big")
     local project_root = os.projectdir()
     set_languages(("c++20"))
@@ -88,4 +96,12 @@ target("bench-ntt")
         set_symbols("debug")
     end
     add_files("../../ntt/tests/bench-ntt.cu")
+    add_cugencodes("native")
+
+target("bench-recompute")
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_files("../../ntt/tests/bench-ntt-recompute.cu")
     add_cugencodes("native")
