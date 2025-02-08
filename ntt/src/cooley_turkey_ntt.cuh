@@ -1,7 +1,7 @@
 #pragma once
 #include <cassert>
 #include "ntt.cuh"
-#include "self_sort_in_place_ntt.cuh"
+#include <cooperative_groups.h>
 
 namespace ntt {
 
@@ -156,35 +156,28 @@ namespace ntt {
 
         data += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
         
-        u32 io_id = lid & 1;            
-        u32 lid_start = lid - io_id;
-
         Field a, b;
+
+        auto tile = cooperative_groups::tiled_partition<2>(cooperative_groups::this_thread_block());
 
         // Read data
         if (WORDS == 8) {
-            u64 m_gpos = ((lid_start) & (subblock_sz - 1)) << lgp;
-            u64 n_gpos = ((lid_start + 1) & (subblock_sz - 1)) << lgp;
+            u64 m_gpos = ((tile.meta_group_rank() * 2) & (subblock_sz - 1)) << lgp;
+            u64 n_gpos = ((tile.meta_group_rank() * 2 + 1) & (subblock_sz - 1)) << lgp;
 
-            reinterpret_cast<uint4*>(a.n.limbs)[0] = reinterpret_cast<uint4*>(data + m_gpos * WORDS)[io_id];
-            reinterpret_cast<uint4*>(a.n.limbs)[1] = reinterpret_cast<uint4*>(data + n_gpos * WORDS)[io_id];
+            reinterpret_cast<uint4*>(a.n.limbs)[0] = reinterpret_cast<uint4*>(data + m_gpos * WORDS)[tile.thread_rank()];
+            reinterpret_cast<uint4*>(a.n.limbs)[1] = reinterpret_cast<uint4*>(data + n_gpos * WORDS)[tile.thread_rank()];
 
-            reinterpret_cast<uint4*>(b.n.limbs)[0] = reinterpret_cast<uint4*>(data + (m_gpos + (end_stride << (deg - 1))) * WORDS)[io_id];
-            reinterpret_cast<uint4*>(b.n.limbs)[1] = reinterpret_cast<uint4*>(data + (n_gpos + (end_stride << (deg - 1))) * WORDS)[io_id];
+            reinterpret_cast<uint4*>(b.n.limbs)[0] = reinterpret_cast<uint4*>(data + (m_gpos + (end_stride << (deg - 1))) * WORDS)[tile.thread_rank()];
+            reinterpret_cast<uint4*>(b.n.limbs)[1] = reinterpret_cast<uint4*>(data + (n_gpos + (end_stride << (deg - 1))) * WORDS)[tile.thread_rank()];
 
-            uint4 shfla = io_id ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
-            uint4 shflb = io_id ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
+            uint4 shfla = tile.thread_rank() ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
+            uint4 shflb = tile.thread_rank() ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
 
-            shfla.x = __shfl_xor_sync(0xffffffff, shfla.x, 1);
-            shfla.y = __shfl_xor_sync(0xffffffff, shfla.y, 1);
-            shfla.z = __shfl_xor_sync(0xffffffff, shfla.z, 1);
-            shfla.w = __shfl_xor_sync(0xffffffff, shfla.w, 1);
-            shflb.x = __shfl_xor_sync(0xffffffff, shflb.x, 1);
-            shflb.y = __shfl_xor_sync(0xffffffff, shflb.y, 1);
-            shflb.z = __shfl_xor_sync(0xffffffff, shflb.z, 1);
-            shflb.w = __shfl_xor_sync(0xffffffff, shflb.w, 1);
+            shfla.x = tile.shfl_xor(shfla.x, 1), shfla.y = tile.shfl_xor(shfla.y, 1), shfla.z = tile.shfl_xor(shfla.z, 1), shfla.w = tile.shfl_xor(shfla.w, 1);
+            shflb.x = tile.shfl_xor(shflb.x, 1), shflb.y = tile.shfl_xor(shflb.y, 1), shflb.z = tile.shfl_xor(shflb.z, 1), shflb.w = tile.shfl_xor(shflb.w, 1);
 
-            if (io_id) {
+            if (tile.thread_rank()) {
                 reinterpret_cast<uint4*>(a.n.limbs)[0] = shfla;
                 reinterpret_cast<uint4*>(b.n.limbs)[0] = shflb;
             } else {
@@ -270,22 +263,16 @@ namespace ntt {
 
         // Write back
         if (WORDS == 8) {
-            u64 m_gpos = ((lid_start) & (subblock_sz - 1)) << (lgp + 1);
-            u64 n_gpos = ((lid_start + 1) & (subblock_sz - 1)) << (lgp + 1);
+            u64 m_gpos = ((tile.meta_group_rank() * 2) & (subblock_sz - 1)) << (lgp + 1);
+            u64 n_gpos = ((tile.meta_group_rank() * 2 + 1) & (subblock_sz - 1)) << (lgp + 1);
             
-            uint4 shfla = io_id ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
-            uint4 shflb = io_id ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
+            uint4 shfla = tile.thread_rank() ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
+            uint4 shflb = tile.thread_rank() ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
+
+            shfla.x = tile.shfl_xor(shfla.x, 1), shfla.y = tile.shfl_xor(shfla.y, 1), shfla.z = tile.shfl_xor(shfla.z, 1), shfla.w = tile.shfl_xor(shfla.w, 1);
+            shflb.x = tile.shfl_xor(shflb.x, 1), shflb.y = tile.shfl_xor(shflb.y, 1), shflb.z = tile.shfl_xor(shflb.z, 1), shflb.w = tile.shfl_xor(shflb.w, 1);
             
-            shfla.x = __shfl_xor_sync(0xffffffff, shfla.x, 1);
-            shfla.y = __shfl_xor_sync(0xffffffff, shfla.y, 1);
-            shfla.z = __shfl_xor_sync(0xffffffff, shfla.z, 1);
-            shfla.w = __shfl_xor_sync(0xffffffff, shfla.w, 1);
-            shflb.x = __shfl_xor_sync(0xffffffff, shflb.x, 1);
-            shflb.y = __shfl_xor_sync(0xffffffff, shflb.y, 1);
-            shflb.z = __shfl_xor_sync(0xffffffff, shflb.z, 1);
-            shflb.w = __shfl_xor_sync(0xffffffff, shflb.w, 1);
-            
-            if (io_id) {
+            if (tile.thread_rank()) {
                 reinterpret_cast<uint4*>(a.n.limbs)[0] = shfla;
                 reinterpret_cast<uint4*>(b.n.limbs)[0] = shflb;
             } else {
@@ -293,11 +280,11 @@ namespace ntt {
                 reinterpret_cast<uint4*>(b.n.limbs)[1] = shflb;
             }
 
-            reinterpret_cast<uint4*>(data + m_gpos * WORDS)[io_id] = reinterpret_cast<uint4*>(a.n.limbs)[0];
-            reinterpret_cast<uint4*>(data + n_gpos * WORDS)[io_id] = reinterpret_cast<uint4*>(a.n.limbs)[1];
+            reinterpret_cast<uint4*>(data + m_gpos * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(a.n.limbs)[0];
+            reinterpret_cast<uint4*>(data + n_gpos * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(a.n.limbs)[1];
 
-            reinterpret_cast<uint4*>(data + (m_gpos + end_stride) * WORDS)[io_id] = reinterpret_cast<uint4*>(b.n.limbs)[0];
-            reinterpret_cast<uint4*>(data + (n_gpos + end_stride) * WORDS)[io_id] = reinterpret_cast<uint4*>(b.n.limbs)[1];
+            reinterpret_cast<uint4*>(data + (m_gpos + end_stride) * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(b.n.limbs)[0];
+            reinterpret_cast<uint4*>(data + (n_gpos + end_stride) * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(b.n.limbs)[1];
         } else {
             u32 group_id = lid & (subblock_sz - 1);
             u64 gpos = group_id << (lgp + 1);
@@ -609,6 +596,7 @@ namespace ntt {
                 auto kernel = ntt_shfl_co<Field>;// SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
                 u32 shared_size = sizeof(Field)  * block_sz;
+                CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
                 // kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
 

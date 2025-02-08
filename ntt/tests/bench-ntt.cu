@@ -1,7 +1,9 @@
 #include "../src/self_sort_in_place_ntt.cuh"
 #include "../../mont/src/bn254_fr.cuh"
+#include "../../mont/src/mnt4753_fr.cuh"
 
 using namespace ntt;
+// typedef mnt4753_fr::Element Field;
 typedef bn254_fr::Element Field;
 
 int main () {

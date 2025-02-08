@@ -1,12 +1,16 @@
 #include "../src/recompute_ntt.cuh"
 #include "../../mont/src/bn254_fr.cuh"
 #include "../src/cooley_turkey_ntt.cuh"
+#include "../../mont/src/mnt4753_fr.cuh"
+
+// using namespace ntt;
+// typedef mnt4753_fr::Element Field;
 
 using namespace ntt;
 typedef bn254_fr::Element Field;
 
 int main () {
-    for (int k = 20; k <= 28; k += 2) {
+    for (int k = 26; k <= 26; k += 2) {
         auto omega = Field::host_random();
 
         cooley_turkey_ntt<Field> ntt(reinterpret_cast<u32*>(&omega), k, false);
@@ -27,7 +31,7 @@ int main () {
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
 
-        for (int i = 0; i < 20; i++) {
+        for (int i = 0; i < 10; i++) {
             cudaEventRecord(start);
             ntt.ntt(reinterpret_cast<u32*>(data_d), 0, 0, true);
             cudaEventRecord(stop);

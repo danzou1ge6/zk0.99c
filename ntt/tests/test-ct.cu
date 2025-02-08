@@ -103,7 +103,7 @@ int main() {
     unit[0] = root;
 
     ntt::cooley_turkey_ntt<small_field::Element> rc(unit, bits, true);
-    rc.ntt(data_gpu);
+    // rc.ntt(data_gpu);
 
     memset(data_gpu, 0, sizeof(uint) * length * WORDS);
     for (int i = 0; i < length; i++) {

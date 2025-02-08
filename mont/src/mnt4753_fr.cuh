@@ -1,0 +1,89 @@
+#pragma once
+#include "field.cuh"
+
+namespace mnt4753_fr
+{
+    #define BIG_INTEGER_CHUNKS24(c23, c22, c21, c20, c19, c18, c17, c16, c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
+        {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23}
+    // .m = BIG_INTEGER_CHUNKS8(0x1c4c6, 0x2d92c411, 0x10229022, 0xeee2cdad, 0xb7f99750, 0x5b8fafed, 0x5eb7e8f9, 0x6c97d873, 0x07fdb925, 0xe8a0ed8d, 0x99d124d9, 0xa15af79d, 0xb26c5c28, 0xc859a99b, 0x3eebca94, 0x29212636, 0xb9dff976, 0x34993aa4, 0xd6c381bc, 0x3f005797, 0x4ea09917, 0x0fa13a4f, 0xd90776e2, 0x40000001),
+    // .mm2 = BIG_INTEGER_CHUNKS8(0x3898c, 0x5b258822, 0x20452045, 0xddc59b5b, 0x6ff32ea0, 0xb71f5fda, 0xbd6fd1f2, 0xd92fb0e6, 0x0ffb724b, 0xd141db1b, 0x33a249b3, 0x42b5ef3b, 0x64d8b851, 0x90b35336, 0x7dd79528, 0x52424c6d, 0x73bff2ec, 0x69327549, 0xad870378, 0x7e00af2e, 0x9d41322e, 0x1f42749f, 0xb20eedc4, 0x80000002),
+    // .r_mod = BIG_INTEGER_CHUNKS8(0x7b47, 0x9ec8e242, 0x95455fb3, 0x1ff9a195, 0x0fa47edb, 0x3865e88c, 0x4074c9cb, 0xfd8ca621, 0x598b4302, 0xd2f00a62, 0x320c3bb7, 0x13338498, 0x9fbca908, 0xde0ccb62, 0xab0c4ee6, 0xd3e6dad4, 0x0f725cae, 0xc549c0da, 0xa1ebd2d9, 0x0c79e179, 0x4eb16817, 0xb589cea8, 0xb9968014, 0x7fff6f42),
+    // .r2_mod = BIG_INTEGER_CHUNKS8(0x5b5, 0x8037e0e4, 0xd9e817a8, 0xfb44b3c9, 0xacc27988, 0xf3d9a316, 0xc8a0ff01, 0x493bdcef, 0x99be80f2, 0xee12ee8e, 0xded52121, 0xecec77cf, 0xc7285529, 0xbe54a3f4, 0x7955876c, 0xc35ee94e, 0x6bd8c6c6, 0xc49edc38, 0xcdbe6702, 0x009569cb, 0x70a50fa9, 0xee48d127, 0x3f9c69c7, 0xb7f4c8d1),
+    // .m_prime = 1073741823
+
+    using Number = mont::Number<24>;
+    using mont::u32;
+
+    namespace device_constants
+    {
+        // m = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+        const __device__ Number m = BIG_INTEGER_CHUNKS24(0x1c4c6, 0x2d92c411, 0x10229022, 0xeee2cdad, 0xb7f99750, 0x5b8fafed, 0x5eb7e8f9, 0x6c97d873, 0x07fdb925, 0xe8a0ed8d, 0x99d124d9, 0xa15af79d, 0xb26c5c28, 0xc859a99b, 0x3eebca94, 0x29212636, 0xb9dff976, 0x34993aa4, 0xd6c381bc, 0x3f005797, 0x4ea09917, 0x0fa13a4f, 0xd90776e2, 0x40000001);
+        const __device__ Number mm2 = BIG_INTEGER_CHUNKS24(0x3898c, 0x5b258822, 0x20452045, 0xddc59b5b, 0x6ff32ea0, 0xb71f5fda, 0xbd6fd1f2, 0xd92fb0e6, 0x0ffb724b, 0xd141db1b, 0x33a249b3, 0x42b5ef3b, 0x64d8b851, 0x90b35336, 0x7dd79528, 0x52424c6d, 0x73bff2ec, 0x69327549, 0xad870378, 0x7e00af2e, 0x9d41322e, 0x1f42749f, 0xb20eedc4, 0x80000002);
+        const __device__ Number m_sub2 = BIG_INTEGER_CHUNKS24(0x1c4c6, 0x2d92c411, 0x10229022, 0xeee2cdad, 0xb7f99750, 0x5b8fafed, 0x5eb7e8f9, 0x6c97d873, 0x07fdb925, 0xe8a0ed8d, 0x99d124d9, 0xa15af79d, 0xb26c5c28, 0xc859a99b, 0x3eebca94, 0x29212636, 0xb9dff976, 0x34993aa4, 0xd6c381bc, 0x3f005797, 0x4ea09917, 0x0fa13a4f, 0xd90776e2, 1073741823);
+        const __device__ Number r_mod = BIG_INTEGER_CHUNKS24(0x7b47, 0x9ec8e242, 0x95455fb3, 0x1ff9a195, 0x0fa47edb, 0x3865e88c, 0x4074c9cb, 0xfd8ca621, 0x598b4302, 0xd2f00a62, 0x320c3bb7, 0x13338498, 0x9fbca908, 0xde0ccb62, 0xab0c4ee6, 0xd3e6dad4, 0x0f725cae, 0xc549c0da, 0xa1ebd2d9, 0x0c79e179, 0x4eb16817, 0xb589cea8, 0xb9968014, 0x7fff6f42);
+        const __device__ Number r2_mod = BIG_INTEGER_CHUNKS24(0x5b5, 0x8037e0e4, 0xd9e817a8, 0xfb44b3c9, 0xacc27988, 0xf3d9a316, 0xc8a0ff01, 0x493bdcef, 0x99be80f2, 0xee12ee8e, 0xded52121, 0xecec77cf, 0xc7285529, 0xbe54a3f4, 0x7955876c, 0xc35ee94e, 0x6bd8c6c6, 0xc49edc38, 0xcdbe6702, 0x009569cb, 0x70a50fa9, 0xee48d127, 0x3f9c69c7, 0xb7f4c8d1);
+    }
+
+    namespace host_constants
+    {
+        const Number m = BIG_INTEGER_CHUNKS24(0x1c4c6, 0x2d92c411, 0x10229022, 0xeee2cdad, 0xb7f99750, 0x5b8fafed, 0x5eb7e8f9, 0x6c97d873, 0x07fdb925, 0xe8a0ed8d, 0x99d124d9, 0xa15af79d, 0xb26c5c28, 0xc859a99b, 0x3eebca94, 0x29212636, 0xb9dff976, 0x34993aa4, 0xd6c381bc, 0x3f005797, 0x4ea09917, 0x0fa13a4f, 0xd90776e2, 0x40000001);
+        const Number mm2 = BIG_INTEGER_CHUNKS24(0x3898c, 0x5b258822, 0x20452045, 0xddc59b5b, 0x6ff32ea0, 0xb71f5fda, 0xbd6fd1f2, 0xd92fb0e6, 0x0ffb724b, 0xd141db1b, 0x33a249b3, 0x42b5ef3b, 0x64d8b851, 0x90b35336, 0x7dd79528, 0x52424c6d, 0x73bff2ec, 0x69327549, 0xad870378, 0x7e00af2e, 0x9d41322e, 0x1f42749f, 0xb20eedc4, 0x80000002);
+        const Number m_sub2 = BIG_INTEGER_CHUNKS24(0x1c4c6, 0x2d92c411, 0x10229022, 0xeee2cdad, 0xb7f99750, 0x5b8fafed, 0x5eb7e8f9, 0x6c97d873, 0x07fdb925, 0xe8a0ed8d, 0x99d124d9, 0xa15af79d, 0xb26c5c28, 0xc859a99b, 0x3eebca94, 0x29212636, 0xb9dff976, 0x34993aa4, 0xd6c381bc, 0x3f005797, 0x4ea09917, 0x0fa13a4f, 0xd90776e2, 1073741823);
+        const Number r_mod = BIG_INTEGER_CHUNKS24(0x7b47, 0x9ec8e242, 0x95455fb3, 0x1ff9a195, 0x0fa47edb, 0x3865e88c, 0x4074c9cb, 0xfd8ca621, 0x598b4302, 0xd2f00a62, 0x320c3bb7, 0x13338498, 0x9fbca908, 0xde0ccb62, 0xab0c4ee6, 0xd3e6dad4, 0x0f725cae, 0xc549c0da, 0xa1ebd2d9, 0x0c79e179, 0x4eb16817, 0xb589cea8, 0xb9968014, 0x7fff6f42);
+        const Number r2_mod = BIG_INTEGER_CHUNKS24(0x5b5, 0x8037e0e4, 0xd9e817a8, 0xfb44b3c9, 0xacc27988, 0xf3d9a316, 0xc8a0ff01, 0x493bdcef, 0x99be80f2, 0xee12ee8e, 0xded52121, 0xecec77cf, 0xc7285529, 0xbe54a3f4, 0x7955876c, 0xc35ee94e, 0x6bd8c6c6, 0xc49edc38, 0xcdbe6702, 0x009569cb, 0x70a50fa9, 0xee48d127, 0x3f9c69c7, 0xb7f4c8d1);
+    }
+
+    struct Params
+    {
+        static const mont::usize LIMBS = 24;
+        static const __host__ __device__ __forceinline__ Number m()
+        {
+    #ifdef __CUDA_ARCH__
+        return device_constants::m;
+    #else
+        return host_constants::m;
+    #endif
+        }
+        // m * 2
+        static const __host__ __device__ __forceinline__ Number mm2()
+        {
+    #ifdef __CUDA_ARCH__
+        return device_constants::mm2;
+    #else
+        return host_constants::mm2;
+    #endif
+        }
+        // m - 2
+        static const __host__ __device__ __forceinline__ Number m_sub2()
+        {
+    #ifdef __CUDA_ARCH__
+        return device_constants::m_sub2;
+    #else
+        return host_constants::m_sub2;
+    #endif
+        }
+        // m' = -m^(-1) mod b where b = 2^32
+        static const u32 m_prime = 1073741823;
+        // r_mod = R mod m,
+        static const __host__ __device__ __forceinline__ Number r_mod()
+        {
+    #ifdef __CUDA_ARCH__
+        return device_constants::r_mod;
+    #else
+        return host_constants::r_mod;
+    #endif
+        }
+        // r2_mod = R^2 mod m
+        static const __host__ __device__ __forceinline__ Number r2_mod()
+        {
+
+    #ifdef __CUDA_ARCH__
+        return device_constants::r2_mod;
+    #else
+        return host_constants::r2_mod;
+    #endif
+        }
+    };
+
+    using Element = mont::Element<Params>;
+}
