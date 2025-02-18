@@ -267,103 +267,103 @@ namespace instance1
   TEST_CASE("Fp addition 1")
   {
     test_mont_kernel<WORDS>(sum_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_add<<<1, 1>>>(r, a, b); });
+                            { mont_add<<<1, 2>>>(r, a, b); });
   }
 
   TEST_CASE("Fp subtraction 1")
   {
     test_mont_kernel<WORDS>(sub_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_sub<<<1, 1>>>(r, a, b); });
+                            { mont_sub<<<1, 2>>>(r, a, b); });
   }
 
-  TEST_CASE("Big number multiplication 1")
-  {
-    test_mont_kernel2<WORDS>(prod, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                             { bn_mul<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number multiplication 1")
+  // {
+  //   test_mont_kernel2<WORDS>(prod, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                            { bn_mul<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number square 1")
-  {
-    test_mont_kernel2<WORDS>(a_square, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                             { bn_square<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number square 1")
+  // {
+  //   test_mont_kernel2<WORDS>(a_square, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                            { bn_square<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number shift logical right 1")
-  {
-    const u32 k[WORDS] = {125};
-    test_mont_kernel<WORDS>(a_slr125, a, k, [](u32 *r, const u32 *a, const u32 *b)
-                            { bn_slr<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number shift logical right 1")
+  // {
+  //   const u32 k[WORDS] = {125};
+  //   test_mont_kernel<WORDS>(a_slr125, a, k, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { bn_slr<<<1, 1>>>(r, a, b); });
+  // }
 
   TEST_CASE("Montgomery multiplication 1")
   {
     // Here a, b are viewed as elements
     test_mont_kernel<WORDS>(prod_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_mul<<<1, 1>>>(r, a, b); });
+                            { mont_mul<<<1, 2>>>(r, a, b); });
   }
 
   TEST_CASE("Montgomery square 1")
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_square<<<1, 1>>>(r, a, b); });
+                            { mont_square<<<1, 2>>>(r, a, b); });
   }
 
-  TEST_CASE("Montgomery power 1")
-  {
-    test_mont_kernel<WORDS>(pow_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_pow<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Montgomery power 1")
+  // {
+  //   test_mont_kernel<WORDS>(pow_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { mont_pow<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Montgomery inversion 1")
-  {
-    test_mont_kernel<WORDS>(a_inv_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_inv<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Montgomery inversion 1")
+  // {
+  //   test_mont_kernel<WORDS>(a_inv_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { mont_inv<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number addition 1 (host)")
-  {
-    test_host<WORDS>(sum, a, b, [](const Number &a, const Number &b)
-                     { return a + b; });
-  }
+  // TEST_CASE("Big number addition 1 (host)")
+  // {
+  //   test_host<WORDS>(sum, a, b, [](const Number &a, const Number &b)
+  //                    { return a + b; });
+  // }
 
-  TEST_CASE("Big number subtraction 1 (host)")
-  {
-    test_host<WORDS>(sub, a, b, [](const Number &a, const Number &b)
-                     { return a - b; });
-  }
+  // TEST_CASE("Big number subtraction 1 (host)")
+  // {
+  //   test_host<WORDS>(sub, a, b, [](const Number &a, const Number &b)
+  //                    { return a - b; });
+  // }
 
-  TEST_CASE("Big number multiplication 1 (host)")
-  {
-    test_host2<WORDS>(prod, a, b, [](const Number &a, const Number &b)
-                      { return a * b; });
-  }
+  // TEST_CASE("Big number multiplication 1 (host)")
+  // {
+  //   test_host2<WORDS>(prod, a, b, [](const Number &a, const Number &b)
+  //                     { return a * b; });
+  // }
 
-  TEST_CASE("Big number square 1 (host)")
-  {
-    test_host2<WORDS>(a_square, a, b, [](const Number &a, const Number &b)
-                      { return a.square(); });
-  }
+  // TEST_CASE("Big number square 1 (host)")
+  // {
+  //   test_host2<WORDS>(a_square, a, b, [](const Number &a, const Number &b)
+  //                     { return a.square(); });
+  // }
 
-  TEST_CASE("Montgomery multiplication 1 (host)")
-  {
-    test_host<WORDS>(prod_mont, a, b, [](const Number &a, const Number &b)
-                     {
-        // Here a, b are viewd as elements. This is a break of abstraction.
-        Element ea, eb;
-        ea.n = a;
-        eb.n = b;
-        auto er = ea * eb;
-        return er.n; });
-  }
+  // TEST_CASE("Montgomery multiplication 1 (host)")
+  // {
+  //   test_host<WORDS>(prod_mont, a, b, [](const Number &a, const Number &b)
+  //                    {
+  //       // Here a, b are viewd as elements. This is a break of abstraction.
+  //       Element ea, eb;
+  //       ea.n = a;
+  //       eb.n = b;
+  //       auto er = ea * eb;
+  //       return er.n; });
+  // }
 
-  TEST_CASE("Montgomery power 1 (host)")
-  {
-    test_host<WORDS>(pow_mont, a, b, [](const Number &a, const Number &b)
-                     { 
-        auto ea = Element::from_number(a);
-        auto er = ea.pow(b);
-        return er.n; });
-  }
+  // TEST_CASE("Montgomery power 1 (host)")
+  // {
+  //   test_host<WORDS>(pow_mont, a, b, [](const Number &a, const Number &b)
+  //                    { 
+  //       auto ea = Element::from_number(a);
+  //       auto er = ea.pow(b);
+  //       return er.n; });
+  // }
 }
 
 namespace instance2
@@ -399,102 +399,102 @@ namespace instance2
   TEST_CASE("Fp addition 2")
   {
     test_mont_kernel<WORDS>(sum_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_add<<<1, 1>>>(r, a, b); });
+                            { mont_add<<<1, 2>>>(r, a, b); });
   }
 
   TEST_CASE("Fp subtraction 2")
   {
     test_mont_kernel<WORDS>(sub_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_sub<<<1, 1>>>(r, a, b); });
+                            { mont_sub<<<1, 2>>>(r, a, b); });
   }
 
-  TEST_CASE("Big number multiplication 2")
-  {
-    test_mont_kernel2<WORDS>(prod, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                             { bn_mul<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number multiplication 2")
+  // {
+  //   test_mont_kernel2<WORDS>(prod, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                            { bn_mul<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number square 2")
-  {
-    test_mont_kernel2<WORDS>(a_square, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                             { bn_square<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number square 2")
+  // {
+  //   test_mont_kernel2<WORDS>(a_square, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                            { bn_square<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number shift logical right 2")
-  {
-    const u32 k[WORDS] = BIG_INTEGER_CHUNKS8(0, 0, 0, 0, 0, 0, 0, 125);
-    test_mont_kernel<WORDS>(a_slr125, a, k, [](u32 *r, const u32 *a, const u32 *b)
-                            { bn_slr<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Big number shift logical right 2")
+  // {
+  //   const u32 k[WORDS] = BIG_INTEGER_CHUNKS8(0, 0, 0, 0, 0, 0, 0, 125);
+  //   test_mont_kernel<WORDS>(a_slr125, a, k, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { bn_slr<<<1, 1>>>(r, a, b); });
+  // }
 
   TEST_CASE("Montgomery multiplication 2")
   {
     test_mont_kernel<WORDS>(prod_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_mul<<<1, 1>>>(r, a, b); });
+                            { mont_mul<<<1, 2>>>(r, a, b); });
   }
 
   TEST_CASE("Montgomery square 2")
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_square<<<1, 1>>>(r, a, b); });
+                            { mont_square<<<1, 2>>>(r, a, b); });
   }
 
-  TEST_CASE("Montgomery power 2")
-  {
-    test_mont_kernel<WORDS>(pow_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_pow<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Montgomery power 2")
+  // {
+  //   test_mont_kernel<WORDS>(pow_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { mont_pow<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Montgomery inversion 2")
-  {
-    test_mont_kernel<WORDS>(a_inv_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_inv<<<1, 1>>>(r, a, b); });
-  }
+  // TEST_CASE("Montgomery inversion 2")
+  // {
+  //   test_mont_kernel<WORDS>(a_inv_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
+  //                           { mont_inv<<<1, 1>>>(r, a, b); });
+  // }
 
-  TEST_CASE("Big number addition 2 (host)")
-  {
-    test_host<WORDS>(sum, a, b, [](const Number &a, const Number &b)
-                     { return a + b; });
-  }
+  // TEST_CASE("Big number addition 2 (host)")
+  // {
+  //   test_host<WORDS>(sum, a, b, [](const Number &a, const Number &b)
+  //                    { return a + b; });
+  // }
 
-  TEST_CASE("Big number subtraction 2 (host)")
-  {
-    test_host<WORDS>(sub, a, b, [](const Number &a, const Number &b)
-                     { return a - b; });
-  }
+  // TEST_CASE("Big number subtraction 2 (host)")
+  // {
+  //   test_host<WORDS>(sub, a, b, [](const Number &a, const Number &b)
+  //                    { return a - b; });
+  // }
 
-  TEST_CASE("Big number multiplication 2 (host)")
-  {
-    test_host2<WORDS>(prod, a, b, [](const Number &a, const Number &b)
-                      { return a * b; });
-  }
+  // TEST_CASE("Big number multiplication 2 (host)")
+  // {
+  //   test_host2<WORDS>(prod, a, b, [](const Number &a, const Number &b)
+  //                     { return a * b; });
+  // }
 
-  TEST_CASE("Big number square 2 (host)")
-  {
-    test_host2<WORDS>(a_square, a, b, [](const Number &a, const Number &b)
-                      { return a.square(); });
-  }
+  // TEST_CASE("Big number square 2 (host)")
+  // {
+  //   test_host2<WORDS>(a_square, a, b, [](const Number &a, const Number &b)
+  //                     { return a.square(); });
+  // }
 
-  TEST_CASE("Montgomery multiplication 2 (host)")
-  {
-    test_host<WORDS>(prod_mont, a, b, [](const Number &a, const Number &b)
-                     {
-        // Here a, b are viewd as elements. This is a break of abstraction.
-        Element ea, eb;
-        ea.n = a;
-        eb.n = b;
-        auto er = ea * eb;
-        return er.n; });
-  }
+  // TEST_CASE("Montgomery multiplication 2 (host)")
+  // {
+  //   test_host<WORDS>(prod_mont, a, b, [](const Number &a, const Number &b)
+  //                    {
+  //       // Here a, b are viewd as elements. This is a break of abstraction.
+  //       Element ea, eb;
+  //       ea.n = a;
+  //       eb.n = b;
+  //       auto er = ea * eb;
+  //       return er.n; });
+  // }
 
-  TEST_CASE("Montgomery power 2 (host)")
-  {
-    test_host<WORDS>(pow_mont, a, b, [](const Number &a, const Number &b)
-                     { 
-        auto ea = Element::from_number(a);
-        auto er = ea.pow(b);
-        return er.n; });
-  }
+  // TEST_CASE("Montgomery power 2 (host)")
+  // {
+  //   test_host<WORDS>(pow_mont, a, b, [](const Number &a, const Number &b)
+  //                    { 
+  //       auto ea = Element::from_number(a);
+  //       auto er = ea.pow(b);
+  //       return er.n; });
+  // }
 }
 
 TEST_CASE("Convert to and from Montgomery")

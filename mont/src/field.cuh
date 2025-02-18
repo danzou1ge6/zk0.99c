@@ -15,8 +15,13 @@
 
 #include "ptx.cuh"
 
+#include "../../include/cgbn/cgbn.h"
+
 namespace mont
 {
+  constexpr __forceinline__ __host__ __device__ u32 div_ceil(u32 a, u32 b) {
+    return (a + b - 1) / b;
+  }
 
   // Arithmatics on host, in raw pointer form
   namespace host_arith
@@ -753,6 +758,11 @@ namespace mont
     using ParamsType = Params;
     static const usize LIMBS = Params::LIMBS;
 
+    static const u32 TPI = 2;
+
+    typedef cgbn_context_t<TPI>         context_t;
+    typedef cgbn_env_t<context_t, LIMBS*32> env_t;
+
     Number<LIMBS> n;
 
     __host__ __device__ __forceinline__  Element() {}
@@ -770,6 +780,33 @@ namespace mont
     __host__ __device__ __forceinline__ void store(u32 *p, u32 stride = 1) const &
     {
       n.store(p, stride);
+    }
+
+    template<class env_t>
+    __device__ __forceinline__ void load_cg(typename env_t::cgbn_t &r, const u32 *a) const {
+        int32_t group_thread=threadIdx.x & TPI-1;
+        int32_t limb;
+        int32_t PER_LIMBS = div_ceil(u32(LIMBS), TPI);
+
+        #pragma unroll
+        for(limb=0;limb<PER_LIMBS;limb++) {
+            r._limbs[limb]=0;
+            if(group_thread*PER_LIMBS<LIMBS-limb) 
+                r._limbs[limb]=a[group_thread*PER_LIMBS + limb];
+        }
+    }
+
+    template<class env_t>
+    __device__ __forceinline__ void store_cg(Element *a, typename env_t::cgbn_t &r) const {
+        int32_t group_thread=threadIdx.x & TPI-1;
+        int32_t limb;
+        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+
+        #pragma unroll
+        for(limb=0;limb<PER_LIMBS;limb++) {
+            if(group_thread*PER_LIMBS<LIMBS-limb)
+                a->n.limbs[group_thread*PER_LIMBS + limb]=r._limbs[limb];
+        }
     }
 
     // Addition identity on field
@@ -809,6 +846,20 @@ namespace mont
       return elem;
     }
 
+    __host__ __device__ __forceinline__
+        Element
+        operator=(const Element &rhs) &
+    {
+      if(this != &rhs) {
+        int32_t group_thread=threadIdx.x & TPI-1;
+        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+        for(int i=0;i<PER_LIMBS;++i)
+          if(group_thread*PER_LIMBS+i<LIMBS)
+            n.limbs[group_thread*PER_LIMBS+i] = rhs.n.limbs[group_thread*PER_LIMBS+i];
+      }
+      return *this;
+    }
+
     // Field multiplication
     template<bool MODULO = true>
     __host__ __device__ __forceinline__
@@ -816,11 +867,46 @@ namespace mont
         mul(const Element &rhs) const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+        device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #else
-      host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+        host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
 #endif
+      }
+      else {            
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::m().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
+
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
+
+        // uint32_t np0;
+        // np0 = cgbn_bn2mont(bn_env, a, a, mod);
+        // cgbn_bn2mont(bn_env, b, b, mod);
+
+        cgbn_mont_mul(bn_env, c, a, b, mod, Params::m_prime);      
+        
+        store_cg<env_t>(&r, c);
+        for(int i=0;i<LIMBS;++i)
+          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 
@@ -845,11 +931,31 @@ namespace mont
         operator+(const Element &rhs) const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
       device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
       host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
+
+        cgbn_add(bn_env, c, a, b);
+        if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
+
+        store_cg<env_t>(&r, c);
+        for(int i=0;i<LIMBS;++i)
+          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 
@@ -859,11 +965,31 @@ namespace mont
         operator-(const Element &rhs) const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
       device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #else
       host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
 #endif
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
+
+        cgbn_sub(bn_env, c, a, b);
+        if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
+        
+        store_cg<env_t>(&r, c);
+        for(int i=0;i<LIMBS;++i)
+          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 
