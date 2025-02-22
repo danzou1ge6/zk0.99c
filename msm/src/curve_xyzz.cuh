@@ -57,6 +57,17 @@ namespace curve
                 y.store(p + Element::LIMBS);
             }
 
+            __host__ __device__ __forceinline__
+                PointAffine
+                operator=(const PointAffine &rhs) &
+            {
+                if(this != &rhs) {
+                    x = rhs.x;
+                    y = rhs.y;
+                }
+                return *this;
+            }
+
             // static __device__ __host__ __forceinline__ PointAffine identity() {
             //     return PointAffine(Element::zero(), Element::zero());
             // }
@@ -72,7 +83,7 @@ namespace curve
             __device__ __host__ __forceinline__ bool is_on_curve() const & {
                 Element t0, t1;
                 t0 = x.square();
-                if constexpr (!Params::a().is_zero()) t0 = t0 + Params::a();
+                if (!Params::a().is_zero()) t0 = t0 + Params::a();
                 t0 = t0 * x;
                 t0 = t0 + Params::b();
                 t1 = y.square();
@@ -94,7 +105,7 @@ namespace curve
                 auto s = x * v;
                 auto x2 = x.square();
                 auto m = x2 + x2 + x2;
-                if constexpr (!Params::a().is_zero()) m = m + Params::a();
+                if (!Params::a().is_zero()) m = m + Params::a();
                 auto x3 = m.square() - s - s;
                 auto y3 = m * (s - x3) - w * y;
                 auto p = PointXYZZ(x3, y3, v, w);
@@ -127,6 +138,18 @@ namespace curve
                 zz.store(p + Element::LIMBS * 2);
                 zzz.store(p + Element::LIMBS * 3);
             }
+            __host__ __device__ __forceinline__
+                PointXYZZ
+                operator=(const PointXYZZ &rhs) &
+            {
+                if(this != &rhs) {
+                    x = rhs.x;
+                    y = rhs.y;
+                    zz = rhs.zz;
+                    zzz = rhs.zzz;
+                }
+                return *this;
+            }
 
             static constexpr __device__ __host__ __forceinline__ PointXYZZ identity() {
                 return PointXYZZ(Element::zero(), Element::zero(), Element::zero(), Element::one());
@@ -143,15 +166,26 @@ namespace curve
                 return r;
             }
 
-            __device__ __host__ __forceinline__ bool operator==(const PointXYZZ &rhs_) const & {
+            __device__ __forceinline__ bool operator==(const PointXYZZ &rhs_) const & {
                 if (zz.is_zero() != rhs_.zz.is_zero())
                     return false;
                 auto lhs = normalized();
                 auto rhs = rhs_.normalized();
+                // printf("lhs:\n");
+                // lhs.device_print();
+                // printf("rhs:\n");
+                // rhs.device_print();
                 auto x1 = lhs.x * rhs.zz;
                 auto x2 = rhs.x * lhs.zz;
                 auto y1 = lhs.y * rhs.zzz;
                 auto y2 = rhs.y * lhs.zzz;
+                // printf(
+                //     "thread %d\n{ x1 = %x %x %x %x %x %x %x %x\n, x2 = %x %x %x %x %x %x %x %x\n, y1 = %x %x %x %x %x %x %x %x\n, y2 = %x %x %x %x %x %x %x %x }\n",
+                //     threadIdx.x, x1.n.limbs[7], x1.n.limbs[6], x1.n.limbs[5], x1.n.limbs[4], x1.n.limbs[3], x1.n.limbs[2], x1.n.limbs[1], x1.n.limbs[0], 
+                //     x2.n.limbs[7], x2.n.limbs[6], x2.n.limbs[5], x2.n.limbs[4], x2.n.limbs[3], x2.n.limbs[2], x2.n.limbs[1], x2.n.limbs[0], 
+                //     y1.n.limbs[7], y1.n.limbs[6], y1.n.limbs[5], y1.n.limbs[4], y1.n.limbs[3], y1.n.limbs[2], y1.n.limbs[1], y1.n.limbs[0], 
+                //     y2.n.limbs[7], y2.n.limbs[6], y2.n.limbs[5], y2.n.limbs[4], y2.n.limbs[3], y2.n.limbs[2], y2.n.limbs[1], y2.n.limbs[0]
+                // );
                 return x1 == x2 && y1 == y2;
             }
 
@@ -161,7 +195,7 @@ namespace curve
             // y^2 = x^3 + a*x + b
             // Y^2/ZZZ^2 = X^3/ZZ^3 + a*X/ZZ + b
             // Y^2 = X^3 + a*X*ZZ^2 + b*ZZ^3
-            __device__ __host__ __forceinline__ bool is_on_curve() const & {
+            __device__ __forceinline__ bool is_on_curve() const & {
                 auto self = normalized();
                 auto y2 = self.y.square();
                 auto x3 = self.x.square() * self.x;
@@ -170,7 +204,7 @@ namespace curve
                 auto zzz2 = self.zzz.square();
                 if (zz3 != zzz2) return false;
                 Element a_x_zz2;
-                if constexpr (Params::a().is_zero()) a_x_zz2 = Element::zero();
+                if (Params::a().is_zero()) a_x_zz2 = Element::zero();
                 else a_x_zz2 = Params::a() * self.x * zz2;
                 auto b_zz3 = Params::b() * zz3;
                 return y2 == x3 + a_x_zz2 + b_zz3;
@@ -354,7 +388,7 @@ namespace curve
                     auto s = x.template mul<false>(v);
                     auto x2 = x.template square<false>();
                     auto m = x2.add_modulo_mm2(x2).add_modulo_mm2(x2);
-                    if constexpr (!Params::a().is_zero())
+                    if (!Params::a().is_zero())
                         m = m.add_modulo_mm2(Params::a().template mul<false>(zz.template square<false>()));
                     auto x3 = m.template square<false>();
                     x3 = x3.sub_modulo_mm2(s).sub_modulo_mm2(s);
@@ -371,7 +405,7 @@ namespace curve
                     auto s = x * v;
                     auto x2 = x.square();
                     auto m = x2 + x2 + x2;
-                    if constexpr (!Params::a().is_zero()) m = m + (Params::a() * zz.square());
+                    if (!Params::a().is_zero()) m = m + (Params::a() * zz.square());
                     auto x3 = m.square() - s - s;
                     auto y3 = m * (s - x3) - w * y;
                     auto zz3 = v * zz;

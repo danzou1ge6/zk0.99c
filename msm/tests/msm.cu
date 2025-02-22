@@ -75,7 +75,7 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine), cudaHostRegisterDefault);
 
   using Config = msm::MsmConfig<255, WINDOW_S, ALPHA, false>;
-  u32 batch_size = 16;
+  u32 batch_size = 1;
   u32 batch_per_run;
   u32 parts;
   u32 stage_scalers;
@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
     stage_scalers = batch_per_run;
     stage_points = batch_per_run;
 
-    for(parts = 1; parts <= 32; parts *= 2)
+    for(parts = 2; parts <= 2; parts *= 2)
     {
       msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 

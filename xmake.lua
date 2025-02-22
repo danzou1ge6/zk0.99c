@@ -35,39 +35,39 @@ target("bench-mont0")
     add_options("-lineinfo")
     add_files("mont/tests/bench0.cu")
 
--- target("cuda_msm")
---     set_kind("static")
---     add_values("cuda.build.devlink", true)
+target("cuda_msm")
+    set_kind("static")
+    add_values("cuda.build.devlink", true)
 
---     set_languages(("c++20"))
---     add_files("msm/src/fast_compile/*.cu")
---     add_files("wrapper/msm/c_api/msm_c_api.cu")
---     add_headerfiles("wrapper/msm/c_api/*.h")
---     add_cugencodes("native")
---     add_cuflags("--extended-lambda")
+    set_languages(("c++20"))
+    add_files("msm/src/fast_compile/*.cu")
+    add_files("wrapper/msm/c_api/msm_c_api.cu")
+    add_headerfiles("wrapper/msm/c_api/*.h")
+    add_cugencodes("native")
+    add_cuflags("--extended-lambda")
 
---     set_targetdir("lib")
+    set_targetdir("lib")
 
--- task("sync-epcc")
---     on_run(function ()
---         import ("core.base.option")
+task("sync-epcc")
+    on_run(function ()
+        import ("core.base.option")
 
---         os.runv("rsync -av . ".. option.get('target') ..":~/zksnark --exclude-from .gitignore", {
---             stdout = 1
---         ,   stderr = 2
---         })
---     end)
---     set_menu {
---         usage = "xmake sync-epcc"
---     ,   description = "Synchronize the source code to EPCC node"
---     ,   options =
---         {
---             {'t', 'target', 'kv', nil, 'Name of target node in SSH config'}
---         }
---     }
+        os.runv("rsync -av . ".. option.get('target') ..":~/zksnark --exclude-from .gitignore", {
+            stdout = 1
+        ,   stderr = 2
+        })
+    end)
+    set_menu {
+        usage = "xmake sync-epcc"
+    ,   description = "Synchronize the source code to EPCC node"
+    ,   options =
+        {
+            {'t', 'target', 'kv', nil, 'Name of target node in SSH config'}
+        }
+    }
 
 -- includes("runtime")
 -- includes("ntt")
 -- includes("wrapper")
--- -- includes("poly")
--- includes("msm")
+-- includes("poly")
+includes("msm")

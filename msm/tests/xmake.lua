@@ -10,7 +10,7 @@ target("test-bn254")
 target("test-msm")
     set_languages(("c++20"))
     add_files("msm.cu")
-    add_files("../src/fast_compile/*.cu")
+    add_files("../src/fast_compile/msm_bn254_16_16_f.cu")
     add_cugencodes("native")
 
 -- 定义所有可能的组合

@@ -525,6 +525,7 @@ namespace mont
           Number
   {
     static const usize LIMBS = LIMBS_;
+    static const u32 TPI = 2;
     u32 limbs[LIMBS];
 
     __device__ __host__ __forceinline__ 
@@ -666,14 +667,41 @@ namespace mont
       return r;
     }
 
-    __host__ __device__ __forceinline__ constexpr bool
+    __device__ __forceinline__ bool
     is_zero() const &
     {
-      bool r = true;
-#pragma unroll
-      for (usize i = 0; i < LIMBS; i++)
-        r = r && (limbs[i] == 0);
-      return r;
+      if (TPI == 1) {
+        bool r = true;
+  #pragma unroll
+        for (usize i = 0; i < LIMBS; i++)
+          r = r && (limbs[i] == 0);
+        return r;
+      }
+      else {
+        bool r = true;
+        int32_t group_thread=threadIdx.x & TPI-1;
+        int32_t limb;
+        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+
+        #pragma unroll
+        for(limb=0;limb<PER_LIMBS;limb++) {
+            if(group_thread*PER_LIMBS<LIMBS-limb) {
+                if(limbs[group_thread*PER_LIMBS+limb] != 0) {
+                    r = false;
+                    break;
+                }                
+            }
+        }
+        uint32_t warp_thread = threadIdx.x % 32;
+        uint32_t move = warp_thread / 2 * 2;
+        uint32_t sync = (TPI - 1) << move;
+        uint32_t g = __ballot_sync(sync, r==false);
+        printf("thread %d : g %x\n", threadIdx.x, g);
+        if(g != 0)
+          return false;
+        else
+          return true;
+      }
     }
 
     // Return the [`i`, `i + N`) words in big number.
@@ -797,7 +825,7 @@ namespace mont
     }
 
     template<class env_t>
-    __device__ __forceinline__ void store_cg(Element *a, typename env_t::cgbn_t &r) const {
+    __device__ __forceinline__ void store_cg(u32 *a, typename env_t::cgbn_t &r) const {
         int32_t group_thread=threadIdx.x & TPI-1;
         int32_t limb;
         int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
@@ -805,7 +833,7 @@ namespace mont
         #pragma unroll
         for(limb=0;limb<PER_LIMBS;limb++) {
             if(group_thread*PER_LIMBS<LIMBS-limb)
-                a->n.limbs[group_thread*PER_LIMBS + limb]=r._limbs[limb];
+                a[group_thread*PER_LIMBS + limb]=r._limbs[limb];
         }
     }
 
@@ -819,21 +847,94 @@ namespace mont
       return r;
     }
 
-    __host__ __device__ __forceinline__  constexpr bool
+    __host__ __device__ __forceinline__ bool
     is_zero() const &
     {
       return n.is_zero();
     }
 
     // Word-by-word equality
-    __host__ __device__ __forceinline__ bool operator==(const Element &rhs) const &
+    // __host__ __forceinline__ bool operator==(const Element &rhs) const &
+    // {      
+    //   return (n == rhs.n);
+    // }
+    __device__ __forceinline__ bool operator==(const Element &rhs) const &
     {
-      return n == rhs.n;
+      if(TPI == 1) {
+        return (n == rhs.n);
+      }
+      bool x = true;
+      int32_t group_thread=threadIdx.x & TPI-1;
+      int32_t limb;
+      int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+
+      #pragma unroll
+      for(limb=0;limb<PER_LIMBS;limb++) {
+          if(group_thread*PER_LIMBS<LIMBS-limb) {
+              if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
+                  x = false;
+                  break;
+              }                
+          }
+      }
+      uint32_t warp_thread = threadIdx.x % 32;
+      uint32_t move = warp_thread / 2 * 2;
+      uint32_t sync = (TPI - 1) << move;
+      uint32_t g = __ballot_sync(sync, x==false);
+      printf("thread %d : g %x\n", threadIdx.x, g);
+      if(g != 0)
+        return false;
+      else
+        return true;
+
+      // uint32_t g, p, c;
+      // int32_t  result;
+    
+      // g=__ballot_sync(sync, carry==1);
+      // p=__ballot_sync(sync, x==0xFFFFFFFF);
+    
+      // c=lane & (g+g+p ^ p);
+      // x=x+(c!=0);
+    
+      // result=__shfl_sync(sync, x, padding, tpi);
+      // x=(group_thread<padding) ? x : 0;
+      // return result;
+      
+      // return (n == rhs.n);
     }
 
-    __host__ __device__ __forceinline__ bool operator!=(const Element &rhs) const &
+    // __host__ __forceinline__ bool operator!=(const Element &rhs) const &
+    // {
+    //   return (n != rhs.n);
+    // }
+    __device__ __forceinline__ bool operator!=(const Element &rhs) const &
     {
-      return n != rhs.n;
+      if(TPI == 1) {
+        return (n != rhs.n);
+      }      
+      bool x = false;
+      int32_t group_thread=threadIdx.x & TPI-1;
+      int32_t limb;
+      int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+
+      #pragma unroll
+      for(limb=0;limb<PER_LIMBS;limb++) {
+          if(group_thread*PER_LIMBS<LIMBS-limb) {
+              if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
+                  x = true;
+                  break;
+              }                
+          }
+      }
+      uint32_t warp_thread = threadIdx.x % 32;
+      uint32_t move = warp_thread / 2 * 2;
+      uint32_t sync = (TPI - 1) << move;
+      uint32_t g = __ballot_sync(sync, x == true);
+      printf("thread %d : g %x\n", threadIdx.x, g);
+      if(g != 0)
+        return true;
+      else
+        return false;
     }
 
     // Multiplication identity on field
@@ -846,7 +947,7 @@ namespace mont
       return elem;
     }
 
-    __host__ __device__ __forceinline__
+    __device__ __forceinline__
         Element
         operator=(const Element &rhs) &
     {
@@ -879,23 +980,29 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        // for(int i=0;i<LIMBS;++i){
-        //   mmod._limbs[i] = Params::m().limbs[i];
-        //   ma._limbs[i] = n.limbs[i];
-        //   mb._limbs[i] = rhs.n.limbs[i];
-        //   mc._limbs[i] = r.n.limbs[i];
-        // }
-        // cgbn_load(bn_env, mod, &mmod);
-        // cgbn_load(bn_env, a, &ma);
-        // cgbn_load(bn_env, b, &mb);
-        // cgbn_load(bn_env, c, &mc);
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::m().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = rhs.n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
 
-        load_cg<env_t>(mod, Params::m().limbs);
-        load_cg<env_t>(a, n.limbs);
-        load_cg<env_t>(b, rhs.n.limbs);
-        load_cg<env_t>(c, r.n.limbs);
+        // load_cg<env_t>(mod, Params::m().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, rhs.n.limbs);
+        // load_cg<env_t>(c, r.n.limbs);
+        // printf(
+        //   "thread %d\n{ a = %x %x %x %x\n, b = %x %x %x %x\n, c = %x %x %x %x\n",
+        //   threadIdx.x, a._limbs[3], a._limbs[2], a._limbs[1], a._limbs[0], 
+        //   b._limbs[3], b._limbs[2], b._limbs[1], b._limbs[0], 
+        //   c._limbs[3], c._limbs[2], c._limbs[1], c._limbs[0]
+        // );
 
         // uint32_t np0;
         // np0 = cgbn_bn2mont(bn_env, a, a, mod);
@@ -903,9 +1010,13 @@ namespace mont
 
         cgbn_mont_mul(bn_env, c, a, b, mod, Params::m_prime);      
         
-        store_cg<env_t>(&r, c);
-        for(int i=0;i<LIMBS;++i)
-          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
       return r;
     }
@@ -943,18 +1054,34 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        load_cg<env_t>(mod, Params::m().limbs);
-        load_cg<env_t>(a, n.limbs);
-        load_cg<env_t>(b, rhs.n.limbs);
-        load_cg<env_t>(c, r.n.limbs);
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::m().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = rhs.n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        // load_cg<env_t>(mod, Params::m().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, rhs.n.limbs);
+        // load_cg<env_t>(c, r.n.limbs);
 
         cgbn_add(bn_env, c, a, b);
         if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
 
-        store_cg<env_t>(&r, c);
-        for(int i=0;i<LIMBS;++i)
-          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
       return r;
     }
@@ -977,18 +1104,34 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        load_cg<env_t>(mod, Params::m().limbs);
-        load_cg<env_t>(a, n.limbs);
-        load_cg<env_t>(b, rhs.n.limbs);
-        load_cg<env_t>(c, r.n.limbs);
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::m().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = rhs.n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        // load_cg<env_t>(mod, Params::m().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, rhs.n.limbs);
+        // load_cg<env_t>(c, r.n.limbs);
 
         cgbn_sub(bn_env, c, a, b);
         if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
         
-        store_cg<env_t>(&r, c);
-        for(int i=0;i<LIMBS;++i)
-          printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
       return r;
     }
@@ -998,11 +1141,47 @@ namespace mont
         sub_modulo_mm2(const Element &rhs) const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
       device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
 #else
       host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
 #endif
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::mm2().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = rhs.n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        // load_cg<env_t>(mod, Params::mm2().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, rhs.n.limbs);
+        // load_cg<env_t>(c, r.n.limbs);
+
+        cgbn_sub(bn_env, c, a, b);
+        if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
+        
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 
@@ -1011,11 +1190,47 @@ namespace mont
         add_modulo_mm2(const Element &rhs) const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
       device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
 #else
       host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
 #endif
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::mm2().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = rhs.n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        // load_cg<env_t>(mod, Params::mm2().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, rhs.n.limbs);
+        // load_cg<env_t>(c, r.n.limbs);
+
+        cgbn_add(bn_env, c, a, b);
+        if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
+
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 
@@ -1024,11 +1239,47 @@ namespace mont
         modulo_m() const &
     {
       Element r;
+      if(TPI == 1){
 #ifdef __CUDA_ARCH__
       device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
 #else
       host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
 #endif
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t mod, a, b, c;
+        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+
+        for(int i=0;i<LIMBS;++i){
+          mmod._limbs[i] = Params::m().limbs[i];
+          ma._limbs[i] = n.limbs[i];
+          mb._limbs[i] = Params::m().limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, mod, &mmod);
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        // load_cg<env_t>(mod, Params::m().limbs);
+        // load_cg<env_t>(a, n.limbs);
+        // load_cg<env_t>(b, Params::m().limbs);
+        // load_cg<env_t>(c, r.n.limbs);
+
+        cgbn_sub(bn_env, c, a, b);
+        if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
+        
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+        // store_cg<env_t>(r.n.limbs, c);
+        // for(int i=0;i<LIMBS;++i)
+        //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
+      }
       return r;
     }
 

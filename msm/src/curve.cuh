@@ -40,6 +40,18 @@ namespace curve
       z.store(p + Element::LIMBS * 2);
     }
 
+    __host__ __device__ __forceinline__
+        Point
+        operator=(const Point &rhs) &
+    {
+      if(this != &rhs) {
+        x = rhs.x;
+        y = rhs.y;
+        z = rhs.z;
+      }
+      return *this;
+    }
+
     __device__ __host__ __forceinline__ PointAffine<Params, Element> to_affine() const &;
 
     static __device__ __host__ __forceinline__
@@ -263,6 +275,17 @@ namespace curve
     {
       x.store(p);
       y.store(p + Element::LIMBS);
+    }
+
+    __host__ __device__ __forceinline__
+        PointAffine
+        operator=(const PointAffine &rhs) &
+    {
+      if(this != &rhs) {
+        x = rhs.x;
+        y = rhs.y;
+      }
+      return *this;
     }
 
     __device__ __host__ __forceinline__ Point<Params, Element> to_point() const &;

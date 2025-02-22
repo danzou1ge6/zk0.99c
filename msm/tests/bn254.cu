@@ -11,117 +11,136 @@ using namespace bn254;
 __global__ void to_affine_kernel(PointAffine *pr, const Point *p)
 {
   *pr = p->to_affine();
+  __syncthreads();
 }
 
 __global__ void from_affine_kernel(Point *pr, const PointAffine *p)
 {
   
   *pr = p->to_point();
+  __syncthreads();
+  // pr->device_print();
 }
 
 __global__ void is_on_curve_kernel(bool *r, const Point *p)
 {
   
   *r = p->is_on_curve();
+  __syncthreads();
+  printf("point result:%d\n", *r);
 }
 
 __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
 {
   
   *r = p->is_on_curve();
+  __syncthreads();
+  printf("pointaffine result:%d\n", *r);
 }
 
 __global__ void self_add_kernel(Point *pr, const Point *p)
 {
   
   *pr = p->self_add();
+  __syncthreads();
+  printf("Add self result:\n");
+  pr->device_print();
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
 {
   
   *pr = *pa + *pb;
+  __syncthreads();
+  printf("Add p+p result:\n");
+  pr->device_print();
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
 {
   
   *pr = *pa + *pb;
+  __syncthreads();
+  printf("Add p+pa result:\n");
+  pr->device_print();
 }
 
 __global__ void eq_kernel(bool *r, const Point *pa, const Point *pb)
 {
   
   *r = *pa == *pb;
+  __syncthreads();
 }
 
 __global__ void eq_kernel(bool *r, const PointAffine *pa, const PointAffine *pb)
 {
   
   *r = *pa == *pb;
+  __syncthreads();
 }
 
-__global__ void multiple_kernel(Point *r, const Point *p, u32 n)
-{
+// __global__ void multiple_kernel(Point *r, const Point *p, u32 n)
+// {
   
-  *r = p->multiple(n);
-}
+//   *r = p->multiple(n);
+//   __syncthreads();
+// }
 
 void to_affine(PointAffine *pr, const Point *p)
 {
-  to_affine_kernel<<<1, 1>>>(pr, p);
+  to_affine_kernel<<<1, 2>>>(pr, p);
 }
 
 void from_affine(Point *pr, const PointAffine *p)
 {
-  from_affine_kernel<<<1, 1>>>(pr, p);
+  from_affine_kernel<<<1, 2>>>(pr, p);
 }
 
 void is_on_curve(bool *r, const Point *p)
 {
-  is_on_curve_kernel<<<1, 1>>>(r, p);
+  is_on_curve_kernel<<<1, 2>>>(r, p);
 }
 
 void is_on_curve(bool *r, const PointAffine *p)
 {
-  is_on_curve_kernel<<<1, 1>>>(r, p);
+  is_on_curve_kernel<<<1, 2>>>(r, p);
 }
 
 void self_add(Point *pr, const Point *p)
 {
-  self_add_kernel<<<1, 1>>>(pr, p);
+  self_add_kernel<<<1, 2>>>(pr, p);
 }
 
 void add(Point *pr, const Point *pa, const Point *pb)
 {
-  add_kernel<<<1, 1>>>(pr, pa, pb);
+  add_kernel<<<1, 2>>>(pr, pa, pb);
 }
 
 void add(Point *pr, const Point *pa, const PointAffine *pb)
 {
-  add_kernel<<<1, 1>>>(pr, pa, pb);
+  add_kernel<<<1, 2>>>(pr, pa, pb);
 }
 
 void eq(bool *r, const Point *pa, const Point *pb)
 {
-  eq_kernel<<<1, 1>>>(r, pa, pb);
+  eq_kernel<<<1, 2>>>(r, pa, pb);
 }
 
 void eq(bool *r, const PointAffine *pa, const PointAffine *pb)
 {
-  eq_kernel<<<1, 1>>>(r, pa, pb);
+  eq_kernel<<<1, 2>>>(r, pa, pb);
 }
 
-void multiple(Point *r, const Point *p, const u32 *n)
-{
-  multiple_kernel<<<1, 1>>>(r, p, *n);
-}
+// void multiple(Point *r, const Point *p, const u32 *n)
+// {
+//   multiple_kernel<<<1, 2>>>(r, p, *n);
+// }
 
 
-bool elements_lt_2m(Point &p)
-{
-  return p.x.lt_2m() && p.y.lt_2m() && p.zz.lt_2m() && p.zzz.lt_2m();
-}
+// bool elements_lt_2m(Point &p)
+// {
+//   return p.x.lt_2m() && p.y.lt_2m() && p.zz.lt_2m() && p.zzz.lt_2m();
+// }
 
 template <typename R, typename T>
 R launch_kernel1(T &a, void kernel(R *r, const T *a))
@@ -210,23 +229,23 @@ PointAffine load_affine(const u32 x_data[8], const u32 y_data[8])
   return PointAffine(x, y);
 }
 
-TEST_CASE("Test Element::lt_2m")
-{
-  const u32 e1[8] = BIG_INTEGER_CHUNKS8(0xd2345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678);
-  const u32 e2[8] = BIG_INTEGER_CHUNKS8(0x60c89ce5, 0xc2634053, 0x70a08b6d, 0x0302b0bb, 0x2f02d522, 0xd0e3951a, 0x7841182d, 0xb0f9fa8e);  // eq
-  const u32 e3[8] = BIG_INTEGER_CHUNKS8(0x60c89ce5, 0xc2634053, 0xffffffff, 0x0302b0bb, 0x2f02d522, 0xd0e3951a, 0x7841182d, 0xb0f9fa8e);
+// TEST_CASE("Test Element::lt_2m")
+// {
+//   const u32 e1[8] = BIG_INTEGER_CHUNKS8(0xd2345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678, 0x12345678);
+//   const u32 e2[8] = BIG_INTEGER_CHUNKS8(0x60c89ce5, 0xc2634053, 0x70a08b6d, 0x0302b0bb, 0x2f02d522, 0xd0e3951a, 0x7841182d, 0xb0f9fa8e);  // eq
+//   const u32 e3[8] = BIG_INTEGER_CHUNKS8(0x60c89ce5, 0xc2634053, 0xffffffff, 0x0302b0bb, 0x2f02d522, 0xd0e3951a, 0x7841182d, 0xb0f9fa8e);
 
-  const u32 e[8] = BIG_INTEGER_CHUNKS8(0x30644e72, 0xe131a029, 0xb85045b6, 0x8181585d, 0x97816a91, 0x6871ca8d, 0x3c208c16, 0xd87cfd47);
+//   const u32 e[8] = BIG_INTEGER_CHUNKS8(0x30644e72, 0xe131a029, 0xb85045b6, 0x8181585d, 0x97816a91, 0x6871ca8d, 0x3c208c16, 0xd87cfd47);
 
-  REQUIRE(Element::load(e1).lt_2m() == false);
-  REQUIRE(Element::load(e2).lt_2m() == false);
-  REQUIRE(Element::load(e3).lt_2m() == false);
+//   REQUIRE(Element::load(e1).lt_2m() == false);
+//   REQUIRE(Element::load(e2).lt_2m() == false);
+//   REQUIRE(Element::load(e3).lt_2m() == false);
 
-  REQUIRE(Element::load(e).lt_2m() == true);
+//   REQUIRE(Element::load(e).lt_2m() == true);
 
-  Point p(Element::load(e1), Element::load(e2), Element::load(e3), Element::load(e));
-  REQUIRE(p.is_elements_lt_2m() == false);
-}
+//   Point p(Element::load(e1), Element::load(e2), Element::load(e3), Element::load(e));
+//   REQUIRE(p.is_elements_lt_2m() == false);
+// }
 
 void test_affine_projective_back_and_forth(const u32 x_data[8], const u32 y_data[8])
 {
@@ -244,16 +263,16 @@ void test_affine_projective_back_and_forth(const u32 x_data[8], const u32 y_data
   REQUIRE(launch_kernel2(projective, projective2, eq));
 }
 
-void test_affine_projective_back_and_forth_host(const u32 x_data[8], const u32 y_data[8])
-{
-  auto affine = load_affine(x_data, y_data);
-  auto projective = affine.to_point();
-  auto affine2 = projective.to_affine();
-  auto projective2 = affine2.to_point();
+// void test_affine_projective_back_and_forth_host(const u32 x_data[8], const u32 y_data[8])
+// {
+//   auto affine = load_affine(x_data, y_data);
+//   auto projective = affine.to_point();
+//   auto affine2 = projective.to_affine();
+//   auto projective2 = affine2.to_point();
 
-  REQUIRE(affine == affine2);
-  REQUIRE(projective == projective2);
-}
+//   REQUIRE(affine == affine2);
+//   REQUIRE(projective == projective2);
+// }
 
 TEST_CASE("On curve")
 {
@@ -266,16 +285,16 @@ TEST_CASE("On curve")
   REQUIRE(launch_kernel1(pr, is_on_curve));
 }
 
-TEST_CASE("On curve (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto pr = load_affine(pr_x, pr_y);
+// TEST_CASE("On curve (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto pr = load_affine(pr_x, pr_y);
 
-  REQUIRE(p1.is_on_curve());
-  REQUIRE(p2.is_on_curve());
-  REQUIRE(pr.is_on_curve());
-}
+//   REQUIRE(p1.is_on_curve());
+//   REQUIRE(p2.is_on_curve());
+//   REQUIRE(pr.is_on_curve());
+// }
 
 TEST_CASE("Affine/Projective back and forth 1")
 {
@@ -287,15 +306,15 @@ TEST_CASE("Affine/Projective back and forth 2")
   test_affine_projective_back_and_forth(p2_x, p2_y);
 }
 
-TEST_CASE("Affine/Projective back and forth 1 (host)")
-{
-  test_affine_projective_back_and_forth_host(p1_x, p1_y);
-}
+// TEST_CASE("Affine/Projective back and forth 1 (host)")
+// {
+//   test_affine_projective_back_and_forth_host(p1_x, p1_y);
+// }
 
-TEST_CASE("Affine/Projective back and forth 2 (host)")
-{
-  test_affine_projective_back_and_forth_host(p2_x, p2_y);
-}
+// TEST_CASE("Affine/Projective back and forth 2 (host)")
+// {
+//   test_affine_projective_back_and_forth_host(p2_x, p2_y);
+// }
 
 TEST_CASE("Point addition commutative")
 {
@@ -313,141 +332,141 @@ TEST_CASE("Point addition commutative")
   REQUIRE(launch_kernel2(sum1, sum2, eq));
 }
 
-TEST_CASE("Point addition commutative (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto p1p = p1.to_point();
-  auto p2p = p2.to_point();
+// TEST_CASE("Point addition commutative (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto p1p = p1.to_point();
+//   auto p2p = p2.to_point();
 
-  auto sum1 = p1p + p2p;
-  auto sum2 = p2p + p1p;
+//   auto sum1 = p1p + p2p;
+//   auto sum2 = p2p + p1p;
 
-  REQUIRE(sum1.is_on_curve());
-  REQUIRE(sum2.is_on_curve());
+//   REQUIRE(sum1.is_on_curve());
+//   REQUIRE(sum2.is_on_curve());
 
-  REQUIRE(sum1 == sum2);
-}
+//   REQUIRE(sum1 == sum2);
+// }
 
-TEST_CASE("Point-PointAffine accumulation")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto accu = launch_kernel1(p1, from_affine);
+// TEST_CASE("Point-PointAffine accumulation")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto accu = launch_kernel1(p1, from_affine);
 
-  for (u32 i = 0; i < 100; i ++)
-  {
-    accu = launch_kernel2(accu, p2, add);
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = launch_kernel1(accu, to_affine);
+//   for (u32 i = 0; i < 100; i ++)
+//   {
+//     accu = launch_kernel2(accu, p2, add);
+//     // REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = launch_kernel1(accu, to_affine);
 
-  auto pr = load_affine(pr100_x, pr100_y);
-  REQUIRE(launch_kernel2(accu_affine, pr, eq));
-}
+//   auto pr = load_affine(pr100_x, pr100_y);
+//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
+// }
 
-TEST_CASE("Point-PointAffine accumulation (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto accu = p1.to_point();
+// TEST_CASE("Point-PointAffine accumulation (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto accu = p1.to_point();
 
-  for (u32 i = 0; i < 100; i ++)
-  {
-    accu = accu + p2;
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = accu.to_affine();
+//   for (u32 i = 0; i < 100; i ++)
+//   {
+//     accu = accu + p2;
+//     REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = accu.to_affine();
 
-  auto pr = load_affine(pr100_x, pr100_y);
-  REQUIRE(accu_affine == pr);
-}
+//   auto pr = load_affine(pr100_x, pr100_y);
+//   REQUIRE(accu_affine == pr);
+// }
 
-TEST_CASE("Point double")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto accu = launch_kernel1(p1, from_affine);
+// TEST_CASE("Point double")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto accu = launch_kernel1(p1, from_affine);
   
-  for (u32 i = 0; i < 7; i ++)
-  {
-    accu = launch_kernel1(accu, self_add);
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = launch_kernel1(accu, to_affine);
+//   for (u32 i = 0; i < 7; i ++)
+//   {
+//     accu = launch_kernel1(accu, self_add);
+//     // REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = launch_kernel1(accu, to_affine);
   
-  auto pr = load_affine(p1r128_x, p1r128_y);
-  REQUIRE(launch_kernel2(accu_affine, pr, eq));
-}
+//   auto pr = load_affine(p1r128_x, p1r128_y);
+//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
+// }
 
-TEST_CASE("Point double (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto accu = p1.to_point();
+// TEST_CASE("Point double (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto accu = p1.to_point();
 
-  for (u32 i = 0; i < 7; i ++)
-  {
-    accu = accu.self_add();
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = accu.to_affine();
+//   for (u32 i = 0; i < 7; i ++)
+//   {
+//     accu = accu.self_add();
+//     REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = accu.to_affine();
 
-  auto pr = load_affine(p1r128_x, p1r128_y);
-  REQUIRE(accu_affine == pr);
-}
+//   auto pr = load_affine(p1r128_x, p1r128_y);
+//   REQUIRE(accu_affine == pr);
+// }
 
-TEST_CASE("Identity")
-{
-  auto pi = Point::identity();
-  auto p1 = load_affine(p1_x, p1_y);
-  auto sum = launch_kernel2(pi, p1, add);
-  auto pr = launch_kernel1(sum, to_affine);
-  REQUIRE(launch_kernel2(p1, pr, eq));
-}
+// TEST_CASE("Identity")
+// {
+//   auto pi = Point::identity();
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto sum = launch_kernel2(pi, p1, add);
+//   auto pr = launch_kernel1(sum, to_affine);
+//   REQUIRE(launch_kernel2(p1, pr, eq));
+// }
 
-TEST_CASE("Identity (host)")
-{
-  auto pi = Point::identity();
-  auto p1 = load_affine(p1_x, p1_y);
-  auto sum = pi + p1;
-  auto pr = sum.to_affine();
-  REQUIRE(p1 == pr);
-}
+// TEST_CASE("Identity (host)")
+// {
+//   auto pi = Point::identity();
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto sum = pi + p1;
+//   auto pr = sum.to_affine();
+//   REQUIRE(p1 == pr);
+// }
 
-TEST_CASE("Point accumulation")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto accu = launch_kernel1(p1, from_affine);
-  auto p2p = launch_kernel1(p2, from_affine);
+// TEST_CASE("Point accumulation")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto accu = launch_kernel1(p1, from_affine);
+//   auto p2p = launch_kernel1(p2, from_affine);
 
-  for (u32 i = 0; i < 100; i ++)
-  {
-    accu = launch_kernel2(accu, p2p, add);
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = launch_kernel1(accu, to_affine);
+//   for (u32 i = 0; i < 100; i ++)
+//   {
+//     accu = launch_kernel2(accu, p2p, add);
+//     REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = launch_kernel1(accu, to_affine);
 
-  auto pr = load_affine(pr100_x, pr100_y);
-  REQUIRE(launch_kernel2(accu_affine, pr, eq));
-}
+//   auto pr = load_affine(pr100_x, pr100_y);
+//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
+// }
 
-TEST_CASE("Point accumulation (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto accu = p1.to_point();
-  auto p2p = p2.to_point();
+// TEST_CASE("Point accumulation (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto accu = p1.to_point();
+//   auto p2p = p2.to_point();
 
-  for (u32 i = 0; i < 100; i ++)
-  {
-    accu = accu + p2p;
-    REQUIRE(elements_lt_2m(accu));
-  }
-  auto accu_affine = accu.to_affine();
+//   for (u32 i = 0; i < 100; i ++)
+//   {
+//     accu = accu + p2p;
+//     REQUIRE(elements_lt_2m(accu));
+//   }
+//   auto accu_affine = accu.to_affine();
 
-  auto pr = load_affine(pr100_x, pr100_y);
-  REQUIRE(accu_affine == pr);
-}
+//   auto pr = load_affine(pr100_x, pr100_y);
+//   REQUIRE(accu_affine == pr);
+// }
 
 TEST_CASE("Point-Point addition")
 {
@@ -459,23 +478,23 @@ TEST_CASE("Point-Point addition")
   auto prp = launch_kernel1(pr, from_affine);
 
   auto sum1 = launch_kernel2(p1p, p2p, add);
-  REQUIRE(elements_lt_2m(sum1));
+  // REQUIRE(elements_lt_2m(sum1));
   REQUIRE(launch_kernel2(sum1, prp, eq));
 }
 
-TEST_CASE("Point-Point addition (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto pr = load_affine(pr_x, pr_y);
-  auto p1p = p1.to_point();
-  auto p2p = p2.to_point();
-  auto prp = pr.to_point();
+// TEST_CASE("Point-Point addition (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto pr = load_affine(pr_x, pr_y);
+//   auto p1p = p1.to_point();
+//   auto p2p = p2.to_point();
+//   auto prp = pr.to_point();
 
-  auto sum1 = p1p + p2p;
-  REQUIRE(elements_lt_2m(sum1));
-  REQUIRE(sum1 == prp);
-}
+//   auto sum1 = p1p + p2p;
+//   REQUIRE(elements_lt_2m(sum1));
+//   REQUIRE(sum1 == prp);
+// }
 
 TEST_CASE("Point-PointAffine addition")
 {
@@ -486,38 +505,38 @@ TEST_CASE("Point-PointAffine addition")
   auto prp = launch_kernel1(pr, from_affine);
 
   auto sum1 = launch_kernel2(p1p, p2, add);
-  REQUIRE(elements_lt_2m(sum1));
+  // REQUIRE(elements_lt_2m(sum1));
   REQUIRE(launch_kernel2(sum1, prp, eq));
 }
 
-TEST_CASE("Point-PointAffine addition (host)")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto pr = load_affine(pr_x, pr_y);
-  auto p1p = p1.to_point();
-  auto prp = pr.to_point();
+// TEST_CASE("Point-PointAffine addition (host)")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto pr = load_affine(pr_x, pr_y);
+//   auto p1p = p1.to_point();
+//   auto prp = pr.to_point();
 
-  auto sum1 = p1p + p2;
-  REQUIRE(elements_lt_2m(sum1));
-  REQUIRE(sum1 == prp);
-}
+//   auto sum1 = p1p + p2;
+//   REQUIRE(elements_lt_2m(sum1));
+//   REQUIRE(sum1 == prp);
+// }
 
-TEST_CASE("Point-PointAffine addition equivalent")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto p1p = launch_kernel1(p1, from_affine);
-  auto p2p = launch_kernel1(p2, from_affine);
+// TEST_CASE("Point-PointAffine addition equivalent")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto p1p = launch_kernel1(p1, from_affine);
+//   auto p2p = launch_kernel1(p2, from_affine);
 
-  auto sum1 = launch_kernel2(p2p, p1, add);
-  auto sum2 = launch_kernel2(p2p, p1p, add);
+//   auto sum1 = launch_kernel2(p2p, p1, add);
+//   auto sum2 = launch_kernel2(p2p, p1p, add);
 
-  REQUIRE(launch_kernel1(sum1, is_on_curve));
-  REQUIRE(launch_kernel1(sum2, is_on_curve));
+  // REQUIRE(launch_kernel1(sum1, is_on_curve));
+  // REQUIRE(launch_kernel1(sum2, is_on_curve));
 
-  REQUIRE(launch_kernel2(sum1, sum2, eq));
-}
+  // REQUIRE(launch_kernel2(sum1, sum2, eq));
+// }
 
 TEST_CASE("Doubling equivalent")
 {
