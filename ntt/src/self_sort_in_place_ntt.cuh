@@ -3322,20 +3322,17 @@ namespace ntt {
             CUDA_CHECK(cudaEventCreate(&start));
             CUDA_CHECK(cudaEventCreate(&end));
             
-            // this->sem.acquire();
+            this->sem.acquire();
 
-            // std::shared_lock<std::shared_mutex> rlock(this->mtx);
-            // {
-            //     while(!this->on_gpu) {
-            //         rlock.unlock();
-            //         CUDA_CHECK(to_gpu(stream));
-            //         rlock.lock();
-            //     }
-            // }
-
-            if (!this->on_gpu) {
-                CUDA_CHECK(to_gpu(stream));
+            std::shared_lock<std::shared_mutex> rlock(this->mtx);
+            {
+                while(!this->on_gpu) {
+                    rlock.unlock();
+                    CUDA_CHECK(to_gpu(stream));
+                    rlock.lock();
+                }
             }
+
 
             u32 * x;
             if (data_on_gpu) {
@@ -3627,7 +3624,7 @@ namespace ntt {
             CUDA_CHECK(cudaEventDestroy(start));
             CUDA_CHECK(cudaEventDestroy(end));
 
-            // rlock.unlock();
+            rlock.unlock();
 
             if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
@@ -3635,7 +3632,7 @@ namespace ntt {
 
             if (!data_on_gpu) CUDA_CHECK(cudaStreamSynchronize(stream));
 
-            // this->sem.release();
+            this->sem.release();
 
             if (debug) CUDA_CHECK(clean_gpu(stream));
 

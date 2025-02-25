@@ -104,7 +104,7 @@ fn generate_coefficients(k: u8, bits: usize) -> Vec<Scalar> {
 #[test]
 fn compare_with_halo2() {
     let max_k = 20;
-    for k in 10..=max_k {
+    for k in 5..=max_k {
         println!("generating data for k = {k}...");
         let bases: Vec<Point> = generate_curvepoints(k);
         let bits = [256];
@@ -138,12 +138,7 @@ fn compare_with_halo2() {
         let y1 = cpu_result.y * gpu_result.z;
         let x2 = gpu_result.x * cpu_result.z;
         let y2 = gpu_result.y * cpu_result.z;
-        // let cpu_z = cpu_result.z.invert().unwrap();
-        // let x1 = cpu_result.x * cpu_z;
-        // let y1 = cpu_result.y * cpu_z;
-        // let gpu_z = gpu_result.z.invert().unwrap();
-        // let x2 = gpu_result.x * gpu_z;
-        // let y2 = gpu_result.y * gpu_z;
+
         assert_eq!(x1, x2);
         assert_eq!(y1, y2);
     }

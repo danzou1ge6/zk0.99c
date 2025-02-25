@@ -1,5 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+use std::any::type_name;
+
 use group::ff::PrimeField;
 
 pub use halo2curves::{CurveAffine, CurveExt};
@@ -9,6 +11,9 @@ pub fn gpu_msm<C: CurveAffine>(
     bases: &[C],
     acc: &mut C::Curve
 ) -> Result<(), String> {
+    if type_name::<C>() != "halo2curves::bn256::curve::G1Affine" {
+        return Err("Only support bn256::G1Affine".to_string());
+    }
     let len = coeffs.len();
     // let mut res = vec![0u32; 16]; // 假设 PointAffine 有 16 个 u32 值 (8 对应 x 和 8 对应 y)
 
