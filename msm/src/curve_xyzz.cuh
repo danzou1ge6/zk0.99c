@@ -91,8 +91,24 @@ namespace curve
                 return t0.is_zero();
             }
 
+            __device__ __forceinline__ bool is_on_curve_pre() const & {
+                Element t0, t1;
+                t0 = x.square_pre();
+                if (!Params::a().is_zero()) t0 = t0.add_pre(Params::a());
+                t0 = t0.mul_pre(x);
+                t0 = t0.add_pre(Params::b());
+                t1 = y.square_pre();
+                t0 = t1.sub_pre(t0);
+                return t0.is_zero();
+            }
+
             __device__ __host__ __forceinline__ PointXYZZ to_point() const& {
                 // if unlikely(is_identity()) return PointXYZZ::identity();
+                auto res = PointXYZZ(x, y, Element::one(), Element::one());
+                return res;
+            }
+
+            __device__ __forceinline__ PointXYZZ to_point_pre() const& {
                 auto res = PointXYZZ(x, y, Element::one(), Element::one());
                 return res;
             }
@@ -110,6 +126,29 @@ namespace curve
                 auto y3 = m * (s - x3) - w * y;
                 auto p = PointXYZZ(x3, y3, v, w);
                 return p;
+            }
+
+            __device__ __forceinline__ PointXYZZ add_self_pre() const& {
+                auto u = y.add_pre(y);
+                auto v = u.square_pre();
+                auto w = u.mul_pre(v);
+                auto s = x.mul_pre(v);
+                auto x2 = x.square_pre();
+                auto m = x2.add_pre(x2).add_pre(x2);
+                if (!Params::a().is_zero()) m = m.add_pre(Params::a());
+                auto x3 = m.square_pre().sub_pre(s).sub_pre(s);
+                auto y3 = m.mul_pre(s.sub_pre(x3)).sub_pre(w.mul_pre(y));
+                auto p = PointXYZZ(x3, y3, v, w);
+                return p;
+            }
+
+            __host__ __device__ void device_print() const &
+            {
+                printf(
+                    "{ x = %x %x %x %x %x %x %x %x\n, y = %x %x %x %x %x %x %x %x}\n",
+                    x.n.limbs[7], x.n.limbs[6], x.n.limbs[5], x.n.limbs[4], x.n.limbs[3], x.n.limbs[2], x.n.limbs[1], x.n.limbs[0], 
+                    y.n.limbs[7], y.n.limbs[6], y.n.limbs[5], y.n.limbs[4], y.n.limbs[3], y.n.limbs[2], y.n.limbs[1], y.n.limbs[0]
+                );
             }
          };
 
@@ -160,13 +199,24 @@ namespace curve
                 return zz_.is_zero();
             }
 
+            __device__ __forceinline__ bool is_identity_pre() const & {
+                auto zz_ = Params::allow_lazy_modulo ? zz.modulo_m_pre() : zz;
+                return zz_.is_zero();
+            }
+
             __device__ __host__ __forceinline__ PointXYZZ neg() const & {
                 auto y_ = Params::allow_lazy_modulo ?  y.modulo_m() : y;
                 auto r = PointXYZZ(x, y_.neg(), zz, zzz);
                 return r;
             }
 
-            __device__ __forceinline__ bool operator==(const PointXYZZ &rhs_) const & {
+            __device__ __forceinline__ PointXYZZ neg_pre() const & {
+                auto y_ = Params::allow_lazy_modulo ?  y.modulo_m_pre() : y;
+                auto r = PointXYZZ(x, y_.neg(), zz, zzz);
+                return r;
+            }
+
+            __host__ __device__ __forceinline__ bool operator==(const PointXYZZ &rhs_) const & {
                 if (zz.is_zero() != rhs_.zz.is_zero())
                     return false;
                 auto lhs = normalized();
@@ -189,13 +239,25 @@ namespace curve
                 return x1 == x2 && y1 == y2;
             }
 
+            __device__ __forceinline__ bool eq_pre(const PointXYZZ &rhs_) const & {
+                if (zz.is_zero() != rhs_.zz.is_zero())
+                    return false;
+                auto lhs = normalized_pre();
+                auto rhs = rhs_.normalized_pre();
+                auto x1 = lhs.x.mul_pre(rhs.zz);
+                auto x2 = rhs.x.mul_pre(lhs.zz);
+                auto y1 = lhs.y.mul_pre(rhs.zzz);
+                auto y2 = rhs.y.mul_pre(lhs.zzz);
+                return x1 == x2 && y1 == y2;
+            }
+
             // x = X/ZZ
             // y = Y/ZZZ
             // ZZ^3 = ZZZ^2
             // y^2 = x^3 + a*x + b
             // Y^2/ZZZ^2 = X^3/ZZ^3 + a*X/ZZ + b
             // Y^2 = X^3 + a*X*ZZ^2 + b*ZZ^3
-            __device__ __forceinline__ bool is_on_curve() const & {
+            __host__ __device__ __forceinline__ bool is_on_curve() const & {
                 auto self = normalized();
                 auto y2 = self.y.square();
                 auto x3 = self.x.square() * self.x;
@@ -210,6 +272,21 @@ namespace curve
                 return y2 == x3 + a_x_zz2 + b_zz3;
             }
 
+            __device__ __forceinline__ bool is_on_curve_pre() const & {
+                auto self = normalized_pre();
+                auto y2 = self.y.square_pre();
+                auto x3 = self.x.square_pre().mul_pre(self.x);
+                auto zz2 = self.zz.square_pre();
+                auto zz3 = self.zz.mul_pre(zz2);
+                auto zzz2 = self.zzz.square_pre();
+                if (zz3 != zzz2) return false;
+                Element a_x_zz2;
+                if (Params::a().is_zero()) a_x_zz2 = Element::zero();
+                else a_x_zz2 = Params::a().mul_pre(self.x).mul_pre(zz2);
+                auto b_zz3 = Params::b().mul_pre(zz3);
+                return y2 == x3.add_pre(a_x_zz2).add_pre(b_zz3);
+            }
+
             __device__ __host__ __forceinline__ void normalize()
             {
                 if (Params::allow_lazy_modulo)
@@ -221,10 +298,28 @@ namespace curve
                 }
             }
 
+            __device__ __forceinline__ void normalize_pre()
+            {
+                if (Params::allow_lazy_modulo)
+                {
+                    x = x.modulo_m_pre();
+                    y = y.modulo_m_pre();
+                    zz = zz.modulo_m_pre();
+                    zzz = zzz.modulo_m_pre();
+                }
+            }
+
             __device__ __host__ __forceinline__ PointXYZZ normalized() const &
             {
                 PointXYZZ r = *this;
                 r.normalize();
+                return r;
+            }
+
+            __device__ __forceinline__ PointXYZZ normalized_pre() const &
+            {
+                PointXYZZ r = *this;
+                r.normalize_pre();
                 return r;
             }
 
@@ -240,6 +335,23 @@ namespace curve
                 auto B = (self.zz * A).square();
                 auto X3 = self.x * B;
                 auto Y3 = self.y * A;
+                return PointAffine(X3, Y3);
+            }
+
+            __device__ __forceinline__ PointAffine to_affine_pre() const & {
+                auto self = normalized_pre();
+                // self.device_print();
+                auto A = self.zzz.invert_pre();
+                // printf(
+                //     "A = %x %x %x %x %x %x %x %x\n", A.n.limbs[7], A.n.limbs[6], A.n.limbs[5], A.n.limbs[4], A.n.limbs[3], A.n.limbs[2], A.n.limbs[1], A.n.limbs[0]
+                // );
+                auto C = self.zz.mul_pre(A);
+                auto B = C.square_pre();
+                // printf(
+                //     "B = %x %x %x %x %x %x %x %x\n", B.n.limbs[7], B.n.limbs[6], B.n.limbs[5], B.n.limbs[4], B.n.limbs[3], B.n.limbs[2], B.n.limbs[1], B.n.limbs[0]
+                // );
+                auto X3 = self.x.mul_pre(B);
+                auto Y3 = self.y.mul_pre(A);
                 return PointAffine(X3, Y3);
             }
 
@@ -315,8 +427,45 @@ namespace curve
                 return add<Params::allow_lazy_modulo()>(rhs);
             }
 
+            __device__ __forceinline__ PointXYZZ add_pre(const PointXYZZ &rhs) const & {
+                if (Params::allow_lazy_modulo())
+                {
+                    if unlikely(this->is_identity_pre()) return rhs;
+                    if unlikely(rhs.is_identity_pre()) return *this;
+                    auto u1 = x.template mul_pre<false>(rhs.zz);
+                    auto u2 = rhs.x.template mul_pre<false>(zz);
+                    auto s1 = y.template mul_pre<false>(rhs.zzz);
+                    auto s2 = rhs.y.template mul_pre<false>(zzz);
+                    auto p = u2.sub_modulo_mm2_pre(u1);
+                    auto r = s2.sub_modulo_mm2_pre(s1);
+                    p = p.modulo_m_pre();
+                    r = r.modulo_m_pre();
+                    if unlikely(p.is_zero() && r.is_zero()) {
+                        return this->self_add_pre();
+                    }
+                    auto pp = p.template square_pre<false>();
+                    auto ppp = p.template mul_pre<false>(pp);
+                    auto q = u1.template mul_pre<false>(pp);
+                    auto x3 = r.template square_pre<false>();
+                    x3 = x3.sub_modulo_mm2_pre(ppp);
+                    x3 = x3.sub_modulo_mm2_pre(q);
+                    x3 = x3.sub_modulo_mm2_pre(q);
+                    auto y3 = r.template mul_pre<false>(q.sub_modulo_mm2_pre(x3));
+                    y3 = y3.sub_modulo_mm2_pre(s1.template mul_pre<false>(ppp));
+                    auto zz3 = zz.template mul_pre<false>(rhs.zz);
+                    zz3 = zz3.template mul_pre<false>(pp);
+                    auto zzz3 = zzz.template mul_pre<false>(rhs.zzz);
+                    zzz3 = zzz3.template mul_pre<false>(ppp);
+                    return PointXYZZ(x3, y3, zz3, zzz3);
+                }
+            }
+
             __device__ __host__ __forceinline__ PointXYZZ operator - (const PointXYZZ &rhs) const & {
                 return *this + rhs.neg();
+            }
+
+            __device__ __forceinline__ PointXYZZ sub_pre(const PointXYZZ &rhs) const & {
+                return add_pre(rhs.neg_pre());
             }
 
             // https://hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#addition-madd-2008-s
@@ -372,14 +521,47 @@ namespace curve
                 return add<Params::allow_lazy_modulo()>(rhs);
             }
 
+            __device__ __forceinline__ PointXYZZ add_pre(const PointAffine &rhs) const & {
+                PointXYZZ sum;
+                if (Params::allow_lazy_modulo())
+                {
+                    if unlikely(this->is_identity_pre()) return rhs.to_point_pre();
+                    // if unlikely(rhs.is_identity()) return *this;
+                    auto u2 = rhs.x.template mul_pre<false>(zz);
+                    auto s2 = rhs.y.template mul_pre<false>(zzz);
+                    auto p = u2.sub_modulo_mm2_pre(x);
+                    auto r = s2.sub_modulo_mm2_pre(y);
+                    if unlikely(p.is_zero() && r.is_zero()) {
+                        return rhs.add_self_pre();
+                    }
+                    auto pp = p.template square_pre<false>();
+                    auto ppp = p.template mul_pre<false>(pp);
+                    auto q = x.template mul_pre<false>(pp);
+                    auto x3 = r.template square_pre<false>();
+                    x3 = x3.sub_modulo_mm2_pre(ppp);
+                    x3 = x3.sub_modulo_mm2_pre(q);
+                    x3 = x3.sub_modulo_mm2_pre(q);
+                    auto y3 = r.template mul_pre<false>(q.sub_modulo_mm2_pre(x3));
+                    y3 = y3.sub_modulo_mm2_pre(y.template mul_pre<false>(ppp));
+                    auto zz3 = zz.template mul_pre<false>(pp);
+                    auto zzz3 = zzz.template mul_pre<false>(ppp);
+                    sum = PointXYZZ(x3, y3, zz3, zzz3);
+                }
+                return sum;
+           }
+
             __device__ __host__ __forceinline__ PointXYZZ operator - (const PointAffine &rhs) const & {
                 return *this + rhs.neg();
+            }
+
+            __device__ __forceinline__ PointXYZZ sub_pre(const PointAffine &rhs) const & {
+                return add_pre(rhs.neg());
             }
 
             // https://hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#doubling-dbl-2008-s-1
             __device__ __host__ __forceinline__ PointXYZZ self_add() const & {
                 PointXYZZ r;
-                if (Params::allow_lazy_modulo)
+                if (Params::allow_lazy_modulo())
                 {
                     if unlikely(zz.is_zero()) return *this;
                     auto u = y.add_modulo_mm2(y);
@@ -415,6 +597,30 @@ namespace curve
                 return r;
            }
 
+           __device__ __host__ __forceinline__ PointXYZZ self_add_pre() const & {
+            PointXYZZ r;
+            if (Params::allow_lazy_modulo())
+            {
+                if unlikely(zz.is_zero()) return *this;
+                auto u = y.add_modulo_mm2_pre(y);
+                auto v = u.template square_pre<false>();
+                auto w = u.template mul_pre<false>(v);
+                auto s = x.template mul_pre<false>(v);
+                auto x2 = x.template square_pre<false>();
+                auto m = x2.add_modulo_mm2_pre(x2).add_modulo_mm2_pre(x2);
+                if (!Params::a().is_zero())
+                    m = m.add_modulo_mm2_pre(Params::a().template mul_pre<false>(zz.template square_pre<false>()));
+                auto x3 = m.template square_pre<false>();
+                x3 = x3.sub_modulo_mm2_pre(s).sub_modulo_mm2_pre(s);
+                auto y3 = m.template mul_pre<false>(s.sub_modulo_mm2_pre(x3));
+                y3 = y3.sub_modulo_mm2_pre(w.template mul_pre<false>(y));
+                auto zz3 = v.template mul_pre<false>(zz);
+                auto zzz3 = w.template mul_pre<false>(zzz);
+                r = PointXYZZ(x3, y3, zz3, zzz3);
+            }
+            return r;
+       }
+
             static __device__ __host__ __forceinline__ void multiple_iter(const PointXYZZ &p, bool &found_one, PointXYZZ &res, u32 n) {
                 for (int i = 31; i >= 0; i--) {
                     if (found_one) res = res.self_add();
@@ -429,6 +635,19 @@ namespace curve
                 auto res = identity();
                 bool found_one = false;
                 multiple_iter(*this, found_one, res, n);
+                return res;
+            }
+
+            __device__ __forceinline__ PointXYZZ multiple_pre(u32 n) const & {
+                auto res = identity();
+                bool found_one = false;
+                for (int i = 31; i >= 0; i--) {
+                    if (found_one) res = res.self_add_pre();
+                    if ((n >> i) & 1) {
+                        found_one = true;
+                        res = res.add_pre(*this);
+                    }
+                }
                 return res;
             }
 

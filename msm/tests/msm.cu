@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
     stage_scalers = batch_per_run;
     stage_points = batch_per_run;
 
-    for(parts = 2; parts <= 2; parts *= 2)
+    for(parts = 1; parts <= 1; parts *= 2)
     {
       msm::MultiGPUMSM<Config, Number, Point, PointAffine> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
@@ -128,7 +128,9 @@ int main(int argc, char *argv[])
       cudaEventCreate(&stop);
       cudaEventRecord(start, 0);
 
+      // std::cout << "Stage1" << std::endl;
       msm_solver.msm(scalers_batches, r);
+      // printf("Stage16\n");
 
       cudaEventRecord(stop, 0);
       cudaEventSynchronize(stop);

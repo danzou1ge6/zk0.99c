@@ -667,41 +667,51 @@ namespace mont
       return r;
     }
 
-    __device__ __forceinline__ bool
+    __host__ __device__ __forceinline__ bool
     is_zero() const &
     {
-      if (TPI == 1) {
-        bool r = true;
-  #pragma unroll
-        for (usize i = 0; i < LIMBS; i++)
-          r = r && (limbs[i] == 0);
-        return r;
-      }
-      else {
-        bool r = true;
-        int32_t group_thread=threadIdx.x & TPI-1;
-        int32_t limb;
-        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+      bool r = true;
+// #ifdef __CUDA_ARCH__  
+//       if (TPI == 1) {        
+//   #pragma unroll
+//         for (usize i = 0; i < LIMBS; i++)
+//           r = r && (limbs[i] == 0);
+//         return r;
+//       }
+//       else {
+//         int32_t group_thread=threadIdx.x & TPI-1;
+//         int32_t limb;
+//         int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
 
-        #pragma unroll
-        for(limb=0;limb<PER_LIMBS;limb++) {
-            if(group_thread*PER_LIMBS<LIMBS-limb) {
-                if(limbs[group_thread*PER_LIMBS+limb] != 0) {
-                    r = false;
-                    break;
-                }                
-            }
-        }
-        uint32_t warp_thread = threadIdx.x % 32;
-        uint32_t move = warp_thread / 2 * 2;
-        uint32_t sync = (TPI - 1) << move;
-        uint32_t g = __ballot_sync(sync, r==false);
-        printf("thread %d : g %x\n", threadIdx.x, g);
-        if(g != 0)
-          return false;
-        else
-          return true;
-      }
+//         #pragma unroll
+//         for(limb=0;limb<PER_LIMBS;limb++) {
+//             if(group_thread*PER_LIMBS<LIMBS-limb) {
+//                 if(limbs[group_thread*PER_LIMBS+limb] != 0) {
+//                     r = false;
+//                     break;
+//                 }                
+//             }
+//         }
+//         uint32_t warp_thread = threadIdx.x % 32;
+//         uint32_t move = warp_thread / 2 * 2;
+//         uint32_t sync = 1;
+//         for(int i=0; i<TPI; ++i) {
+//           sync *= 2;
+//         }
+//         sync = (sync - 1) << move;
+//         uint32_t g = __ballot_sync(sync, r==false);
+//         // printf("thread %d : g %x\n", threadIdx.x, g);
+//         if(g != 0)
+//           return false;
+//         else
+//           return true;
+//       }
+// #else
+  #pragma unroll
+    for (usize i = 0; i < LIMBS; i++)
+      r = r && (limbs[i] == 0);
+    return r;
+// #endif
     }
 
     // Return the [`i`, `i + N`) words in big number.
@@ -854,39 +864,42 @@ namespace mont
     }
 
     // Word-by-word equality
-    // __host__ __forceinline__ bool operator==(const Element &rhs) const &
-    // {      
-    //   return (n == rhs.n);
-    // }
-    __device__ __forceinline__ bool operator==(const Element &rhs) const &
+    __host__ __device__ __forceinline__ bool operator==(const Element &rhs) const &
     {
-      if(TPI == 1) {
-        return (n == rhs.n);
-      }
-      bool x = true;
-      int32_t group_thread=threadIdx.x & TPI-1;
-      int32_t limb;
-      int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+// #ifdef __CUDA_ARCH__      
+//       if(TPI == 1) {
+//         return (n == rhs.n);
+//       }
+//       bool x = true;
+//       int32_t group_thread=threadIdx.x & TPI-1;
+//       int32_t limb;
+//       int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
 
-      #pragma unroll
-      for(limb=0;limb<PER_LIMBS;limb++) {
-          if(group_thread*PER_LIMBS<LIMBS-limb) {
-              if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
-                  x = false;
-                  break;
-              }                
-          }
-      }
-      uint32_t warp_thread = threadIdx.x % 32;
-      uint32_t move = warp_thread / 2 * 2;
-      uint32_t sync = (TPI - 1) << move;
-      uint32_t g = __ballot_sync(sync, x==false);
-      printf("thread %d : g %x\n", threadIdx.x, g);
-      if(g != 0)
-        return false;
-      else
-        return true;
-
+//       #pragma unroll
+//       for(limb=0;limb<PER_LIMBS;limb++) {
+//           if(group_thread*PER_LIMBS<LIMBS-limb) {
+//               if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
+//                   x = false;
+//                   break;
+//               }                
+//           }
+//       }
+//       uint32_t warp_thread = threadIdx.x % 32;
+//       uint32_t move = warp_thread / 2 * 2;
+//       uint32_t sync = 1;
+//       for(int i=0; i<TPI; ++i) {
+//         sync *= 2;
+//       }
+//       sync = (sync - 1) << move;
+//       uint32_t g = __ballot_sync(sync, x==false);
+//       // printf("thread %d : g %x\n", threadIdx.x, g);
+//       if(g != 0)
+//         return false;
+//       else
+//         return true;
+// #else
+      return (n == rhs.n);
+// #endif
       // uint32_t g, p, c;
       // int32_t  result;
     
@@ -903,38 +916,42 @@ namespace mont
       // return (n == rhs.n);
     }
 
-    // __host__ __forceinline__ bool operator!=(const Element &rhs) const &
-    // {
-    //   return (n != rhs.n);
-    // }
-    __device__ __forceinline__ bool operator!=(const Element &rhs) const &
+    __host__ __device__ __forceinline__ bool operator!=(const Element &rhs) const &
     {
-      if(TPI == 1) {
-        return (n != rhs.n);
-      }      
-      bool x = false;
-      int32_t group_thread=threadIdx.x & TPI-1;
-      int32_t limb;
-      int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+// #ifdef __CUDA_ARCH__
+//       if(TPI == 1) {
+//         return (n != rhs.n);
+//       }      
+//       bool x = false;
+//       int32_t group_thread=threadIdx.x & TPI-1;
+//       int32_t limb;
+//       int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
 
-      #pragma unroll
-      for(limb=0;limb<PER_LIMBS;limb++) {
-          if(group_thread*PER_LIMBS<LIMBS-limb) {
-              if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
-                  x = true;
-                  break;
-              }                
-          }
-      }
-      uint32_t warp_thread = threadIdx.x % 32;
-      uint32_t move = warp_thread / 2 * 2;
-      uint32_t sync = (TPI - 1) << move;
-      uint32_t g = __ballot_sync(sync, x == true);
-      printf("thread %d : g %x\n", threadIdx.x, g);
-      if(g != 0)
-        return true;
-      else
-        return false;
+//       #pragma unroll
+//       for(limb=0;limb<PER_LIMBS;limb++) {
+//           if(group_thread*PER_LIMBS<LIMBS-limb) {
+//               if(n.limbs[group_thread*PER_LIMBS+limb] != rhs.n.limbs[group_thread*PER_LIMBS+limb]) {
+//                   x = true;
+//                   break;
+//               }                
+//           }
+//       }
+//       uint32_t warp_thread = threadIdx.x % 32;
+//       uint32_t move = warp_thread / 2 * 2;
+//       uint32_t sync = 1;
+//       for(int i=0; i<TPI; ++i) {
+//         sync *= 2;
+//       }
+//       sync = (sync - 1) << move;
+//       uint32_t g = __ballot_sync(sync, x == true);
+//       // printf("thread %d : g %x\n", threadIdx.x, g);
+//       if(g != 0)
+//         return true;
+//       else
+//         return false;
+// #else
+      return (n != rhs.n);
+// #endif
     }
 
     // Multiplication identity on field
@@ -947,16 +964,24 @@ namespace mont
       return elem;
     }
 
-    __device__ __forceinline__
-        Element
-        operator=(const Element &rhs) &
+    __device__ __host__ __forceinline__
+    Element& operator=(const Element &rhs) &
     {
       if(this != &rhs) {
-        int32_t group_thread=threadIdx.x & TPI-1;
-        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
-        for(int i=0;i<PER_LIMBS;++i)
-          if(group_thread*PER_LIMBS+i<LIMBS)
-            n.limbs[group_thread*PER_LIMBS+i] = rhs.n.limbs[group_thread*PER_LIMBS+i];
+// #ifdef __CUDA_ARCH__
+//         int32_t group_thread = threadIdx.x & (TPI-1);
+//         int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
+//         for(int i = 0; i < PER_LIMBS; ++i) {
+//           int idx = group_thread * PER_LIMBS + i;
+//           if(idx < LIMBS) {
+//             n.limbs[idx] = rhs.n.limbs[idx];
+//           }
+//         }
+// #else
+        for(int i = 0; i < LIMBS; ++i) {
+          n.limbs[i] = rhs.n.limbs[i];
+        }
+// #endif
       }
       return *this;
     }
@@ -968,12 +993,9 @@ namespace mont
         mul(const Element &rhs) const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
+      if(TPI == 1){
         device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
-#else
-        host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
-#endif
       }
       else {            
         context_t bn_context;
@@ -1018,6 +1040,19 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+        host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
+#endif      
+      return r;
+    }
+
+    template<bool MODULO = true>
+    __device__ __forceinline__
+        Element
+        mul_pre(const Element &rhs) const &
+    {
+      Element r;
+      device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs, Params::m_prime);
       return r;
     }
 
@@ -1036,18 +1071,23 @@ namespace mont
       return mul<MODULO>(*this);
     }
 
+    template<bool MODULO = true>
+    __device__ __forceinline__
+        Element
+        square_pre() const &
+    {
+      return mul_pre<MODULO>(*this);
+    }
+
     // Field addition
     __host__ __device__ __forceinline__
         Element
         operator+(const Element &rhs) const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
-#else
-      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
-#endif
+      if(TPI == 1){
+        device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
       }
       else {
         context_t bn_context;
@@ -1083,6 +1123,18 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+#endif      
+      return r;
+    }
+
+    __device__ __forceinline__
+        Element
+        add_pre(const Element &rhs) const &
+    {
+      Element r;
+      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);   
       return r;
     }
 
@@ -1092,12 +1144,9 @@ namespace mont
         operator-(const Element &rhs) const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
-#else
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
-#endif
+      if(TPI == 1){
+        device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
       }
       else {
         context_t bn_context;
@@ -1133,6 +1182,18 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
+#endif      
+      return r;
+    }
+
+    __device__ __forceinline__
+        Element
+        sub_pre(const Element &rhs) const &
+    {
+      Element r;
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::m().limbs);
       return r;
     }
 
@@ -1141,12 +1202,9 @@ namespace mont
         sub_modulo_mm2(const Element &rhs) const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
-#else
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
-#endif
+      if(TPI == 1){
+        device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
       }
       else {
         context_t bn_context;
@@ -1182,6 +1240,18 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#endif      
+      return r;
+    }
+
+    __device__ __forceinline__
+        Element
+        sub_modulo_mm2_pre(const Element &rhs) const &
+    {
+      Element r;
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
       return r;
     }
 
@@ -1190,12 +1260,9 @@ namespace mont
         add_modulo_mm2(const Element &rhs) const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
-#else
-      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
-#endif
+      if(TPI == 1){
+        device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
       }
       else {
         context_t bn_context;
@@ -1231,6 +1298,18 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+      host_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);
+#endif      
+      return r;
+    }
+
+    __device__ __forceinline__
+        Element
+        add_modulo_mm2_pre(const Element &rhs) const &
+    {
+      Element r;
+      device_arith::add_modulo<LIMBS>(r.n.limbs, n.limbs, rhs.n.limbs, Params::mm2().limbs);   
       return r;
     }
 
@@ -1239,12 +1318,9 @@ namespace mont
         modulo_m() const &
     {
       Element r;
-      if(TPI == 1){
 #ifdef __CUDA_ARCH__
-      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
-#else
-      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
-#endif
+      if(TPI == 1){
+        device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
       }
       else {
         context_t bn_context;
@@ -1280,6 +1356,18 @@ namespace mont
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
+#else
+      host_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs);
+#endif      
+      return r;
+    }
+
+    __device__ __forceinline__
+        Element
+        modulo_m_pre() const &
+    {
+      Element r;
+      device_arith::sub_modulo<LIMBS>(r.n.limbs, n.limbs, Params::m().limbs, Params::m().limbs); 
       return r;
     }
 
@@ -1374,6 +1462,27 @@ namespace mont
     __host__ __device__ __forceinline__ Element invert() const &
     {
       return this->pow(Params::m_sub2());
+    }
+
+    __device__ __forceinline__ Element invert_pre() const &
+    {
+      auto res = one();
+      bool found_one = false;
+      auto p = Params::m_sub2();
+#pragma unroll
+      for (int i = LIMBS - 1; i >= 0; i--) {
+        for (int j = 31; j >= 0; j--)
+        {
+          if (found_one)
+            res = res.square_pre();
+          if ((p.limbs[i] >> j) & 1)
+          {
+            found_one = true;
+            res = res.mul_pre(*this);
+          }
+        }
+      }
+      return res;
     }
     
     __host__ __device__ __forceinline__ bool lt_2m() const &

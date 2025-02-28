@@ -31,7 +31,7 @@ __global__ void mont_add(u32 *r, const u32 *a, const u32 *b)
 {
   auto na = Element::load(a);
   auto nb = Element::load(b);
-  auto nr = na + nb;
+  auto nr = na.add_pre(nb);
   nr.store(r);
 }
 
@@ -39,7 +39,7 @@ __global__ void mont_sub(u32 *r, const u32 *a, const u32 *b)
 {
   auto na = Element::load(a);
   auto nb = Element::load(b);
-  auto nr = na - nb;
+  auto nr = na.sub_pre(nb);
   nr.store(r);
 }
 
@@ -62,7 +62,7 @@ __global__ void mont_mul(u32 *r, const u32 *a, const u32 *b)
 {
   auto na = Element::load(a);
   auto nb = Element::load(b);
-  auto nr = na * nb;
+  auto nr = na.mul_pre(nb);
   nr.store(r);
 }
 
@@ -91,7 +91,7 @@ __global__ void mont_square(u32 *r, const u32 *a, const u32 *b)
 {
   auto na = Number::load(a);
   auto ea = Element::from_number(na);
-  auto elem = ea * ea;
+  auto elem = ea.square_pre();
   elem.store(r);
 }
 
@@ -123,7 +123,7 @@ __global__ void mont_add_mm2(u32 *r, const u32 *a, const u32 *b)
 {
   auto ea = Element::load(a);
   auto eb = Element::load(b);
-  auto er = ea.add_modulo_mm2(eb);
+  auto er = ea.add_modulo_mm2_pre(eb);
   er.store(r);
 }
 
@@ -131,14 +131,14 @@ __global__ void mont_sub_mm2(u32 *r, const u32 *a, const u32 *b)
 {
   auto ea = Element::load(a);
   auto eb = Element::load(b);
-  auto er = ea.sub_modulo_mm2(eb);
+  auto er = ea.sub_modulo_mm2_pre(eb);
   er.store(r);
 }
 
 __global__ void mont_modulo_m(u32 *r, const u32 *a, const u32 *b)
 {
   auto ea = Element::load(a);
-  auto er = ea.modulo_m();
+  auto er = ea.modulo_m_pre();
   er.store(r);
 }
 
@@ -267,13 +267,13 @@ namespace instance1
   TEST_CASE("Fp addition 1")
   {
     test_mont_kernel<WORDS>(sum_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_add<<<1, 2>>>(r, a, b); });
+                            { mont_add<<<1, 1>>>(r, a, b); });
   }
 
   TEST_CASE("Fp subtraction 1")
   {
     test_mont_kernel<WORDS>(sub_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_sub<<<1, 2>>>(r, a, b); });
+                            { mont_sub<<<1, 1>>>(r, a, b); });
   }
 
   // TEST_CASE("Big number multiplication 1")
@@ -299,13 +299,13 @@ namespace instance1
   {
     // Here a, b are viewed as elements
     test_mont_kernel<WORDS>(prod_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_mul<<<1, 2>>>(r, a, b); });
+                            { mont_mul<<<1, 1>>>(r, a, b); });
   }
 
   TEST_CASE("Montgomery square 1")
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_square<<<1, 2>>>(r, a, b); });
+                            { mont_square<<<1, 1>>>(r, a, b); });
   }
 
   // TEST_CASE("Montgomery power 1")
@@ -399,13 +399,13 @@ namespace instance2
   TEST_CASE("Fp addition 2")
   {
     test_mont_kernel<WORDS>(sum_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_add<<<1, 2>>>(r, a, b); });
+                            { mont_add<<<1, 1>>>(r, a, b); });
   }
 
   TEST_CASE("Fp subtraction 2")
   {
     test_mont_kernel<WORDS>(sub_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_sub<<<1, 2>>>(r, a, b); });
+                            { mont_sub<<<1, 1>>>(r, a, b); });
   }
 
   // TEST_CASE("Big number multiplication 2")
@@ -430,13 +430,13 @@ namespace instance2
   TEST_CASE("Montgomery multiplication 2")
   {
     test_mont_kernel<WORDS>(prod_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_mul<<<1, 2>>>(r, a, b); });
+                            { mont_mul<<<1, 1>>>(r, a, b); });
   }
 
   TEST_CASE("Montgomery square 2")
   {
     test_mont_kernel<WORDS>(a_square_mont, a, b, [](u32 *r, const u32 *a, const u32 *b)
-                            { mont_square<<<1, 2>>>(r, a, b); });
+                            { mont_square<<<1, 1>>>(r, a, b); });
   }
 
   // TEST_CASE("Montgomery power 2")

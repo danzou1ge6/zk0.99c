@@ -25,6 +25,8 @@
 #define unlikely(x) (x) [[unlikely]]
 #endif 
 
+#define TPI 2
+
 namespace msm {
 
     template <u32 windows, u32 bits_per_window>
@@ -164,25 +166,28 @@ namespace msm {
             pip_thread.consumer_release();
 
             if (sign) p = p.neg();
-            acc = acc + p;
+            // acc = acc + p;
+            acc = acc.add_pre(p);
 
             u32 next_key = next_index & key_mask;
             u32 next_window_id = (next_index >> (Config::s + 1)) & window_mask;
 
             if unlikely(next_key != key || next_window_id != window_id) {
-                if unlikely(first) {
+                if unlikely(first) {                    
                     unsigned short *mutex_ptr;
                     mutex_ptr = mutex.addr(window_id, key - 1);
                     lock(mutex_ptr);
                     if (initialized.get(window_id, key - 1)) {
-                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                        // sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
                     } else {
                         sum.get(window_id, key - 1) = acc;
                         initialized.get(window_id, key - 1) = 1;
                     }
                     unlock(mutex_ptr);
                     first = false;
-                } else {
+                }
+                else {
                     sum.get(window_id, key - 1) = acc;
                     initialized.get(window_id, key - 1) = 1;
                 }
@@ -203,12 +208,14 @@ namespace msm {
         pip_thread.consumer_release();
 
         if (sign) p = p.neg();
-        acc = acc + p;
+        // acc = acc + p;
+        acc = acc.add_pre(p);
         
         auto mutex_ptr = mutex.addr(window_id, key - 1);
         lock(mutex_ptr);
         if (initialized.get(window_id, key - 1)) {
-            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+            // sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+            sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
         } else {
             sum.get(window_id, key - 1) = acc;
             initialized.get(window_id, key - 1) = 1;
@@ -243,16 +250,20 @@ namespace msm {
         for(u32 i=buckets_per_thread; i > 0; i--) {
             u32 loadIndex = wtid * buckets_per_thread + i;
             if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
-                sum = sum + buckets_sum.get(window_id, loadIndex - 1);
+                // sum = sum + buckets_sum.get(window_id, loadIndex - 1);
+                sum = sum.add_pre(buckets_sum.get(window_id, loadIndex - 1));
             }
-            sum_of_sums = sum_of_sums + sum;
+            // sum_of_sums = sum_of_sums + sum;
+            sum_of_sums = sum_of_sums.add_pre(sum);
         }
 
         u32 scale = wtid * buckets_per_thread;
 
-        sum = sum.multiple(scale);
+        // sum = sum.multiple(scale);
+        sum = sum.multiple_pre(scale);
 
-        sum_of_sums = sum_of_sums + sum;
+        // sum_of_sums = sum_of_sums + sum;
+        sum_of_sums = sum_of_sums.add_pre(sum);
 
         // Reduce within the block
         // 1. reduce in each warp
@@ -261,11 +272,16 @@ namespace msm {
         u32 warp_id = threadIdx.x / 32;
         u32 lane_id = threadIdx.x % 32;
 
-        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
         if (lane_id == 0) {
             sum_of_sums.store(smem[warp_id]);
@@ -282,16 +298,22 @@ namespace msm {
         }
 
         // Reduce in warp1
-        if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        // if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        // if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        // if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        // if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        // if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
         // Store to global memory
         if (threadIdx.x == 0) {
             for (u32 i = 0; i < window_id * Config::s; i++) {
-               sum_of_sums = sum_of_sums.self_add();
+            //    sum_of_sums = sum_of_sums.self_add();
+                sum_of_sums = sum_of_sums.self_add_pre();
             }
             reduceMemory[blockIdx.x] = sum_of_sums;
         }
@@ -305,7 +327,8 @@ namespace msm {
         for (u32 i = 1; i < Config::n_precompute; i++) {
             #pragma unroll
             for (u32 j = 0; j < Config::n_windows * Config::s; j++) {
-                p = p.self_add();
+                // p = p.self_add();
+                p = p.self_add_pre();
             }
 
             p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
@@ -387,7 +410,7 @@ namespace msm {
                 if constexpr (Config::debug) {
                     cudaEventRecord(start, stream);
                 }
-                
+                // printf("Stage3\n");
                 u32 block_size = 512;
                 u32 grid_size = num_sm;
                 distribute_windows<Config, Number><<<grid_size, block_size, 0, stream>>>(
@@ -411,7 +434,7 @@ namespace msm {
                 if constexpr (Config::debug) {
                     cudaEventRecord(start, stream);
                 }
-
+                // printf("Stage4\n");
                 cub::DeviceRadixSort::SortKeys(
                     d_temp_storage_sort, temp_storage_bytes_sort,
                     indexs + part_len * Config::actual_windows, indexs,
@@ -425,7 +448,7 @@ namespace msm {
                     cudaEventElapsedTime(&elapsedTime, start, stop);
                     std::cout << "MSM sort time:" << elapsedTime << std::endl;
                 }
-
+                // printf("Stage5\n");
                 // wait before the first point copy
                 if (points_transported == 0) PROPAGATE_CUDA_ERROR(cudaStreamWaitEvent(copy_stream, begin_point_copy[stage_point_transporting], cudaEventWaitDefault));
                 if constexpr (Config::debug) {
@@ -471,7 +494,7 @@ namespace msm {
                 // Do bucket sum
                 block_size = 256;
                 grid_size = num_sm;
-
+                // printf("Stage6\n");
                 bucket_sum<Config, 8, Point, PointAffine><<<grid_size, block_size, 0, stream>>>(
                     cur_len * Config::actual_windows,
                     cnt_zero,
@@ -489,6 +512,7 @@ namespace msm {
                     cudaEventElapsedTime(&elapsedTime, start, stop);
                     std::cout << "MSM bucket sum time:" << elapsedTime << std::endl;
                 }
+                // printf("Stage7\n");
 
                 if (j == batches - 1) PROPAGATE_CUDA_ERROR(cudaEventRecord(begin_point_copy[stage_point], stream));
 
@@ -511,7 +535,7 @@ namespace msm {
         }
 
         u32 grid = reduce_blocks; 
-
+        // printf("Stage8\n");
         // start reduce
         for (int j = 0; j < batches; j++) {
             if constexpr (Config::debug) {
@@ -529,7 +553,7 @@ namespace msm {
                 std::cout << "MSM bucket reduce time:" << ms << std::endl;
             }
         }
-
+        // printf("Stage9\n");
         return cudaSuccess;
         }
  
@@ -690,7 +714,9 @@ namespace msm {
             u32 cur_batch = std::min(batch_per_run, batches - i);
             cudaEvent_t start_reduce;
             PROPAGATE_CUDA_ERROR(cudaEventCreateWithFlags(&start_reduce, cudaEventBlockingSync));
+            // printf("Stage2\n");
             PROPAGATE_CUDA_ERROR(run(cur_batch, h_scalers.begin() + i, i == 0, stream));
+            // printf("Stage10\n");
 
             if (i > 0) host_reduce_thread.join();
             
@@ -698,13 +724,15 @@ namespace msm {
                 PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_reduce_buffer[j], reduce_buffer[j], sizeof(Point) * reduce_blocks, cudaMemcpyDeviceToHost, stream));
             }
             PROPAGATE_CUDA_ERROR(cudaEventRecord(start_reduce, stream));
-
+            // printf("Stage11\n");
             host_reduce_thread = std::thread(host_reduce, h_reduce_buffer, h_result.begin() + i, reduce_blocks, cur_batch, start_reduce);
+            // printf("Stage12\n");
         }
 
         host_reduce_thread.join();
 
         PROPAGATE_CUDA_ERROR(cudaGetLastError());
+        // printf("Stage13\n");
 
         return cudaSuccess;
     }
@@ -866,6 +894,7 @@ namespace msm {
             }
             threads[i] = std::thread(run_msm, std::ref(msm_instances[i]), cur_scalers, std::ref(results[i]), streams[i]);
         }
+        // printf("Stage14\n");
 
         for (u32 i = 0; i < cards.size(); i++) {
             threads[i].join();
@@ -879,6 +908,7 @@ namespace msm {
                 h_result[i] = h_result[i] + results[j][i];
             }
         }
+        // printf("Stage15\n");
         return cudaSuccess;
     }
 

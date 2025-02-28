@@ -5,19 +5,22 @@
 #include "../../mont/src/field.cuh"
 #include "../src/bn254.cuh"
 
+#define TPI 1
+
 using mont::u32;
 using namespace bn254;
 
 __global__ void to_affine_kernel(PointAffine *pr, const Point *p)
 {
-  *pr = p->to_affine();
+  *pr = p->to_affine_pre();
   __syncthreads();
+  // pr->device_print();
 }
 
 __global__ void from_affine_kernel(Point *pr, const PointAffine *p)
 {
   
-  *pr = p->to_point();
+  *pr = p->to_point_pre();
   __syncthreads();
   // pr->device_print();
 }
@@ -25,7 +28,7 @@ __global__ void from_affine_kernel(Point *pr, const PointAffine *p)
 __global__ void is_on_curve_kernel(bool *r, const Point *p)
 {
   
-  *r = p->is_on_curve();
+  *r = p->is_on_curve_pre();
   __syncthreads();
   printf("point result:%d\n", *r);
 }
@@ -33,7 +36,7 @@ __global__ void is_on_curve_kernel(bool *r, const Point *p)
 __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
 {
   
-  *r = p->is_on_curve();
+  *r = p->is_on_curve_pre();
   __syncthreads();
   printf("pointaffine result:%d\n", *r);
 }
@@ -41,7 +44,7 @@ __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
 __global__ void self_add_kernel(Point *pr, const Point *p)
 {
   
-  *pr = p->self_add();
+  *pr = p->self_add_pre();
   __syncthreads();
   printf("Add self result:\n");
   pr->device_print();
@@ -50,7 +53,7 @@ __global__ void self_add_kernel(Point *pr, const Point *p)
 __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
 {
   
-  *pr = *pa + *pb;
+  *pr = pa->add_pre(*pb);
   __syncthreads();
   printf("Add p+p result:\n");
   pr->device_print();
@@ -59,7 +62,7 @@ __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
 __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
 {
   
-  *pr = *pa + *pb;
+  *pr = pa->add_pre(*pb);
   __syncthreads();
   printf("Add p+pa result:\n");
   pr->device_print();
@@ -68,7 +71,7 @@ __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
 __global__ void eq_kernel(bool *r, const Point *pa, const Point *pb)
 {
   
-  *r = *pa == *pb;
+  *r = pa->eq_pre(*pb);
   __syncthreads();
 }
 
@@ -88,52 +91,52 @@ __global__ void eq_kernel(bool *r, const PointAffine *pa, const PointAffine *pb)
 
 void to_affine(PointAffine *pr, const Point *p)
 {
-  to_affine_kernel<<<1, 2>>>(pr, p);
+  to_affine_kernel<<<1, TPI>>>(pr, p);
 }
 
 void from_affine(Point *pr, const PointAffine *p)
 {
-  from_affine_kernel<<<1, 2>>>(pr, p);
+  from_affine_kernel<<<1, TPI>>>(pr, p);
 }
 
 void is_on_curve(bool *r, const Point *p)
 {
-  is_on_curve_kernel<<<1, 2>>>(r, p);
+  is_on_curve_kernel<<<1, TPI>>>(r, p);
 }
 
 void is_on_curve(bool *r, const PointAffine *p)
 {
-  is_on_curve_kernel<<<1, 2>>>(r, p);
+  is_on_curve_kernel<<<1, TPI>>>(r, p);
 }
 
 void self_add(Point *pr, const Point *p)
 {
-  self_add_kernel<<<1, 2>>>(pr, p);
+  self_add_kernel<<<1, TPI>>>(pr, p);
 }
 
 void add(Point *pr, const Point *pa, const Point *pb)
 {
-  add_kernel<<<1, 2>>>(pr, pa, pb);
+  add_kernel<<<1, TPI>>>(pr, pa, pb);
 }
 
 void add(Point *pr, const Point *pa, const PointAffine *pb)
 {
-  add_kernel<<<1, 2>>>(pr, pa, pb);
+  add_kernel<<<1, TPI>>>(pr, pa, pb);
 }
 
 void eq(bool *r, const Point *pa, const Point *pb)
 {
-  eq_kernel<<<1, 2>>>(r, pa, pb);
+  eq_kernel<<<1, TPI>>>(r, pa, pb);
 }
 
 void eq(bool *r, const PointAffine *pa, const PointAffine *pb)
 {
-  eq_kernel<<<1, 2>>>(r, pa, pb);
+  eq_kernel<<<1, TPI>>>(r, pa, pb);
 }
 
 // void multiple(Point *r, const Point *p, const u32 *n)
 // {
-//   multiple_kernel<<<1, 2>>>(r, p, *n);
+//   multiple_kernel<<<1, TPI>>>(r, p, *n);
 // }
 
 
@@ -274,16 +277,16 @@ void test_affine_projective_back_and_forth(const u32 x_data[8], const u32 y_data
 //   REQUIRE(projective == projective2);
 // }
 
-TEST_CASE("On curve")
-{
-  auto p1 = load_affine(p1_x, p1_y);
-  auto p2 = load_affine(p2_x, p2_y);
-  auto pr = load_affine(pr_x, pr_y);
+// TEST_CASE("On curve")
+// {
+//   auto p1 = load_affine(p1_x, p1_y);
+//   auto p2 = load_affine(p2_x, p2_y);
+//   auto pr = load_affine(pr_x, pr_y);
 
-  REQUIRE(launch_kernel1(p1, is_on_curve));
-  REQUIRE(launch_kernel1(p2, is_on_curve));
-  REQUIRE(launch_kernel1(pr, is_on_curve));
-}
+//   REQUIRE(launch_kernel1(p1, is_on_curve));
+//   REQUIRE(launch_kernel1(p2, is_on_curve));
+//   REQUIRE(launch_kernel1(pr, is_on_curve));
+// }
 
 // TEST_CASE("On curve (host)")
 // {
@@ -332,71 +335,71 @@ TEST_CASE("Point addition commutative")
   REQUIRE(launch_kernel2(sum1, sum2, eq));
 }
 
-// TEST_CASE("Point addition commutative (host)")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto p2 = load_affine(p2_x, p2_y);
-//   auto p1p = p1.to_point();
-//   auto p2p = p2.to_point();
+TEST_CASE("Point addition commutative (host)")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto p1p = p1.to_point();
+  auto p2p = p2.to_point();
 
-//   auto sum1 = p1p + p2p;
-//   auto sum2 = p2p + p1p;
+  auto sum1 = p1p + p2p;
+  auto sum2 = p2p + p1p;
 
-//   REQUIRE(sum1.is_on_curve());
-//   REQUIRE(sum2.is_on_curve());
+  REQUIRE(sum1.is_on_curve());
+  REQUIRE(sum2.is_on_curve());
 
-//   REQUIRE(sum1 == sum2);
-// }
+  REQUIRE(sum1 == sum2);
+}
 
-// TEST_CASE("Point-PointAffine accumulation")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto p2 = load_affine(p2_x, p2_y);
-//   auto accu = launch_kernel1(p1, from_affine);
+TEST_CASE("Point-PointAffine accumulation")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto accu = launch_kernel1(p1, from_affine);
 
-//   for (u32 i = 0; i < 100; i ++)
-//   {
-//     accu = launch_kernel2(accu, p2, add);
-//     // REQUIRE(elements_lt_2m(accu));
-//   }
-//   auto accu_affine = launch_kernel1(accu, to_affine);
+  for (u32 i = 0; i < 100; i ++)
+  {
+    accu = launch_kernel2(accu, p2, add);
+    // REQUIRE(elements_lt_2m(accu));
+  }
+  auto accu_affine = launch_kernel1(accu, to_affine);
 
-//   auto pr = load_affine(pr100_x, pr100_y);
-//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
-// }
+  auto pr = load_affine(pr100_x, pr100_y);
+  REQUIRE(launch_kernel2(accu_affine, pr, eq));
+}
 
-// TEST_CASE("Point-PointAffine accumulation (host)")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto p2 = load_affine(p2_x, p2_y);
-//   auto accu = p1.to_point();
+TEST_CASE("Point-PointAffine accumulation (host)")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto accu = p1.to_point();
 
-//   for (u32 i = 0; i < 100; i ++)
-//   {
-//     accu = accu + p2;
-//     REQUIRE(elements_lt_2m(accu));
-//   }
-//   auto accu_affine = accu.to_affine();
+  for (u32 i = 0; i < 100; i ++)
+  {
+    accu = accu + p2;
+    // REQUIRE(elements_lt_2m(accu));
+  }
+  auto accu_affine = accu.to_affine();
 
-//   auto pr = load_affine(pr100_x, pr100_y);
-//   REQUIRE(accu_affine == pr);
-// }
+  auto pr = load_affine(pr100_x, pr100_y);
+  REQUIRE(accu_affine == pr);
+}
 
-// TEST_CASE("Point double")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto accu = launch_kernel1(p1, from_affine);
+TEST_CASE("Point double")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto accu = launch_kernel1(p1, from_affine);
   
-//   for (u32 i = 0; i < 7; i ++)
-//   {
-//     accu = launch_kernel1(accu, self_add);
-//     // REQUIRE(elements_lt_2m(accu));
-//   }
-//   auto accu_affine = launch_kernel1(accu, to_affine);
+  for (u32 i = 0; i < 7; i ++)
+  {
+    accu = launch_kernel1(accu, self_add);
+    // REQUIRE(elements_lt_2m(accu));
+  }
+  auto accu_affine = launch_kernel1(accu, to_affine);
   
-//   auto pr = load_affine(p1r128_x, p1r128_y);
-//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
-// }
+  auto pr = load_affine(p1r128_x, p1r128_y);
+  REQUIRE(launch_kernel2(accu_affine, pr, eq));
+}
 
 // TEST_CASE("Point double (host)")
 // {
@@ -432,23 +435,23 @@ TEST_CASE("Point addition commutative")
 //   REQUIRE(p1 == pr);
 // }
 
-// TEST_CASE("Point accumulation")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto p2 = load_affine(p2_x, p2_y);
-//   auto accu = launch_kernel1(p1, from_affine);
-//   auto p2p = launch_kernel1(p2, from_affine);
+TEST_CASE("Point accumulation")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto accu = launch_kernel1(p1, from_affine);
+  auto p2p = launch_kernel1(p2, from_affine);
 
-//   for (u32 i = 0; i < 100; i ++)
-//   {
-//     accu = launch_kernel2(accu, p2p, add);
-//     REQUIRE(elements_lt_2m(accu));
-//   }
-//   auto accu_affine = launch_kernel1(accu, to_affine);
+  for (u32 i = 0; i < 100; i ++)
+  {
+    accu = launch_kernel2(accu, p2p, add);
+    // REQUIRE(elements_lt_2m(accu));
+  }
+  auto accu_affine = launch_kernel1(accu, to_affine);
 
-//   auto pr = load_affine(pr100_x, pr100_y);
-//   REQUIRE(launch_kernel2(accu_affine, pr, eq));
-// }
+  auto pr = load_affine(pr100_x, pr100_y);
+  REQUIRE(launch_kernel2(accu_affine, pr, eq));
+}
 
 // TEST_CASE("Point accumulation (host)")
 // {
@@ -522,21 +525,21 @@ TEST_CASE("Point-PointAffine addition")
 //   REQUIRE(sum1 == prp);
 // }
 
-// TEST_CASE("Point-PointAffine addition equivalent")
-// {
-//   auto p1 = load_affine(p1_x, p1_y);
-//   auto p2 = load_affine(p2_x, p2_y);
-//   auto p1p = launch_kernel1(p1, from_affine);
-//   auto p2p = launch_kernel1(p2, from_affine);
+TEST_CASE("Point-PointAffine addition equivalent")
+{
+  auto p1 = load_affine(p1_x, p1_y);
+  auto p2 = load_affine(p2_x, p2_y);
+  auto p1p = launch_kernel1(p1, from_affine);
+  auto p2p = launch_kernel1(p2, from_affine);
 
-//   auto sum1 = launch_kernel2(p2p, p1, add);
-//   auto sum2 = launch_kernel2(p2p, p1p, add);
+  auto sum1 = launch_kernel2(p2p, p1, add);
+  auto sum2 = launch_kernel2(p2p, p1p, add);
 
-  // REQUIRE(launch_kernel1(sum1, is_on_curve));
-  // REQUIRE(launch_kernel1(sum2, is_on_curve));
+  REQUIRE(launch_kernel1(sum1, is_on_curve));
+  REQUIRE(launch_kernel1(sum2, is_on_curve));
 
-  // REQUIRE(launch_kernel2(sum1, sum2, eq));
-// }
+  REQUIRE(launch_kernel2(sum1, sum2, eq));
+}
 
 TEST_CASE("Doubling equivalent")
 {

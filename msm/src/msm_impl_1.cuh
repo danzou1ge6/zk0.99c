@@ -244,7 +244,7 @@ namespace msm {
 
         sum[group_id] = Point::identity();
         sum_of_sums[group_id] = Point::identity();
-
+        printf("1\n");
         for(u32 i=buckets_per_thread; i > 0; i--) {
             u32 loadIndex = wtid * buckets_per_thread + i;
             if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
@@ -252,7 +252,7 @@ namespace msm {
             }
             sum_of_sums[group_id] = sum_of_sums[group_id] + sum[group_id];
         }
-
+        printf("2\n");
         u32 scale = wtid * buckets_per_thread;
 
         // sum = sum.multiple(scale);
@@ -269,9 +269,11 @@ namespace msm {
               res[group_id] = res[group_id] + sum[group_id];
             }
         }
+        printf("3\n");
         sum[group_id] = res[group_id];
 
         sum_of_sums[group_id] = sum_of_sums[group_id] + sum[group_id];
+        printf("4\n");
 
         // Reduce within the block
         // 1. reduce in each warp
@@ -318,22 +320,29 @@ namespace msm {
             }
         }
         else {
+            printf("5\n");
             for(int i=div_ceil(THREADS_PER_WARP, TPI*2); i>0; i=i/2) {
                 if(lane_id < 2*i) {
+                    assert(group_id+i < WarpPerBlock * THREADS_PER_WARP / TPI);
                     sum_of_sums[group_id] = sum_of_sums[group_id] + sum_of_sums[group_id+i];
                 }
             }
+            printf("6\n");
             for(int i=div_ceil(WarpPerBlock, 2); i>0; i=i/2) {
                 if(lane_id < 2 && warp_id < i) {
+                    assert(group_id+i*div_ceil(THREADS_PER_WARP, TPI) < WarpPerBlock * THREADS_PER_WARP / TPI);
                     sum_of_sums[group_id] = sum_of_sums[group_id] + sum_of_sums[group_id+i*div_ceil(THREADS_PER_WARP, TPI)];
                 }
             }
+            printf("7\n");
             if(threadIdx.x == 0 || threadIdx.x == 1) {
                 for (u32 i = 0; i < window_id * Config::s; i++) {
                     sum_of_sums[group_id] = sum_of_sums[group_id].self_add();
                 }
+                assert(blockIdx.x < gridDim.x);
                 reduceMemory[blockIdx.x] = sum_of_sums[group_id];
             }
+            printf("8\n");
         }
     }
 
