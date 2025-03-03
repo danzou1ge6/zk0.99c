@@ -107,8 +107,9 @@ namespace msm {
         const static u32 sign_mask = 1u << Config::s;
         const static u32 window_mask = (1u << Config::window_bits) - 1;
 
-        const u32 gtid = threadIdx.x + blockIdx.x * blockDim.x;
-        const u32 threads = blockDim.x * gridDim.x;
+        const u32 gtid = (threadIdx.x + blockIdx.x * blockDim.x) / TPI;
+        const u32 threads = (blockDim.x * gridDim.x) / TPI;
+        const u32 group_id = threadIdx.x / TPI;
         const u32 zero_num = *cnt_zero;
 
         u32 work_len = div_ceil(len - zero_num, threads);
@@ -119,8 +120,8 @@ namespace msm {
         indexs += zero_num;
 
         int stage = 0;
-        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
-        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
+        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[group_id]);
+        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[group_id] + PointAffine::N_WORDS);
 
         bool first = true; // only the first bucket and the last bucket may have conflict with other threads
         auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
@@ -166,31 +167,37 @@ namespace msm {
             pip_thread.consumer_release();
 
             if (sign) p = p.neg();
-            // acc = acc + p;
-            acc = acc.add_pre(p);
+            acc = acc + p;
+            // acc = acc.add_pre(p);
 
             u32 next_key = next_index & key_mask;
             u32 next_window_id = (next_index >> (Config::s + 1)) & window_mask;
+
+            __syncwarp();
 
             if unlikely(next_key != key || next_window_id != window_id) {
                 if unlikely(first) {                    
                     unsigned short *mutex_ptr;
                     mutex_ptr = mutex.addr(window_id, key - 1);
-                    lock(mutex_ptr);
+                    if((threadIdx.x & (TPI-1)) == 0)
+                        lock(mutex_ptr);
                     if (initialized.get(window_id, key - 1)) {
-                        // sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
+                        sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+                        // sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
                     } else {
                         sum.get(window_id, key - 1) = acc;
                         initialized.get(window_id, key - 1) = 1;
                     }
-                    unlock(mutex_ptr);
+                    if((threadIdx.x & (TPI-1)) == 0)
+                        unlock(mutex_ptr);
                     first = false;
                 }
                 else {
                     sum.get(window_id, key - 1) = acc;
                     initialized.get(window_id, key - 1) = 1;
                 }
+
+                // __syncwarp();
 
                 if (initialized.get(next_window_id, next_key - 1) && (next_key != last_key || next_window_id != last_window_id)) {
                     acc = sum.get(next_window_id, next_key - 1);
@@ -208,19 +215,22 @@ namespace msm {
         pip_thread.consumer_release();
 
         if (sign) p = p.neg();
-        // acc = acc + p;
-        acc = acc.add_pre(p);
+        acc = acc + p;
+        // acc = acc.add_pre(p);
         
         auto mutex_ptr = mutex.addr(window_id, key - 1);
-        lock(mutex_ptr);
+        if((threadIdx.x & (TPI-1)) == 0)
+            lock(mutex_ptr);
         if (initialized.get(window_id, key - 1)) {
-            // sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-            sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
+            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+            // sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
         } else {
             sum.get(window_id, key - 1) = acc;
             initialized.get(window_id, key - 1) = 1;
         }
-        unlock(mutex_ptr);
+        if((threadIdx.x & (TPI-1)) == 0)
+            unlock(mutex_ptr);
+        // __syncwarp();
     }
 
     template<typename Config, u32 WarpPerBlock, typename Point>
@@ -235,12 +245,13 @@ namespace msm {
 
         __shared__ u32 smem[WarpPerBlock][Point::N_WORDS + 4]; // +4 for padding
 
-        const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
+        const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x / TPI;
         u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
 
-        u32 wtid = (blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x;
+        u32 wtid = ((blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x) / TPI;
           
         const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
+        // printf("buckets_per_thread:%d\n",buckets_per_thread);
 
         Point sum, sum_of_sums;
 
@@ -250,20 +261,30 @@ namespace msm {
         for(u32 i=buckets_per_thread; i > 0; i--) {
             u32 loadIndex = wtid * buckets_per_thread + i;
             if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
-                // sum = sum + buckets_sum.get(window_id, loadIndex - 1);
-                sum = sum.add_pre(buckets_sum.get(window_id, loadIndex - 1));
+                sum = sum + buckets_sum.get(window_id, loadIndex - 1);
+                // sum = sum.add_pre(buckets_sum.get(window_id, loadIndex - 1));
             }
-            // sum_of_sums = sum_of_sums + sum;
-            sum_of_sums = sum_of_sums.add_pre(sum);
+            sum_of_sums = sum_of_sums + sum;
+            // if(blockIdx.x == 0 && threadIdx.x == 1 && loadIndex == 1) {
+            //     printf("%d\n",loadIndex);
+            //     buckets_sum.get(window_id, loadIndex - 1).device_print();
+            //     sum.device_print();
+            //     sum_of_sums.device_print();
+            // }
+            // sum_of_sums = sum_of_sums.add_pre(sum);
         }
 
         u32 scale = wtid * buckets_per_thread;
 
-        // sum = sum.multiple(scale);
-        sum = sum.multiple_pre(scale);
+        sum = sum.multiple(scale);
+        // if(blockIdx.x == 0 && threadIdx.x == 1)
+        //     sum.device_print();
+        // sum = sum.multiple_pre(scale);
 
-        // sum_of_sums = sum_of_sums + sum;
-        sum_of_sums = sum_of_sums.add_pre(sum);
+        sum_of_sums = sum_of_sums + sum;
+        // if(blockIdx.x == 0 && threadIdx.x == 1)
+        //     sum_of_sums.device_print();
+        // sum_of_sums = sum_of_sums.add_pre(sum);
 
         // Reduce within the block
         // 1. reduce in each warp
@@ -272,66 +293,121 @@ namespace msm {
         u32 warp_id = threadIdx.x / 32;
         u32 lane_id = threadIdx.x % 32;
 
+        for(int i=16; i>=TPI; i=i/2) {
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(i);
+        }
         // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
         // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
         // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
         // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
-        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
-        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
-        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
-        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
-        sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
+        // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);        
+        // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
-        if (lane_id == 0) {
-            sum_of_sums.store(smem[warp_id]);
+        if(TPI == 1) {
+            if(lane_id == 0) {
+                sum_of_sums.store(smem[warp_id]);
+            }
+        }
+        else {
+            auto high = sum_of_sums.shuffle_down(1);
+            if (lane_id == 0) {           
+                int32_t limb;
+                int32_t PER_LIMBS = div_ceil(Point::N_WORDS / 4, TPI);
+                #pragma unroll
+                for(limb=0;limb<PER_LIMBS;limb++) {
+                    sum_of_sums.x.n.limbs[PER_LIMBS + limb] = high.x.n.limbs[PER_LIMBS + limb];
+                    sum_of_sums.y.n.limbs[PER_LIMBS + limb] = high.y.n.limbs[PER_LIMBS + limb];
+                    sum_of_sums.zz.n.limbs[PER_LIMBS + limb] = high.zz.n.limbs[PER_LIMBS + limb];
+                    sum_of_sums.zzz.n.limbs[PER_LIMBS + limb] = high.zzz.n.limbs[PER_LIMBS + limb];
+                }
+                sum_of_sums.store(smem[warp_id]);
+            }
         }
 
         __syncthreads();
 
+        // if(blockIdx.x == 0 && threadIdx.x == 0) {
+        //     for(int i=0; i<WarpPerBlock; ++i) {
+        //         auto a = Point::load(smem[i]);
+        //         printf("smem[%d]:\n",i);
+        //         a.device_print();
+        //     }
+        // }
+
         if (warp_id > 0) return;
 
-        if (threadIdx.x < WarpPerBlock) {
-            sum_of_sums = Point::load(smem[threadIdx.x]);
+        if (threadIdx.x < WarpPerBlock * TPI) {
+            sum_of_sums = Point::load(smem[threadIdx.x / TPI]);
         } else {
             sum_of_sums = Point::identity();
         }
 
         // Reduce in warp1
-        // if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        // if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        // if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        // if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        // if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
-        if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
-        if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
-        if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
-        if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
-        if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
+        if constexpr (TPI <= 16 && WarpPerBlock * TPI > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        if constexpr (TPI <= 8 && WarpPerBlock * TPI > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        if constexpr (TPI <= 4 && WarpPerBlock * TPI > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        if constexpr (TPI <= 2 && WarpPerBlock * TPI > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        if constexpr (TPI <= 1 && WarpPerBlock * TPI > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        // if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        // if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        // if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        // if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        // if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
-        // Store to global memory
-        if (threadIdx.x == 0) {
-            for (u32 i = 0; i < window_id * Config::s; i++) {
-            //    sum_of_sums = sum_of_sums.self_add();
-                sum_of_sums = sum_of_sums.self_add_pre();
+        // Store to global memory  
+        if(TPI == 1) {
+            if (threadIdx.x == 0) {
+                for (u32 i = 0; i < window_id * Config::s; i++) {
+                   sum_of_sums = sum_of_sums.self_add();
+                }
+                // if(blockIdx.x == 0)
+                //     sum_of_sums.device_print();
+                reduceMemory[blockIdx.x] = sum_of_sums;
             }
-            reduceMemory[blockIdx.x] = sum_of_sums;
-        }
+        } 
+        else {      
+            if (threadIdx.x < TPI) {
+                for (u32 i = 0; i < window_id * Config::s; i++) {
+                    sum_of_sums = sum_of_sums.self_add();
+                    // sum_of_sums = sum_of_sums.self_add_pre();
+                }
+                reduceMemory[blockIdx.x] = sum_of_sums;
+                // if(blockIdx.x == 0) {
+                //     printf("%d\n", blockIdx.x);
+                //     reduceMemory[blockIdx.x].device_print();
+                // }
+            }
+        }            
     }
 
     template <typename Config, typename Point, typename PointAffine>
     __global__ void precompute_kernel(u32 *points, u64 len) {
-        u64 gid = threadIdx.x + blockIdx.x * blockDim.x;
+        u64 gid = (threadIdx.x + blockIdx.x * blockDim.x) / TPI;
         if (gid >= len) return;
         auto p = PointAffine::load(points + gid * PointAffine::N_WORDS).to_point();
         for (u32 i = 1; i < Config::n_precompute; i++) {
             #pragma unroll
             for (u32 j = 0; j < Config::n_windows * Config::s; j++) {
-                // p = p.self_add();
-                p = p.self_add_pre();
+                p = p.self_add();
+                // p = p.self_add_pre();
             }
-
-            p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
+            auto high = p.shuffle_down(1);
+            if((threadIdx.x & (TPI-1)) == 0) {
+                int32_t limb;
+                int32_t PER_LIMBS = div_ceil(Point::N_WORDS / 4, TPI);
+                #pragma unroll
+                for(limb=0;limb<PER_LIMBS;limb++) {
+                    p.x.n.limbs[PER_LIMBS + limb] = high.x.n.limbs[PER_LIMBS + limb];
+                    p.y.n.limbs[PER_LIMBS + limb] = high.y.n.limbs[PER_LIMBS + limb];
+                    p.zz.n.limbs[PER_LIMBS + limb] = high.zz.n.limbs[PER_LIMBS + limb];
+                    p.zzz.n.limbs[PER_LIMBS + limb] = high.zzz.n.limbs[PER_LIMBS + limb];
+                }
+                p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
+            }
         }
     }
 
