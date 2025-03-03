@@ -68,7 +68,7 @@ namespace msm {
                 auto bucket_id = sign ? -bucket[window_id] : bucket[window_id];
                 u32 physical_window_id = window_id % Config::n_windows;
                 u32 point_group = window_id / Config::n_windows;
-                cnt_zero_local++;
+                if (bucket_id == 0) cnt_zero_local++;
                 u64 index = bucket_id | (sign << Config::s) | (physical_window_id << (Config::s + 1)) 
                 | ((point_group * len + i) << (Config::s + 1 + Config::window_bits));
                 indexs[(points_offset[physical_window_id] + point_group) * len + i] = index;
