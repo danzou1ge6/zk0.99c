@@ -66,7 +66,7 @@ namespace msm {
         // lines of points to be stored in memory, 1 for no precomputation
         static constexpr u32 n_precompute = div_ceil(actual_windows, n_windows);
 
-        static constexpr bool debug = DEBUG;
+        static constexpr bool debug = true;
     };
 
     template <typename Config, typename Number, typename Point, typename PointAffine>

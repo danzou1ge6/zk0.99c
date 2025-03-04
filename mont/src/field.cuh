@@ -1030,7 +1030,8 @@ namespace mont
         // np0 = cgbn_bn2mont(bn_env, a, a, mod);
         // cgbn_bn2mont(bn_env, b, b, mod);
 
-        cgbn_mont_mul(bn_env, c, a, b, mod, Params::m_prime);      
+        cgbn_mont_mul(bn_env, c, a, b, mod, Params::m_prime);
+        if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
         
         cgbn_store(bn_env, &mc, c);
         for(int i=0;i<LIMBS;++i){

@@ -600,7 +600,7 @@ __global__ void is_on_curve_kernel(bool *r, const Point *p)
   
   *r = p->is_on_curve();
   __syncthreads();
-  printf("point result:%d\n", *r);
+  // printf("point result:%d\n", *r);
 }
 
 __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
@@ -608,7 +608,7 @@ __global__ void is_on_curve_kernel(bool *r, const PointAffine *p)
   
   *r = p->is_on_curve();
   __syncthreads();
-  printf("pointaffine result:%d\n", *r);
+  // printf("pointaffine result:%d\n", *r);
 }
 
 __global__ void self_add_kernel(Point *pr, const Point *p)
@@ -616,8 +616,8 @@ __global__ void self_add_kernel(Point *pr, const Point *p)
   
   *pr = p->self_add();
   __syncthreads();
-  printf("Add self result:\n");
-  pr->device_print();
+  // printf("Add self result:\n");
+  // pr->device_print();
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
@@ -625,8 +625,8 @@ __global__ void add_kernel(Point *pr, const Point *pa, const Point *pb)
   
   *pr = *pa + *pb;
   __syncthreads();
-  printf("Add p+p result:\n");
-  pr->device_print();
+  // printf("Add p+p result:\n");
+  // pr->device_print();
 }
 
 __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
@@ -634,8 +634,8 @@ __global__ void add_kernel(Point *pr, const Point *pa, const PointAffine *pb)
   
   *pr = *pa + *pb;
   __syncthreads();
-  printf("Add p+pa result:\n");
-  pr->device_print();
+  // printf("Add p+pa result:\n");
+  // pr->device_print();
 }
 
 __global__ void eq_kernel(bool *r, const Point *pa, const Point *pb)
@@ -905,6 +905,22 @@ TEST_CASE("Point addition commutative")
   REQUIRE(launch_kernel2(sum1, sum2, eq));
 }
 
+TEST_CASE("Point addition")
+{
+  const u32 e1[8] = BIG_INTEGER_CHUNKS8(0x26cc617f, 0xce90dfd1, 0x60d82182, 0xceac740f, 0x64336449, 0x26efdd88, 0x28ab3a8, 0x2bd1ffc5);
+  const u32 e2[8] = BIG_INTEGER_CHUNKS8(0x2c36accf, 0x5e001791, 0x88030708, 0xb528fe18, 0x947667e4, 0x1d5b365d, 0x37bfb14d, 0x51671dc8);  // eq
+  const u32 e3[8] = BIG_INTEGER_CHUNKS8(0x11591c9d, 0x33421216, 0x1f015023, 0x13d9bbde, 0x4e7697ff, 0x48393182, 0x6ce62faf, 0xdb82c235);
+  const u32 e[8] = BIG_INTEGER_CHUNKS8(0xc25eb32, 0xfe178959, 0xd78d11d0, 0xe8aca406, 0x88ee464, 0x4e2de91b, 0xcde9b8e4, 0xfb3e4849);
+
+  Point accu(Element::load(e1), Element::load(e2), Element::load(e3), Element::load(e));
+  auto p2 = load_affine(p2_x, p2_y);
+  auto p2p = launch_kernel1(p2, from_affine);
+  // p2p.device_print();
+
+  accu = launch_kernel2(accu, p2p, add);
+  // accu.device_print();
+}
+
 // TEST_CASE("Point addition commutative (host)")
 // {
 //   auto p1 = load_affine(p1_x, p1_y);
@@ -1011,11 +1027,13 @@ TEST_CASE("Point accumulation")
   auto p2 = load_affine(p2_x, p2_y);
   auto accu = launch_kernel1(p1, from_affine);
   auto p2p = launch_kernel1(p2, from_affine);
+  // p2p.device_print();
 
   for (u32 i = 0; i < 100; i ++)
   {
     accu = launch_kernel2(accu, p2p, add);
     // REQUIRE(elements_lt_2m(accu));
+    // accu.device_print();
   }
   auto accu_affine = launch_kernel1(accu, to_affine);
 
