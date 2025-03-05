@@ -57,6 +57,15 @@ namespace curve
                 y.store(p + Element::LIMBS);
             }
 
+            __device__ __forceinline__ void store_cg(u32 *p) {
+                int group_thread = threadIdx.x & (x.get_TPI()-1);
+                int PER_LIMBS = (Element::LIMBS + x.get_TPI() - 1) / x.get_TPI();
+                for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
+                    p[i] = x.n.limbs[i];
+                    p[Element::LIMBS + i] = y.n.limbs[i];
+                }
+            }
+
             __host__ __device__ __forceinline__
                 PointAffine
                 operator=(const PointAffine &rhs) &
@@ -146,6 +155,16 @@ namespace curve
                     y.n.limbs[7], y.n.limbs[6], y.n.limbs[5], y.n.limbs[4], y.n.limbs[3], y.n.limbs[2], y.n.limbs[1], y.n.limbs[0]
                 );
             }
+
+            __device__ __host__ __forceinline__ PointAffine shuffle_down(const u32 delta) const & {
+                PointAffine res;
+                #pragma unroll
+                for (usize i = 0; i < Element::LIMBS; i++) {
+                    res.x.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n.limbs[i], delta);
+                    res.y.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n.limbs[i], delta);
+                }
+                return res;
+            }
          };
 
 
@@ -172,6 +191,16 @@ namespace curve
                 y.store(p + Element::LIMBS);
                 zz.store(p + Element::LIMBS * 2);
                 zzz.store(p + Element::LIMBS * 3);
+            }
+            __device__ __forceinline__ void store_cg(u32 *p) {
+                int group_thread = threadIdx.x & (x.get_TPI()-1);
+                int PER_LIMBS = (Element::LIMBS + x.get_TPI() - 1) / x.get_TPI();
+                for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
+                    p[i] = x.n.limbs[i];
+                    p[Element::LIMBS + i] = y.n.limbs[i];
+                    p[Element::LIMBS * 2 + i] = zz.n.limbs[i];
+                    p[Element::LIMBS * 3 + i] = zzz.n.limbs[i];
+                }
             }
             __host__ __device__ __forceinline__
                 PointXYZZ

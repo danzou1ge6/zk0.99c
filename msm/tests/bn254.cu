@@ -578,6 +578,8 @@
 #include "../../mont/src/field.cuh"
 #include "../src/bn254.cuh"
 
+#define TPI 4
+
 using mont::u32;
 using namespace bn254;
 
@@ -661,47 +663,47 @@ __global__ void eq_kernel(bool *r, const PointAffine *pa, const PointAffine *pb)
 
 void to_affine(PointAffine *pr, const Point *p)
 {
-  to_affine_kernel<<<1, 2>>>(pr, p);
+  to_affine_kernel<<<1, TPI>>>(pr, p);
 }
 
 void from_affine(Point *pr, const PointAffine *p)
 {
-  from_affine_kernel<<<1, 2>>>(pr, p);
+  from_affine_kernel<<<1, TPI>>>(pr, p);
 }
 
 void is_on_curve(bool *r, const Point *p)
 {
-  is_on_curve_kernel<<<1, 2>>>(r, p);
+  is_on_curve_kernel<<<1, TPI>>>(r, p);
 }
 
 void is_on_curve(bool *r, const PointAffine *p)
 {
-  is_on_curve_kernel<<<1, 2>>>(r, p);
+  is_on_curve_kernel<<<1, TPI>>>(r, p);
 }
 
 void self_add(Point *pr, const Point *p)
 {
-  self_add_kernel<<<1, 2>>>(pr, p);
+  self_add_kernel<<<1, TPI>>>(pr, p);
 }
 
 void add(Point *pr, const Point *pa, const Point *pb)
 {
-  add_kernel<<<1, 2>>>(pr, pa, pb);
+  add_kernel<<<1, TPI>>>(pr, pa, pb);
 }
 
 void add(Point *pr, const Point *pa, const PointAffine *pb)
 {
-  add_kernel<<<1, 2>>>(pr, pa, pb);
+  add_kernel<<<1, TPI>>>(pr, pa, pb);
 }
 
 void eq(bool *r, const Point *pa, const Point *pb)
 {
-  eq_kernel<<<1, 2>>>(r, pa, pb);
+  eq_kernel<<<1, TPI>>>(r, pa, pb);
 }
 
 void eq(bool *r, const PointAffine *pa, const PointAffine *pb)
 {
-  eq_kernel<<<1, 2>>>(r, pa, pb);
+  eq_kernel<<<1, TPI>>>(r, pa, pb);
 }
 
 // void multiple(Point *r, const Point *p, const u32 *n)

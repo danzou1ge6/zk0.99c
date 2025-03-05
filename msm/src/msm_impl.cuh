@@ -54,6 +54,8 @@ namespace msm {
     ) {
         u32 tid = blockIdx.x * blockDim.x + threadIdx.x;
         u32 stride = gridDim.x * blockDim.x;
+
+        u32 cnt_zero_local = 0;
         
         // Count into block-wide counter
         for (u32 i = tid; i < len; i += stride) {
@@ -69,13 +71,15 @@ namespace msm {
                 u32 physical_window_id = window_id % Config::n_windows;
                 u32 point_group = window_id / Config::n_windows;
                 if (bucket_id == 0) {
-                    atomicAdd(cnt_zero, 1);
+                    cnt_zero_local++;
                 }
                 u64 index = bucket_id | (sign << Config::s) | (physical_window_id << (Config::s + 1)) 
                 | ((point_group * len + i) << (Config::s + 1 + Config::window_bits));
                 indexs[(points_offset[physical_window_id] + point_group) * len + i] = index;
             }
         }
+        if(cnt_zero_local > 0)
+            atomicAdd(cnt_zero, cnt_zero_local);
     }
 
     __device__ __forceinline__ void lock(unsigned short *mutex_ptr, u32 wait_limit = 16) {
@@ -307,25 +311,8 @@ namespace msm {
         // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
         // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
-        if(TPI == 1) {
-            if(lane_id == 0) {
-                sum_of_sums.store(smem[warp_id]);
-            }
-        }
-        else {
-            auto high = sum_of_sums.shuffle_down(1);
-            if (lane_id == 0) {           
-                int32_t limb;
-                int32_t PER_LIMBS = div_ceil(Point::N_WORDS / 4, TPI);
-                #pragma unroll
-                for(limb=0;limb<PER_LIMBS;limb++) {
-                    sum_of_sums.x.n.limbs[PER_LIMBS + limb] = high.x.n.limbs[PER_LIMBS + limb];
-                    sum_of_sums.y.n.limbs[PER_LIMBS + limb] = high.y.n.limbs[PER_LIMBS + limb];
-                    sum_of_sums.zz.n.limbs[PER_LIMBS + limb] = high.zz.n.limbs[PER_LIMBS + limb];
-                    sum_of_sums.zzz.n.limbs[PER_LIMBS + limb] = high.zzz.n.limbs[PER_LIMBS + limb];
-                }
-                sum_of_sums.store(smem[warp_id]);
-            }
+        if(lane_id < TPI) {
+            sum_of_sums.store_cg(smem[warp_id]);
         }
 
         __syncthreads();
@@ -358,30 +345,18 @@ namespace msm {
         // if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
         // if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
 
-        // Store to global memory  
-        if(TPI == 1) {
-            if (threadIdx.x == 0) {
-                for (u32 i = 0; i < window_id * Config::s; i++) {
-                   sum_of_sums = sum_of_sums.self_add();
-                }
-                // if(blockIdx.x == 0)
-                //     sum_of_sums.device_print();
-                reduceMemory[blockIdx.x] = sum_of_sums;
+        // Store to global memory    
+        if (threadIdx.x < TPI) {
+            for (u32 i = 0; i < window_id * Config::s; i++) {
+                sum_of_sums = sum_of_sums.self_add();
+                // sum_of_sums = sum_of_sums.self_add_pre();
             }
-        } 
-        else {      
-            if (threadIdx.x < TPI) {
-                for (u32 i = 0; i < window_id * Config::s; i++) {
-                    sum_of_sums = sum_of_sums.self_add();
-                    // sum_of_sums = sum_of_sums.self_add_pre();
-                }
-                reduceMemory[blockIdx.x] = sum_of_sums;
-                // if(blockIdx.x == 0) {
-                //     printf("%d\n", blockIdx.x);
-                //     reduceMemory[blockIdx.x].device_print();
-                // }
-            }
-        }            
+            reduceMemory[blockIdx.x] = sum_of_sums;
+            // if(blockIdx.x == 0) {
+            //     printf("%d\n", blockIdx.x);
+            //     reduceMemory[blockIdx.x].device_print();
+            // }
+        }        
     }
 
     template <typename Config, typename Point, typename PointAffine>
@@ -395,19 +370,24 @@ namespace msm {
                 p = p.self_add();
                 // p = p.self_add_pre();
             }
-            auto high = p.shuffle_down(1);
-            if((threadIdx.x & (TPI-1)) == 0) {
-                int32_t limb;
-                int32_t PER_LIMBS = div_ceil(Point::N_WORDS / 4, TPI);
-                #pragma unroll
-                for(limb=0;limb<PER_LIMBS;limb++) {
-                    p.x.n.limbs[PER_LIMBS + limb] = high.x.n.limbs[PER_LIMBS + limb];
-                    p.y.n.limbs[PER_LIMBS + limb] = high.y.n.limbs[PER_LIMBS + limb];
-                    p.zz.n.limbs[PER_LIMBS + limb] = high.zz.n.limbs[PER_LIMBS + limb];
-                    p.zzz.n.limbs[PER_LIMBS + limb] = high.zzz.n.limbs[PER_LIMBS + limb];
-                }
-                p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
-            }
+            // if(TPI == 1) {
+            //     p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
+            // }
+            // else {
+            //     auto ph = p.to_affine();
+            //     auto high = ph.shuffle_down(1);
+            //     if((threadIdx.x & (TPI-1)) == 0) {
+            //         int32_t limb;
+            //         int32_t PER_LIMBS = div_ceil(Point::N_WORDS / 4, TPI);
+            //         #pragma unroll
+            //         for(limb=0;limb<PER_LIMBS;limb++) {
+            //             ph.x.n.limbs[PER_LIMBS + limb] = high.x.n.limbs[PER_LIMBS + limb];
+            //             ph.y.n.limbs[PER_LIMBS + limb] = high.y.n.limbs[PER_LIMBS + limb];
+            //         }
+            //         ph.store(points + (gid + i * len) * PointAffine::N_WORDS);
+            //     }
+            // }
+            p.to_affine().store_cg(points + (gid + i * len) * PointAffine::N_WORDS);
         }
     }
 
@@ -847,7 +827,7 @@ namespace msm {
 
             PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points, h_points[0] + offset * PointAffine::N_WORDS, sizeof(PointAffine) * part_len, cudaMemcpyHostToDevice, stream));
 
-            u32 grid = div_ceil(cur_len, 256);
+            u32 grid = div_ceil(cur_len, 256) * TPI;
             u32 block = 256;
             precompute_kernel<Config, Point, PointAffine><<<grid, block, 0, stream>>>(points, cur_len);
 

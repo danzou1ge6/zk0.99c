@@ -693,7 +693,7 @@ namespace mont
             }
         }
         uint32_t warp_thread = threadIdx.x % 32;
-        uint32_t move = warp_thread / 2 * 2;
+        uint32_t move = warp_thread / TPI * TPI;
         uint32_t sync = 1;
         for(int i=0; i<TPI; ++i) {
           sync *= 2;
@@ -806,6 +806,10 @@ namespace mont
     __host__ __device__ __forceinline__  Element() {}
     constexpr __host__ __device__ __forceinline__ Element(Number<LIMBS> n) : n(n) {}
 
+    __host__ __device__ __forceinline__ u32 get_TPI() {
+      return TPI;
+    }
+
     static __host__ __device__ __forceinline__
         Element
         load(const u32 *p, u32 stride = 1)
@@ -885,7 +889,7 @@ namespace mont
           }
       }
       uint32_t warp_thread = threadIdx.x % 32;
-      uint32_t move = warp_thread / 2 * 2;
+      uint32_t move = warp_thread / TPI * TPI;
       uint32_t sync = 1;
       for(int i=0; i<TPI; ++i) {
         sync *= 2;
@@ -937,7 +941,7 @@ namespace mont
           }
       }
       uint32_t warp_thread = threadIdx.x % 32;
-      uint32_t move = warp_thread / 2 * 2;
+      uint32_t move = warp_thread / TPI * TPI;
       uint32_t sync = 1;
       for(int i=0; i<TPI; ++i) {
         sync *= 2;
