@@ -806,10 +806,6 @@ namespace mont
     __host__ __device__ __forceinline__  Element() {}
     constexpr __host__ __device__ __forceinline__ Element(Number<LIMBS> n) : n(n) {}
 
-    __host__ __device__ __forceinline__ u32 get_TPI() {
-      return TPI;
-    }
-
     static __host__ __device__ __forceinline__
         Element
         load(const u32 *p, u32 stride = 1)
@@ -1384,7 +1380,32 @@ namespace mont
         return Element::zero();
       Element r;
 #ifdef __CUDA_ARCH__
-      device_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
+      if(TPI == 1) {
+        device_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
+      }
+      else {
+        context_t bn_context;
+        env_t bn_env(bn_context);
+
+        typename env_t::cgbn_t a, b, c;
+        cgbn_mem_t<LIMBS*32> ma, mb, mc;
+
+        for(int i=0;i<LIMBS;++i){
+          ma._limbs[i] = Params::m().limbs[i];
+          mb._limbs[i] = n.limbs[i];
+          mc._limbs[i] = r.n.limbs[i];
+        }
+        cgbn_load(bn_env, a, &ma);
+        cgbn_load(bn_env, b, &mb);
+        cgbn_load(bn_env, c, &mc);
+
+        cgbn_sub(bn_env, c, a, b);
+        
+        cgbn_store(bn_env, &mc, c);
+        for(int i=0;i<LIMBS;++i){
+          r.n.limbs[i] = mc._limbs[i];
+        }
+      }
 #else
       host_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);
 #endif

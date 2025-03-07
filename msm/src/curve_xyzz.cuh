@@ -11,6 +11,8 @@
 #define unlikely(x) (x) [[unlikely]]
 #endif 
 
+#define TPI 2
+
 namespace curve
 {
     using mont::u32;
@@ -57,9 +59,17 @@ namespace curve
                 y.store(p + Element::LIMBS);
             }
 
+            __device__ __forceinline__ void load_cg(const u32 *p) {
+                int group_thread = threadIdx.x & (TPI-1);
+                int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
+                for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
+                    x.n.limbs[i] = p[i];
+                    y.n.limbs[i] = p[Element::LIMBS + i];
+                }
+            }
             __device__ __forceinline__ void store_cg(u32 *p) {
-                int group_thread = threadIdx.x & (x.get_TPI()-1);
-                int PER_LIMBS = (Element::LIMBS + x.get_TPI() - 1) / x.get_TPI();
+                int group_thread = threadIdx.x & (TPI-1);
+                int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
                 for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
                     p[i] = x.n.limbs[i];
                     p[Element::LIMBS + i] = y.n.limbs[i];
@@ -192,9 +202,19 @@ namespace curve
                 zz.store(p + Element::LIMBS * 2);
                 zzz.store(p + Element::LIMBS * 3);
             }
+            __device__ __forceinline__ void load_cg(const u32 *p) {
+                int group_thread = threadIdx.x & (TPI-1);
+                int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
+                for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
+                    x.n.limbs[i] = p[i];
+                    y.n.limbs[i] = p[Element::LIMBS + i];
+                    zz.n.limbs[i] = p[Element::LIMBS * 2 + i];
+                    zzz.n.limbs[i] = p[Element::LIMBS * 3 + i];
+                }
+            }
             __device__ __forceinline__ void store_cg(u32 *p) {
-                int group_thread = threadIdx.x & (x.get_TPI()-1);
-                int PER_LIMBS = (Element::LIMBS + x.get_TPI() - 1) / x.get_TPI();
+                int group_thread = threadIdx.x & (TPI-1);
+                int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
                 for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
                     p[i] = x.n.limbs[i];
                     p[Element::LIMBS + i] = y.n.limbs[i];
