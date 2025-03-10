@@ -1,6 +1,7 @@
 #pragma once
 #include "field.cuh"
 
+// scalar field for BLS12-381
 namespace bls12381_fr
 {
     // bls12381_fr

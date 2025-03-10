@@ -10,8 +10,12 @@
 #include "./storage.cuh"
 
 #define BIG_INTEGER_CHUNKS8(c7, c6, c5, c4, c3, c2, c1, c0) {c0, c1, c2, c3, c4, c5, c6, c7}
+#define BIG_INTEGER_CHUNKS12(c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
+  {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11}
 #define BIG_INTEGER_CHUNKS16(c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
   {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15}
+#define BIG_INTEGER_CHUNKS24(c23, c22, c21, c20, c19, c18, c17, c16, c15, c14, c13, c12, c11, c10, c9, c8, c7, c6, c5, c4, c3, c2, c1, c0) \
+  {c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23}
 
 #include "ptx.cuh"
 
