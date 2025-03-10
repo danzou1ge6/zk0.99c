@@ -5,7 +5,7 @@
 namespace bls12377_fq
 {
 
-    using Number = mont::Number<8>;
+    using Number = mont::Number<12>;
     using mont::u32;
     // 258664426012969094010652733694893533536393512754914660539884262666720468348340822774968888139573360124440321458177
     // const auto params = Params {

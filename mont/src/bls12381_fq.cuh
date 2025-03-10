@@ -14,7 +14,7 @@ namespace bls12381_fq
     //     .m_prime = 4294770685
     // };
 
-    using Number = mont::Number<8>;
+    using Number = mont::Number<12>;
     using mont::u32;
 
     namespace device_constants
