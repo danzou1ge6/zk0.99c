@@ -578,7 +578,7 @@
 #include "../../mont/src/field.cuh"
 #include "../src/bn254.cuh"
 
-#define TPI 4
+#define TPI 2
 
 using mont::u32;
 using namespace bn254;

@@ -824,13 +824,13 @@ namespace mont
     __device__ __forceinline__ void load_cg(typename env_t::cgbn_t &r, const u32 *a) const {
         int32_t group_thread=threadIdx.x & TPI-1;
         int32_t limb;
-        int32_t PER_LIMBS = div_ceil(u32(LIMBS), TPI);
+        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
 
         #pragma unroll
         for(limb=0;limb<PER_LIMBS;limb++) {
-            r._limbs[limb]=0;
-            if(group_thread*PER_LIMBS<LIMBS-limb) 
+            if(group_thread*PER_LIMBS<LIMBS-limb) {
                 r._limbs[limb]=a[group_thread*PER_LIMBS + limb];
+            }
         }
     }
 
@@ -1002,23 +1002,28 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::m().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = rhs.n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
-
-        // load_cg<env_t>(mod, Params::m().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, rhs.n.limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::m().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
+        // printf(
+        //   "thread %d\n{ this = %x %x %x %x %x %x %x %x\n, rhs = %x %x %x %x %x %x %x %x\n}\n",
+        //   threadIdx.x, n.limbs[7], n.limbs[6], n.limbs[5], n.limbs[4], n.limbs[3], n.limbs[2], n.limbs[1], n.limbs[0], 
+        //   rhs.n.limbs[7], rhs.n.limbs[6], rhs.n.limbs[5], rhs.n.limbs[4], rhs.n.limbs[3], rhs.n.limbs[2], rhs.n.limbs[1], rhs.n.limbs[0]
+        // );
+        
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
         // printf(
         //   "thread %d\n{ a = %x %x %x %x\n, b = %x %x %x %x\n, c = %x %x %x %x\n",
         //   threadIdx.x, a._limbs[3], a._limbs[2], a._limbs[1], a._limbs[0], 
@@ -1033,11 +1038,11 @@ namespace mont
         cgbn_mont_mul(bn_env, c, a, b, mod, Params::m_prime);
         if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
         
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1095,32 +1100,32 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::m().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = rhs.n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::m().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
 
-        // load_cg<env_t>(mod, Params::m().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, rhs.n.limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_add(bn_env, c, a, b);
         if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
 
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1154,32 +1159,32 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::m().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = rhs.n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::m().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
 
-        // load_cg<env_t>(mod, Params::m().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, rhs.n.limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_sub(bn_env, c, a, b);
         if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
         
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1212,32 +1217,32 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::mm2().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = rhs.n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::mm2().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
 
-        // load_cg<env_t>(mod, Params::mm2().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, rhs.n.limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        load_cg<env_t>(mod, Params::mm2().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_sub(bn_env, c, a, b);
         if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
         
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1270,32 +1275,32 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::mm2().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = rhs.n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::mm2().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = rhs.n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
 
-        // load_cg<env_t>(mod, Params::mm2().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, rhs.n.limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        load_cg<env_t>(mod, Params::mm2().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, rhs.n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_add(bn_env, c, a, b);
         if (cgbn_compare(bn_env, c, mod) >= 0) cgbn_sub(bn_env, c, c, mod);
 
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1328,32 +1333,32 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t mod, a, b, c;
-        cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> mmod, ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          mmod._limbs[i] = Params::m().limbs[i];
-          ma._limbs[i] = n.limbs[i];
-          mb._limbs[i] = Params::m().limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, mod, &mmod);
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   mmod._limbs[i] = Params::m().limbs[i];
+        //   ma._limbs[i] = n.limbs[i];
+        //   mb._limbs[i] = Params::m().limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, mod, &mmod);
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
 
-        // load_cg<env_t>(mod, Params::m().limbs);
-        // load_cg<env_t>(a, n.limbs);
-        // load_cg<env_t>(b, Params::m().limbs);
-        // load_cg<env_t>(c, r.n.limbs);
+        load_cg<env_t>(mod, Params::m().limbs);
+        load_cg<env_t>(a, n.limbs);
+        load_cg<env_t>(b, Params::m().limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_sub(bn_env, c, a, b);
         if (cgbn_compare(bn_env, b, a) > 0) cgbn_add(bn_env, c, c, mod);
         
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
-        // store_cg<env_t>(r.n.limbs, c);
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
         // for(int i=0;i<LIMBS;++i)
         //   printf("threadIdx:%d limbs[%d]:0x%x\n", threadIdx.x, i, r.n.limbs[i]);
       }
@@ -1388,23 +1393,28 @@ namespace mont
         env_t bn_env(bn_context);
 
         typename env_t::cgbn_t a, b, c;
-        cgbn_mem_t<LIMBS*32> ma, mb, mc;
+        // cgbn_mem_t<LIMBS*32> ma, mb, mc;
 
-        for(int i=0;i<LIMBS;++i){
-          ma._limbs[i] = Params::m().limbs[i];
-          mb._limbs[i] = n.limbs[i];
-          mc._limbs[i] = r.n.limbs[i];
-        }
-        cgbn_load(bn_env, a, &ma);
-        cgbn_load(bn_env, b, &mb);
-        cgbn_load(bn_env, c, &mc);
+        // for(int i=0;i<LIMBS;++i){
+        //   ma._limbs[i] = Params::m().limbs[i];
+        //   mb._limbs[i] = n.limbs[i];
+        //   mc._limbs[i] = r.n.limbs[i];
+        // }
+        // cgbn_load(bn_env, a, &ma);
+        // cgbn_load(bn_env, b, &mb);
+        // cgbn_load(bn_env, c, &mc);
+
+        load_cg<env_t>(a, Params::m().limbs);
+        load_cg<env_t>(b, n.limbs);
+        load_cg<env_t>(c, r.n.limbs);
 
         cgbn_sub(bn_env, c, a, b);
         
-        cgbn_store(bn_env, &mc, c);
-        for(int i=0;i<LIMBS;++i){
-          r.n.limbs[i] = mc._limbs[i];
-        }
+        // cgbn_store(bn_env, &mc, c);
+        // for(int i=0;i<LIMBS;++i){
+        //   r.n.limbs[i] = mc._limbs[i];
+        // }
+        store_cg<env_t>(r.n.limbs, c);
       }
 #else
       host_arith::sub<LIMBS>(r.n.limbs, Params::m().limbs, n.limbs);

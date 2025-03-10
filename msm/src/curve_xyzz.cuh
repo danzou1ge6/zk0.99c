@@ -371,7 +371,7 @@ namespace curve
                 if unlikely(p.is_zero() && r.is_zero()) {
                     return this->self_add();
                 }
-                auto pp = p.square();            
+                auto pp = p.square();
                 auto ppp = p * pp; 
                 auto q = u1 * pp;
                 auto x3 = r.square() - ppp - q - q;

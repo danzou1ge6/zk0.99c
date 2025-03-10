@@ -247,88 +247,80 @@ namespace msm {
 
         assert(gridDim.x % Config::n_windows == 0);
 
-        // if(TPI == 1) {
-        //     __shared__ u32 smem[WarpPerBlock][Point::N_WORDS + 4]; // +4 for padding
+        if(TPI == 1) {
+            __shared__ u32 smem[WarpPerBlock][Point::N_WORDS + 4]; // +4 for padding
 
-        //     const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
-        //     u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
+            const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x;
+            u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
 
-        //     u32 wtid = (blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x;
+            u32 wtid = (blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x;
             
-        //     const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
+            const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
 
-        //     Point sum, sum_of_sums;
+            Point sum, sum_of_sums;
 
-        //     sum = Point::identity();
-        //     sum_of_sums = Point::identity();
+            sum = Point::identity();
+            sum_of_sums = Point::identity();
 
-        //     for(u32 i=buckets_per_thread; i > 0; i--) {
-        //         u32 loadIndex = wtid * buckets_per_thread + i;
-        //         if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
-        //             sum = sum + buckets_sum.get(window_id, loadIndex - 1);
-        //         }
-        //         sum_of_sums = sum_of_sums + sum;
-        //     }
+            for(u32 i=buckets_per_thread; i > 0; i--) {
+                u32 loadIndex = wtid * buckets_per_thread + i;
+                if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
+                    sum = sum + buckets_sum.get(window_id, loadIndex - 1);
+                }
+                sum_of_sums = sum_of_sums + sum;
+            }
 
-        //     u32 scale = wtid * buckets_per_thread;
+            u32 scale = wtid * buckets_per_thread;
 
-        //     sum = sum.multiple(scale);
+            sum = sum.multiple(scale);
 
-        //     sum_of_sums = sum_of_sums + sum;
+            sum_of_sums = sum_of_sums + sum;
 
-        //     // Reduce within the block
-        //     // 1. reduce in each warp
-        //     // 2. store to smem
-        //     // 3. reduce in warp1
-        //     u32 warp_id = threadIdx.x / 32;
-        //     u32 lane_id = threadIdx.x % 32;
+            // Reduce within the block
+            // 1. reduce in each warp
+            // 2. store to smem
+            // 3. reduce in warp1
+            u32 warp_id = threadIdx.x / 32;
+            u32 lane_id = threadIdx.x % 32;
 
-        //     for(int i=16; i>=TPI; i=i/2) {
-        //         sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(i);
-        //     }
-        //     // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        //     // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        //     // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        //     // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        //     // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);        
-        //     // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
-        //     // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
-        //     // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
-        //     // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
-        //     // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+            sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);     
 
-        //     if(lane_id < TPI) {
-        //         sum_of_sums.store_cg(smem[warp_id]);
-        //     }
+            if(lane_id == 0) {
+                sum_of_sums.store(smem[warp_id]);
+            }
 
-        //     __syncthreads();
+            __syncthreads();
 
 
-        //     if (warp_id > 0) return;
+            if (warp_id > 0) return;
 
-        //     if (threadIdx.x < WarpPerBlock * TPI) {
-        //         sum_of_sums = Point::load(smem[threadIdx.x / TPI]);
-        //     } else {
-        //         sum_of_sums = Point::identity();
-        //     }
+            if (threadIdx.x < WarpPerBlock) {
+                sum_of_sums = Point::load(smem[threadIdx.x]);
+            } else {
+                sum_of_sums = Point::identity();
+            }
 
-        //     // Reduce in warp1
-        //     if constexpr (TPI <= 16 && WarpPerBlock * TPI > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        //     if constexpr (TPI <= 8 && WarpPerBlock * TPI > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        //     if constexpr (TPI <= 4 && WarpPerBlock * TPI > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        //     if constexpr (TPI <= 2 && WarpPerBlock * TPI > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        //     if constexpr (TPI <= 1 && WarpPerBlock * TPI > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+            // Reduce in warp1
+            if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+            if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+            if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+            if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+            if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
 
-        //     // Store to global memory    
-        //     if (threadIdx.x < TPI) {
-        //         for (u32 i = 0; i < window_id * Config::s; i++) {
-        //             sum_of_sums = sum_of_sums.self_add();
-        //         }
-        //         reduceMemory[blockIdx.x] = sum_of_sums;
-        //     } 
-        // }
+            // Store to global memory    
+            if (threadIdx.x < TPI) {
+                for (u32 i = 0; i < window_id * Config::s; i++) {
+                    sum_of_sums = sum_of_sums.self_add();
+                }
+                reduceMemory[blockIdx.x] = sum_of_sums;
+            } 
+        }
 
-        // else {
+        else {
             __shared__ Point sum[WarpPerBlock * THREADS_PER_WARP / TPI];
             __shared__ Point sum_of_sums[WarpPerBlock * THREADS_PER_WARP / TPI];
 
@@ -349,39 +341,20 @@ namespace msm {
                     sum[group_id] = sum[group_id] + buckets_sum.get(window_id, loadIndex - 1);
                 }
                 sum_of_sums[group_id] = sum_of_sums[group_id] + sum[group_id];
-                // if(blockIdx.x == 0 && threadIdx.x == 1 && loadIndex == 1) {
-                //     printf("%d\n",loadIndex);
-                //     buckets_sum.get(window_id, loadIndex - 1).device_print();
-                //     sum.device_print();
-                //     sum_of_sums.device_print();
-                // }
-                // sum_of_sums = sum_of_sums.add_pre(sum);
             }
 
             u32 scale = wtid * buckets_per_thread;
 
             sum[group_id] = sum[group_id].multiple(scale);
-            // if(blockIdx.x == 0 && threadIdx.x == 1)
-            //     sum.device_print();
-            // sum = sum.multiple_pre(scale);
 
             sum_of_sums[group_id] = sum_of_sums[group_id] + sum[group_id];
-            // if(blockIdx.x == 0 && threadIdx.x == 1)
-            //     sum_of_sums.device_print();
-            // sum_of_sums = sum_of_sums.add_pre(sum);
-
-            // Reduce within the block
-            // 1. reduce in each warp
-            // 2. store to smem
-            // 3. reduce in warp1
-            // u32 warp_id = threadIdx.x / 32;
-            // u32 lane_id = threadIdx.x % 32;
+            
+            __syncthreads();
 
             for(int i = WarpPerBlock * THREADS_PER_WARP / TPI / 2; i>=1; i=i/2) {
+                if(group_id < i)
+                    sum_of_sums[group_id] = sum_of_sums[group_id] + sum_of_sums[group_id + i];
                 __syncthreads();
-                sum[group_id] = sum_of_sums[group_id + i];
-                __syncthreads();
-                sum_of_sums[group_id] = sum_of_sums[group_id] + sum[group_id];
             }
             if(threadIdx.x < TPI) {
                 for (u32 i = 0; i < window_id * Config::s; i++) {
@@ -389,7 +362,117 @@ namespace msm {
                 }
                 reduceMemory[blockIdx.x] = sum_of_sums[group_id];
             }
-        // }  
+        }  
+        // __shared__ u32 smem[WarpPerBlock][Point::N_WORDS + 4]; // +4 for padding
+
+        // const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x / TPI;
+        // u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
+
+        // u32 wtid = ((blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x) / TPI;
+          
+        // const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
+        // // printf("buckets_per_thread:%d\n",buckets_per_thread);
+
+        // Point sum, sum_of_sums;
+
+        // sum = Point::identity();
+        // sum_of_sums = Point::identity();
+
+        // for(u32 i=buckets_per_thread; i > 0; i--) {
+        //     u32 loadIndex = wtid * buckets_per_thread + i;
+        //     if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
+        //         sum = sum + buckets_sum.get(window_id, loadIndex - 1);
+        //         // sum = sum.add_pre(buckets_sum.get(window_id, loadIndex - 1));
+        //     }
+        //     sum_of_sums = sum_of_sums + sum;
+        //     // if(blockIdx.x == 0 && threadIdx.x == 1 && loadIndex == 1) {
+        //     //     printf("%d\n",loadIndex);
+        //     //     buckets_sum.get(window_id, loadIndex - 1).device_print();
+        //     //     sum.device_print();
+        //     //     sum_of_sums.device_print();
+        //     // }
+        //     // sum_of_sums = sum_of_sums.add_pre(sum);
+        // }
+
+        // u32 scale = wtid * buckets_per_thread;
+
+        // sum = sum.multiple(scale);
+        // // if(blockIdx.x == 0 && threadIdx.x == 1)
+        // //     sum.device_print();
+        // // sum = sum.multiple_pre(scale);
+
+        // sum_of_sums = sum_of_sums + sum;
+        // // if(blockIdx.x == 0 && threadIdx.x == 1)
+        // //     sum_of_sums.device_print();
+        // // sum_of_sums = sum_of_sums.add_pre(sum);
+
+        // // Reduce within the block
+        // // 1. reduce in each warp
+        // // 2. store to smem
+        // // 3. reduce in warp1
+        // u32 warp_id = threadIdx.x / 32;
+        // u32 lane_id = threadIdx.x % 32;
+
+        // for(int i=16; i>=TPI; i=i/2) {
+        //     sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(i);
+        // }
+        // // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        // // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        // // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        // // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        // // sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);        
+        // // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        // // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        // // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        // // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        // // sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
+
+        // if(lane_id < TPI) {
+        //     sum_of_sums.store_cg(smem[warp_id]);
+        // }
+
+        // __syncthreads();
+
+        // // if(blockIdx.x == 0 && threadIdx.x == 0) {
+        // //     for(int i=0; i<WarpPerBlock; ++i) {
+        // //         auto a = Point::load(smem[i]);
+        // //         printf("smem[%d]:\n",i);
+        // //         a.device_print();
+        // //     }
+        // // }
+
+        // if (warp_id > 0) return;
+
+        // if (threadIdx.x < WarpPerBlock * TPI) {
+        //     sum_of_sums = Point::load(smem[threadIdx.x / TPI]);
+        // } else {
+        //     sum_of_sums = Point::identity();
+        // }
+
+        // // Reduce in warp1
+        // if constexpr (TPI <= 16 && WarpPerBlock * TPI > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        // if constexpr (TPI <= 8 && WarpPerBlock * TPI > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        // if constexpr (TPI <= 4 && WarpPerBlock * TPI > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        // if constexpr (TPI <= 2 && WarpPerBlock * TPI > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        // if constexpr (TPI <= 1 && WarpPerBlock * TPI > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        // // if constexpr (WarpPerBlock > 16) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(16));
+        // // if constexpr (WarpPerBlock > 8) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(8));
+        // // if constexpr (WarpPerBlock > 4) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(4));
+        // // if constexpr (WarpPerBlock > 2) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(2));
+        // // if constexpr (WarpPerBlock > 1) sum_of_sums = sum_of_sums.add_pre(sum_of_sums.shuffle_down(1));
+
+        // // Store to global memory    
+        // if (threadIdx.x < TPI) {
+        //     for (u32 i = 0; i < window_id * Config::s; i++) {
+        //         sum_of_sums = sum_of_sums.self_add();
+        //         // sum_of_sums = sum_of_sums.self_add_pre();
+        //     }
+        //     reduceMemory[blockIdx.x] = sum_of_sums;
+        //     // if(blockIdx.x == 0) {
+        //     //     printf("%d\n", blockIdx.x);
+        //     //     reduceMemory[blockIdx.x].device_print();
+        //     // }
+        // }        
     }
 
     template <typename Config, typename Point, typename PointAffine>
