@@ -1,7 +1,7 @@
 from random import randint
 import math
 
-from .common import *
+from common import *
 
 def m_magic(m: int, n_words: int) -> int:
     x, y, gcd = ext_gcd(m, 2 ** (n_words * 32))
@@ -66,6 +66,6 @@ def one_sample(bits: int, m: int) -> str:
     return s
 
 if __name__ == "__main__":
-    p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+    p = 0x12ab655e9a2ca55660b44d1e5c37b00159aa76fed00000010a11800000000001
     print(one_sample(256, p))
 
