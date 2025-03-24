@@ -36,7 +36,7 @@ namespace curve
             }
 
             friend std::istream& operator>>(std::istream &is, PointAffine &p) {
-                is >> p.x.n >> p.y.n;
+                is >> p.x >> p.y;
                 return is;
             }
 
@@ -265,13 +265,10 @@ namespace curve
 
             __device__ __host__ __forceinline__ PointXYZZ shuffle_down(const u32 delta) const & {
                 PointXYZZ res;
-                #pragma unroll
-                for (usize i = 0; i < Element::LIMBS; i++) {
-                    res.x.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n.limbs[i], delta);
-                    res.y.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n.limbs[i], delta);
-                    res.zz.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, zz.n.limbs[i], delta);
-                    res.zzz.n.limbs[i] = __shfl_down_sync(0xFFFFFFFF, zzz.n.limbs[i], delta);
-                }
+                res.x = x.shuffle_down(delta);
+                res.y = y.shuffle_down(delta);
+                res.zz = zz.shuffle_down(delta);
+                res.zzz = zzz.shuffle_down(delta);
                 return res;
             }
         };

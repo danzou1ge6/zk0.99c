@@ -83,3 +83,24 @@ def quick_pow(x: int, m: int, p: int) -> int:
         x = (x * x) % m
         p = p >> 1
     return r
+
+def to_mont(x: int, m: int, r: int) -> int:
+    return (x * r) % m
+
+def from_mont(x: int, m: int, r: int) -> int:
+    return (x * inv_modulo(r, m)) % m
+
+def fr2_mul(a: tuple[int, int], b: tuple[int, int], m: int, ns: int) -> tuple[int, int]:
+    return (a[0] * b[0] + a[1] * b[1] * ns) % m, (a[0] * b[1] + a[1] * b[0]) % m
+
+def fr2_quick_pow(x: tuple[int, int], m: int, p: int, ns: int) -> tuple[int, int]:
+    r = (1, 0)
+    while p!= 0:
+        if p & 1 == 1:
+            r = fr2_mul(r, x, m, ns)
+        x = fr2_mul(x, x, m, ns)
+        p = p >> 1
+    return r
+
+def fr2_inv(x: tuple[int, int], m: int, ns: int) -> tuple[int, int]:
+    return fr2_quick_pow(x, m, m - 2, ns)

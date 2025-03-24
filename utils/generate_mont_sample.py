@@ -1,5 +1,6 @@
 from random import randint
 import math
+import argparse
 
 from common import *
 
@@ -18,13 +19,23 @@ def params(bits: int, m: int) -> str:
     r2_mod = r * r % m
     s = ''
     s += f"// {m}\n"
-    s +=  "const auto params = Params {\n"
-    s += f"  .m = BIG_INTEGER_CHUNKS8({chunks(m, n_words=n_words)}),\n"
-    s += f"  .mm2 = BIG_INTEGER_CHUNKS8({chunks(m * 2, n_words=n_words)}),\n"
-    s += f"  .r_mod = BIG_INTEGER_CHUNKS8({chunks(r_mod, n_words=n_words)}),\n"
-    s += f"  .r2_mod = BIG_INTEGER_CHUNKS8({chunks(r2_mod, n_words=n_words)}),\n"
-    s += f"  .m_prime = {m_prime}\n"
+    s +=  "namespace device_constants {\n"
+    s += f"  const __device__ Number m = BIG_INTEGER_CHUNKS8({chunks(m, n_words=n_words)});\n"
+    s += f"  const __device__ Number mm2 = BIG_INTEGER_CHUNKS8({chunks(m * 2, n_words=n_words)});\n"
+    s += f"  const __device__ Number m_sub2 = BIG_INTEGER_CHUNKS8({chunks(m - 2, n_words=n_words)});\n"
+    s += f"  const __device__ Number r_mod = BIG_INTEGER_CHUNKS8({chunks(r_mod, n_words=n_words)});\n"
+    s += f"  const __device__ Number r2_mod = BIG_INTEGER_CHUNKS8({chunks(r2_mod, n_words=n_words)});\n"
     s +=  "};\n"
+
+    s +=  "namespace host_constants {\n"
+    s += f"  const Number m = BIG_INTEGER_CHUNKS8({chunks(m, n_words=n_words)});\n"
+    s += f"  const Number mm2 = BIG_INTEGER_CHUNKS8({chunks(m * 2, n_words=n_words)});\n"
+    s += f"  const Number m_sub2 = BIG_INTEGER_CHUNKS8({chunks(m - 2, n_words=n_words)});\n"
+    s += f"  const Number r_mod = BIG_INTEGER_CHUNKS8({chunks(r_mod, n_words=n_words)});\n"
+    s += f"  const Number r2_mod = BIG_INTEGER_CHUNKS8({chunks(r2_mod, n_words=n_words)});\n"
+    s +=  "};\n"
+
+    s += f"const u32 m_prime = {m_prime};\n"
     return s
 
 def one_sample(bits: int, m: int) -> str:
@@ -66,6 +77,10 @@ def one_sample(bits: int, m: int) -> str:
     return s
 
 if __name__ == "__main__":
-    p = 0x01C4C62D92C41110229022EEE2CDADB7F997505B8FAFED5EB7E8F96C97D87307FDB925E8A0ED8D99D124D9A15AF79DB117E776F218059DB80F0DA5CB537E38685ACCE9767254A4638810719AC425F0E39D54522CDD119F5E9063DE245E8001
-    print(one_sample(768, p))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--bits", type=int, default=256)
+    parser.add_argument("-m", type=int, default=0)
+    args = parser.parse_args()
+
+    print(one_sample(args.bits, args.m))
 

@@ -1186,8 +1186,15 @@ namespace mont
   __forceinline__ std::ostream &
   operator<<(std::ostream &os, const Element<Params> &e)
   {
-    auto n = e.to_number();
-    os << n;
+    os << e.n;
+    return os;
+  }
+
+  template <class Params>
+  __forceinline__ std::istream &
+  operator>>(std::istream &is, Element<Params> &e)
+  {
+    is >> e.n;
     return os;
   }
 
