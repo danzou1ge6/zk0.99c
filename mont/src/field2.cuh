@@ -39,7 +39,7 @@ namespace mont {
       return Element2(Once::zero(), Once::zero());
     }
 
-    static __host__ __device__ __forceinline__ constexpr bool is_zero() const &
+    __host__ __device__ __forceinline__ constexpr bool is_zero() const &
     {
       return c0.is_zero() && c1.is_zero();
     }
@@ -152,6 +152,7 @@ namespace mont {
     }
 
     __host__ __device__ __forceinline__
+        void
         to_number(Number<LIMBS> &c0, Number<LIMBS> &c1) const &
     {
       c0 = this->c0.to_number();
@@ -238,7 +239,7 @@ namespace mont {
   operator<<(std::istream &is, Element2<Once, Params> &e)
   {
     is >> e.c0 >> e.c1;
-    return os;
+    return is;
   }
 }
 

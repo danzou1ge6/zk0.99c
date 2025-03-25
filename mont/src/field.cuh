@@ -1195,7 +1195,7 @@ namespace mont
   operator>>(std::istream &is, Element<Params> &e)
   {
     is >> e.n;
-    return os;
+    return is;
   }
 
   template <typename Field, u32 io_group>
