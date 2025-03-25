@@ -263,12 +263,12 @@ namespace curve
                 return res;
             }
 
-            __device__ __host__ __forceinline__ PointXYZZ shuffle_down(const u32 delta) const & {
+            __device__ __host__ __forceinline__ PointXYZZ shuffle_down(const u32 delta, u32 mask = 0xffffffff) const & {
                 PointXYZZ res;
-                res.x = x.shuffle_down(delta);
-                res.y = y.shuffle_down(delta);
-                res.zz = zz.shuffle_down(delta);
-                res.zzz = zzz.shuffle_down(delta);
+                res.x = x.shuffle_down(delta, mask);
+                res.y = y.shuffle_down(delta, mask);
+                res.zz = zz.shuffle_down(delta, mask);
+                res.zzz = zzz.shuffle_down(delta, mask);
                 return res;
             }
         };
