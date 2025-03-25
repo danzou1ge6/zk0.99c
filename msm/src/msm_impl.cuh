@@ -91,6 +91,25 @@ namespace msm {
         atomicCAS(mutex_ptr, (unsigned short int)1, (unsigned short int)0);
     }
 
+    template <typename Config, typename Point>
+    __device__ __forceinline__ void sum_back(
+        Point &acc,
+        u32 window_id,
+        u32 key,
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
+        Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
+        Array2D<Point, Config::n_windows, Config::n_buckets> sum
+    ) {
+        auto mutex_ptr = mutex.addr(window_id, key - 1);
+        lock(mutex_ptr);
+        if (initialized.get(window_id, key - 1)) {
+            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+        } else {
+            sum.get(window_id, key - 1) = acc;
+            initialized.get(window_id, key - 1) = 1;
+        }
+        unlock(mutex_ptr);
+    }
     template <typename Config, u32 WarpPerBlock, typename Point, typename PointAffine>
     __global__ void bucket_sum(
         const u64 len,
@@ -206,15 +225,57 @@ namespace msm {
         if (sign) p = p.neg();
         acc = acc + p;
         
-        auto mutex_ptr = mutex.addr(window_id, key - 1);
-        lock(mutex_ptr);
-        if (initialized.get(window_id, key - 1)) {
-            sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
-        } else {
-            sum.get(window_id, key - 1) = acc;
-            initialized.get(window_id, key - 1) = 1;
+        // here may have conflict with other threads
+        // in the case when several threads calculate the same bucket
+        // we do intra warp reduction first
+        // use dynamic warp reduction, if no conflict, only extra shfl is used
+        // if all threads have same peer, full warp reduction is used
+
+        u32 mask[5] = {0xFFFFFFFF, 0x55555555, 0x11111111, 0x01010101, 0x00010001};
+        u32 lane_id = threadIdx.x & 31;
+        bool different_peer = false;
+        #pragma unroll
+        for (u32 lg_delta = 0; lg_delta < 5; lg_delta++) {
+            if (lg_delta != 0 && __all_sync(mask[lg_delta], different_peer)) {
+                // all threads have different peer, write back directly
+                sum_back<Config>(acc, window_id, key, mutex, initialized, sum);
+                break;
+            }
+            u32 delta = 1 << lg_delta;
+            u32 peer_window_id = __shfl_xor_sync(mask[lg_delta], window_id, delta);
+            u32 peer_key = __shfl_xor_sync(mask[lg_delta], key, delta);
+            Point peer_acc = acc.shuffle_down(delta, mask[lg_delta]);
+
+            different_peer = window_id != peer_window_id || key != peer_key;
+            if (lane_id % 2 != 0) {
+                if (different_peer) {
+                    // write back by myself
+                    sum_back<Config>(acc, window_id, key, mutex, initialized, sum);
+                }
+                break;
+            } else {
+                if (!different_peer) {
+                    // add up the peer
+                    acc = acc + peer_acc;
+                }
+                if (lg_delta == 4) {
+                    // write back by myself
+                    sum_back<Config>(acc, window_id, key, mutex, initialized, sum);
+                }
+            }
+            lane_id /= 2;
+            __syncwarp();
         }
-        unlock(mutex_ptr);
+        // direct write back
+        // auto mutex_ptr = mutex.addr(window_id, key - 1);
+        // lock(mutex_ptr);
+        // if (initialized.get(window_id, key - 1)) {
+        //     sum.get(window_id, key - 1) = sum.get(window_id, key - 1) + acc;
+        // } else {
+        //     sum.get(window_id, key - 1) = acc;
+        //     initialized.get(window_id, key - 1) = 1;
+        // }
+        // unlock(mutex_ptr);
     }
 
     template<typename Config, u32 WarpPerBlock, typename Point>
