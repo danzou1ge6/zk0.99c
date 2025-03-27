@@ -24,7 +24,7 @@ namespace alt_bn128_fr
         const Number r2_mod = BIG_INTEGER_CHUNKS8(0x216d0b1, 0x7f4e44a5, 0x8c49833d, 0x53bb8085, 0x53fe3ab1, 0xe35c59e3, 0x1bb8e645, 0xae216da7);
     };
 
-    const u32 m_prime = 4026531839;
+    const u32 m_prime_ = 4026531839;
 
     struct Params
     {
@@ -56,7 +56,7 @@ namespace alt_bn128_fr
 #endif
         }
         // m' = -m^(-1) mod b where b = 2^32
-        static const u32 m_prime = m_prime;
+        static const u32 m_prime = m_prime_;
         // r_mod = R mod m,
         static const __host__ __device__ __forceinline__ Number r_mod()
         {

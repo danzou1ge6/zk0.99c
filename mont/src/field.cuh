@@ -1186,7 +1186,7 @@ namespace mont
   __forceinline__ std::ostream &
   operator<<(std::ostream &os, const Element<Params> &e)
   {
-    os << e.n;
+    os << e.to_number();
     return os;
   }
 
@@ -1194,7 +1194,9 @@ namespace mont
   __forceinline__ std::istream &
   operator>>(std::istream &is, Element<Params> &e)
   {
-    is >> e.n;
+    Number<Params::LIMBS> n;
+    is >> n;
+    e = Element<Params>::from_number(n);
     return is;
   }
 

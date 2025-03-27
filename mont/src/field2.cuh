@@ -230,13 +230,13 @@ namespace mont {
   __forceinline__ std::ostream &
   operator<<(std::ostream &os, const Element2<Once, Params> &e)
   {
-    os << e.c0 << "+" << e.c1 << "x";
+    os << e.c0 << " " << e.c1;
     return os;
   }
 
   template <class Once, class Params>
   __forceinline__ std::istream &
-  operator<<(std::istream &is, Element2<Once, Params> &e)
+  operator>>(std::istream &is, Element2<Once, Params> &e)
   {
     is >> e.c0 >> e.c1;
     return is;
