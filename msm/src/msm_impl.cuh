@@ -120,7 +120,9 @@ namespace msm {
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
         Array2D<Point, Config::n_windows, Config::n_buckets> sum
     ) {
-        __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
+        extern __shared__ u32 smem[];
+        Array2D<u32, WarpPerBlock * THREADS_PER_WARP, PointAffine::N_WORDS * 2 + 4> point_buffer(smem);
+        // __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
         const static u32 key_mask = (1u << Config::s) - 1;
         const static u32 sign_mask = 1u << Config::s;
         const static u32 window_mask = (1u << Config::window_bits) - 1;
@@ -137,8 +139,8 @@ namespace msm {
         indexs += zero_num;
 
         int stage = 0;
-        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x]);
-        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer[threadIdx.x] + PointAffine::N_WORDS);
+        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer.addr(threadIdx.x, 0));
+        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer.addr(threadIdx.x, PointAffine::N_WORDS));
 
         bool first = true; // only the first bucket and the last bucket may have conflict with other threads
         auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
@@ -512,8 +514,15 @@ namespace msm {
                 // Do bucket sum
                 block_size = 256;
                 grid_size = num_sm;
+                constexpr u32 warp_num = 8;
 
-                bucket_sum<Config, 8, Point, PointAffine><<<grid_size, block_size, 0, stream>>>(
+                usize shared_size = (PointAffine::N_WORDS * 2 + 4) * warp_num * THREADS_PER_WARP * sizeof(u32);
+
+                auto sum_kernel = bucket_sum<Config, warp_num, Point, PointAffine>;
+
+                PROPAGATE_CUDA_ERROR(cudaFuncSetAttribute(sum_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
+
+                sum_kernel<<<grid_size, block_size, shared_size, stream>>>(
                     cur_len * Config::actual_windows,
                     cnt_zero,
                     indexs,
