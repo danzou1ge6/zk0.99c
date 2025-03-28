@@ -3,6 +3,8 @@
 #include <array>
 #include <thread>
 
+#define TPI 2
+
 namespace msm {
 
     using mont::u32;
@@ -52,6 +54,7 @@ namespace msm {
     u32 TARGET_WINDOWS = 1, bool DEBUG = true>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
+        static constexpr u32 LIMBS = div_ceil(BITS, 32);
         static constexpr u32 s = WINDOW_SIZE; // must <= 31
         static constexpr u32 n_buckets = pow2(s - 1); // [1, 2^{s-1}] buckets, using signed digit to half the number of buckets
 
@@ -69,12 +72,12 @@ namespace msm {
         static constexpr bool debug = DEBUG;
     };
 
-    template <typename Config, typename Number, typename Point, typename PointAffine>
+    template <typename Config, typename Element, typename Point, typename PointAffine, typename PointAll>
     class MSM {
         int device;
         std::array<const u32*, Config::n_precompute> h_points;
         Point **d_buckets_sum_buf;
-        Array2D<Point, Config::n_windows, Config::n_buckets> *buckets_sum;
+        Array2D<Point, Config::n_windows, Config::n_buckets*TPI> *buckets_sum;
         unsigned short *mutex_buf;
         unsigned short **initialized_buf;
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> *initialized;
@@ -120,7 +123,7 @@ namespace msm {
 
         cudaError_t free_gpu(cudaStream_t stream = 0);
 
-        cudaError_t msm(const std::vector<u32*>& h_scalers, std::vector<Point> &h_result, cudaStream_t stream = 0);
+        cudaError_t msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result, cudaStream_t stream = 0);
 
         ~MSM();
     };
@@ -134,12 +137,12 @@ namespace msm {
     };
 
     // each msm will be decomposed into multiple msm instances, each instance will be run on a single GPU
-    template <typename Config, typename Number, typename Point, typename PointAffine>
+    template <typename Config, typename Element, typename Point, typename PointAffine, typename PointAll>
     class MultiGPUMSM {
         u32 parts, scaler_stages, point_stages, batch_per_run;
         u64 len, part_len;
         const std::vector<u32> cards;
-        std::vector<MSM<Config, Number, Point, PointAffine>> msm_instances;
+        std::vector<MSM<Config, Element, Point, PointAffine, PointAll>> msm_instances;
         std::vector<cudaStream_t> streams;
         // TODO: use thread pool
         std::vector<std::thread> threads;
@@ -153,7 +156,7 @@ namespace msm {
 
         void set_points(std::array<u32*, Config::n_precompute> host_points);
 
-        cudaError_t msm(const std::vector<u32*>& h_scalers, std::vector<Point> &h_result);
+        cudaError_t msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result);
 
         ~MultiGPUMSM();
     };

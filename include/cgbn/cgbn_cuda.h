@@ -114,7 +114,7 @@ class cgbn_env_t {
   static const uint32_t        PAD_THREAD=(BITS/32)/LIMBS;
   static const uint32_t        PAD_LIMB=(BITS/32)%LIMBS;
 
-  struct cgbn_t {
+  struct __align__(16) cgbn_t {
     public:
     typedef cgbn_env_t parent_env_t;
 

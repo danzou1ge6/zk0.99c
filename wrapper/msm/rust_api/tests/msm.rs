@@ -101,10 +101,82 @@ fn generate_coefficients(k: u8, bits: usize) -> Vec<Scalar> {
     coeffs
 }
 
+// fn generate_coefficients_0d25(k: u8, bits: usize) -> Vec<Scalar> {
+//     let n: u64 = {
+//         assert!(k < 64);
+//         1 << k
+//     };
+//     let max_val: Option<u128> = match bits {
+//         1 => Some(1),
+//         8 => Some(0xff),
+//         16 => Some(0xffff),
+//         32 => Some(0xffff_ffff),
+//         64 => Some(0xffff_ffff_ffff_ffff),
+//         128 => Some(0xffff_ffff_ffff_ffff_ffff_ffff_ffff_ffff),
+//         256 => None,
+//         _ => panic!("unexpected bit size {}", bits),
+//     };
+//     println!("Generating 2^{k} = {n} coefficients..",);
+//     let timer = SystemTime::now();
+
+//     // 预生成固定值（使用主线程RNG）
+//     let fixed_value = {
+//         let mut main_rng = XorShiftRng::from_seed(SEED);
+//         if let Some(mv) = max_val {
+//             let v_lo = main_rng.next_u64() as u128;
+//             let v_hi = main_rng.next_u64() as u128;
+//             let mut v = v_lo + (v_hi << 64);
+//             v &= mv;
+//             Scalar::from_u128(v)
+//         } else {
+//             Scalar::random(&mut main_rng)
+//         }
+//     };
+
+//     let threshold = 3 * n / 4; // 后1/4分界点
+
+//     let coeffs = (0..n)
+//         .into_par_iter()
+//         .map_init(
+//             || {
+//                 let mut thread_seed = SEED;
+//                 let uniq = current_thread_index().unwrap().to_ne_bytes();
+//                 assert!(std::mem::size_of::<usize>() == 8);
+//                 for i in 0..uniq.len() {
+//                     thread_seed[i] += uniq[i];
+//                     thread_seed[i + 8] += uniq[i];
+//                 }
+//                 XorShiftRng::from_seed(thread_seed)
+//             },
+//             |rng, i| {
+//                 // 判断索引位置决定生成方式
+//                 if i >= threshold {
+//                     fixed_value // 后1/4使用固定值
+//                 } else if let Some(max_val) = max_val {
+//                     let v_lo = rng.next_u64() as u128;
+//                     let v_hi = rng.next_u64() as u128;
+//                     let mut v = v_lo + (v_hi << 64);
+//                     v &= max_val;
+//                     Scalar::from_u128(v)
+//                 } else {
+//                     Scalar::random(rng)
+//                 }
+//             },
+//         )
+//         .collect();
+
+//     let end = timer.elapsed().unwrap();
+//     println!(
+//         "Generating 2^{k} = {n} coefficients took: {} sec.\n\n",
+//         end.as_secs()
+//     );
+//     coeffs
+// }
+
 #[test]
 fn compare_with_halo2() {
-    let max_k = 20;
-    for k in 10..=max_k {
+    let max_k = 26;
+    for k in 20..=max_k {
         println!("generating data for k = {k}...");
         let bases: Vec<Point> = generate_curvepoints(k);
         let bits = [256];
@@ -138,12 +210,7 @@ fn compare_with_halo2() {
         let y1 = cpu_result.y * gpu_result.z;
         let x2 = gpu_result.x * cpu_result.z;
         let y2 = gpu_result.y * cpu_result.z;
-        // let cpu_z = cpu_result.z.invert().unwrap();
-        // let x1 = cpu_result.x * cpu_z;
-        // let y1 = cpu_result.y * cpu_z;
-        // let gpu_z = gpu_result.z.invert().unwrap();
-        // let x2 = gpu_result.x * gpu_z;
-        // let y2 = gpu_result.y * gpu_z;
+
         assert_eq!(x1, x2);
         assert_eq!(y1, y2);
     }

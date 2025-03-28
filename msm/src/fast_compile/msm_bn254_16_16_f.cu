@@ -3,7 +3,9 @@
 
 namespace msm {
     using Config = MsmConfig<255, 16, 16, false>;
-    template class MSM<Config, bn254::Number, bn254::Point, bn254::PointAffine>;
+    using bn254_scalar::Params;
+    using Element = mont::Element<Params, Params::LIMBS>;
+    template class MSM<Config, Element, bn254::Point, bn254::PointAffine, bn254::PointAll>;
     template class MSMPrecompute<Config, bn254::Point, bn254::PointAffine>;
-    template class MultiGPUMSM<Config, bn254::Number, bn254::Point, bn254::PointAffine>;
+    template class MultiGPUMSM<Config, Element, bn254::Point, bn254::PointAffine, bn254::PointAll>;
 }
