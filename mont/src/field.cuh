@@ -864,13 +864,13 @@ namespace mont
       return *this * *this;
     }
 
-    __device__ __forceinline__ Number shuffle_down(const u32 delta) const &
+    __device__ __forceinline__ Number shuffle_down(const u32 delta, u32 mask = 0xFFFFFFFF) const &
     {
       Number res;
 #pragma unroll
       for (usize i = 0; i < LIMBS; i++)
       {
-        res.limbs[i] = __shfl_down_sync(0xFFFFFFFF, limbs[i], delta);
+        res.limbs[i] = __shfl_down_sync(mask, limbs[i], delta);
       }
       return res;
     }
@@ -1150,10 +1150,10 @@ namespace mont
       return r;
     }
 
-    __device__ __forceinline__ Element shuffle_down(const u32 delta) const &
+    __device__ __forceinline__ Element shuffle_down(const u32 delta, u32 mask = 0xFFFFFFFF) const &
     {
       Element res;
-      res.n = n.shuffle_down(delta);
+      res.n = n.shuffle_down(delta, mask);
       return res;
     }
   };

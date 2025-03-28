@@ -217,11 +217,11 @@ namespace mont {
       return Element2(Once::host_random(), Once::host_random());
     }
 
-    __device__ __forceinline__ Element2 shuffle_down(const u32 delta) const &
+    __device__ __forceinline__ Element2 shuffle_down(const u32 delta, u32 mask = 0xFFFFFFFF) const &
     {
       Element2 res;
-      res.c0 = c0.shuffle_down(delta);
-      res.c1 = c1.shuffle_down(delta);
+      res.c0 = c0.shuffle_down(delta, mask);
+      res.c1 = c1.shuffle_down(delta, mask);
       return res;
     }
   };
