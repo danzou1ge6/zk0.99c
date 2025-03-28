@@ -1,6 +1,5 @@
 #include "../src/bn254.cuh"
 #include "../src/msm.cuh"
-#include "../../mont/src/bn254_scalar.cuh"
 
 #include <iostream>
 #include <fstream>
@@ -9,9 +8,7 @@ using bn254::Point;
 using bn254::PointAffine;
 using bn254::PointAll;
 using bn254::PointAffineAll;
-using bn254_scalar::Params;
-// using bn254_scalar::Number;
-using Element = mont::Element<Params, Params::LIMBS>;
+using Number = mont::Number<8>;
 using mont::u32;
 using mont::u64;
 
@@ -27,14 +24,14 @@ struct MsmProblem
 {
   u32 len;
   PointAffine *points;
-  Element *scalers;
+  Number *scalers;
 };
 
 std::istream &
 operator>>(std::istream &is, MsmProblem &msm)
 {
   is >> msm.len;
-  msm.scalers = new Element[msm.len];
+  msm.scalers = new Number[msm.len];
   msm.points = new PointAffine[msm.len * TPI];
   for (u32 i = 0; i < msm.len; i++)
   {
@@ -42,7 +39,7 @@ operator>>(std::istream &is, MsmProblem &msm)
     PointAffineAll p;
     is >> msm.scalers[i] >> _ >> p;
     for(int j=0; j<TPI; ++j) {
-      int PER_LIMBS = Params::LIMBS/TPI;
+      int PER_LIMBS = PointAffine::N_WORDS / 2;
       for(int k=0; k<PER_LIMBS; k++) {
         msm.points[i*TPI+j].x.n._limbs[k] = p.x.n._limbs[j*PER_LIMBS+k];
         msm.points[i*TPI+j].y.n._limbs[k] = p.y.n._limbs[j*PER_LIMBS+k];
@@ -82,7 +79,7 @@ int main(int argc, char *argv[])
 
   rf >> msm;
 
-  cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Element), cudaHostRegisterDefault);
+  cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Number), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine) * TPI, cudaHostRegisterDefault);
 
   using Config = msm::MsmConfig<255, WINDOW_S, ALPHA, false>;
@@ -117,7 +114,7 @@ int main(int argc, char *argv[])
   {
     for(parts = 2; parts <= 2; parts *= 2)
     {
-      msm::MultiGPUMSM<Config, Element, Point, PointAffine, PointAll> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
+      msm::MultiGPUMSM<Config, Number, Point, PointAffine, PointAll> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
       std::cout << "start precompute" << std::endl;
 

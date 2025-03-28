@@ -1272,7 +1272,7 @@ namespace mont
       auto res = one();
       bool found_one = false;
 #pragma unroll
-      for (int i = LIMBS - 1; i >= 0; i--)
+      for (int i = Params::LIMBS - 1; i >= 0; i--)
         pow_iter(*this, found_one, res, p[i]);
       return res;
     }
@@ -1325,6 +1325,19 @@ namespace mont
   //   is >> n._limbs[0];
   //   return is;
   // }
+
+  template <usize LIMBS>
+  __forceinline__ std::istream &
+  operator>>(std::istream &is, Number<LIMBS> &n)
+  {
+    is >> std::hex;
+    char _;
+    is >> _ >> _;
+    for (int i = LIMBS - 1; i >= 1; i--)
+      is >> n.limbs[i] >> _;
+    is >> n.limbs[0];
+    return is;
+  }
 
   template <class Params>
   __forceinline__  std::istream &

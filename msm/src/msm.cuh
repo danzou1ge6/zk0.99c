@@ -72,7 +72,7 @@ namespace msm {
         static constexpr bool debug = DEBUG;
     };
 
-    template <typename Config, typename Element, typename Point, typename PointAffine, typename PointAll>
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
     class MSM {
         int device;
         std::array<const u32*, Config::n_precompute> h_points;
@@ -137,12 +137,12 @@ namespace msm {
     };
 
     // each msm will be decomposed into multiple msm instances, each instance will be run on a single GPU
-    template <typename Config, typename Element, typename Point, typename PointAffine, typename PointAll>
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
     class MultiGPUMSM {
         u32 parts, scaler_stages, point_stages, batch_per_run;
         u64 len, part_len;
         const std::vector<u32> cards;
-        std::vector<MSM<Config, Element, Point, PointAffine, PointAll>> msm_instances;
+        std::vector<MSM<Config, Number, Point, PointAffine, PointAll>> msm_instances;
         std::vector<cudaStream_t> streams;
         // TODO: use thread pool
         std::vector<std::thread> threads;
