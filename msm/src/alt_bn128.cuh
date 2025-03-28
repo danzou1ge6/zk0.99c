@@ -79,7 +79,7 @@ namespace alt_bn128_g1
 namespace alt_bn128_g2
 {
   using alt_bn128_fq2::Element;
-  using Number = mont::Number<Element::LIMBS>;
+  using Number = mont::Number<Element::OnceType::LIMBS>;
 
   // a = 0, b = 3 (x + 9)^(-1)
   namespace device_constants

@@ -8,12 +8,12 @@ namespace mont {
   struct Element2 {
     using OnceType = Once;
     using ParamsType = Params;
-    static const usize LIMBS = Once::LIMBS;
+    static const usize LIMBS = Once::LIMBS * 2;
 
     Once c0, c1;
 
     __host__ __device__ __forceinline__ Element2() {}
-    constexpr __host__ __device__ __forceinline__ Element2(Number<LIMBS> c0, Number<LIMBS> c1) : c0(c0), c1(c1) {}
+    constexpr __host__ __device__ __forceinline__ Element2(Number<Once::LIMBS> c0, Number<Once::LIMBS> c1) : c0(c0), c1(c1) {}
     constexpr __host__ __device__ __forceinline__ Element2(Once c0, Once c1) : c0(c0), c1(c1) {}
 
     static __host__ __device__ __forceinline__
@@ -146,14 +146,14 @@ namespace mont {
 
     static __host__ __device__ __forceinline__
         Element2
-        from_number(const Number<LIMBS> c0, const Number<LIMBS> c1)
+        from_number(const Number<Once::LIMBS> c0, const Number<Once::LIMBS> c1)
     {
       return Element2(Once::from_number(c0), Once::from_number(c1));
     }
 
     __host__ __device__ __forceinline__
         void
-        to_number(Number<LIMBS> &c0, Number<LIMBS> &c1) const &
+        to_number(Number<Once::LIMBS> &c0, Number<Once::LIMBS> &c1) const &
     {
       c0 = this->c0.to_number();
       c1 = this->c1.to_number();
@@ -179,12 +179,12 @@ namespace mont {
     // Field power
     __host__ __device__ __forceinline__
         Element2
-        pow(const Number<LIMBS> &p) const &
+        pow(const Number<Once::LIMBS> &p) const &
     {
       auto res = one();
       bool found_one = false;
 #pragma unroll
-      for (int i = LIMBS - 1; i >= 0; i--)
+      for (int i = Once::LIMBS - 1; i >= 0; i--)
         pow_iter(*this, found_one, res, p.limbs[i]);
       return res;
     }

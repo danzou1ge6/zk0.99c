@@ -102,16 +102,12 @@ float run_msm(MsmPoints<G> &points, MsmScalars &scalars, u32 len)
 
   msm::MultiGPUMSM<Config, alt_bn128_fr::Number, GXYZZ, G> msm_solver(len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
-  std::cout << "start precompute" << std::endl;
-
   cudaStream_t stream;
   cudaStreamCreate(&stream);
   msm::MSMPrecompute<Config, GXYZZ, G>::precompute(len, h_points, 4);
   msm_solver.set_points(h_points);
 
-  std::cout << "Precompute done" << std::endl;
   msm_solver.alloc_gpu();
-  std::cout << "Alloc GPU done" << std::endl;
   cudaEvent_t start, stop;
   float elapsedTime = 0.0;
 
@@ -124,7 +120,6 @@ float run_msm(MsmPoints<G> &points, MsmScalars &scalars, u32 len)
   cudaEventRecord(stop, 0);
   cudaEventSynchronize(stop);
   cudaEventElapsedTime(&elapsedTime, start, stop);
-  std::cout << "Run done" << std::endl;
 
   cudaStreamDestroy(stream);
 
