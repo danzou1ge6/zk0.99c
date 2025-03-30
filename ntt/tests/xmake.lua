@@ -82,6 +82,14 @@ target("test-ntt-numpy")
     add_files("test-numpy.cu")
     add_cugencodes("native")
 
+target("bench-ntt-end2end")
+    set_languages(("c++20"))
+    if is_mode("debug") then 
+        set_symbols("debug")
+    end
+    add_files("../../ntt/tests/bench-ntt-end2end.cu")
+    add_cugencodes("native")
+
 target("bench-ntt")
     set_languages(("c++20"))
     if is_mode("debug") then 

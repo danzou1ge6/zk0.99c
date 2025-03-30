@@ -3149,7 +3149,11 @@ namespace ntt {
         };
 
         const SSIP_config config;
+        // Time for Computation
         float milliseconds = 0;
+
+        // Time for Transfer (if any) and Computation
+        float total_milliseconds = 0;
 
         self_sort_in_place_ntt(
             const u32* omega, u32 log_len, 
@@ -3318,7 +3322,8 @@ namespace ntt {
 
             if (log_len == 0) return first_err;
 
-            cudaEvent_t start, end;
+            cudaEvent_t transfer_start, start, end;
+            CUDA_CHECK(cudaEventCreate(&transfer_start))
             CUDA_CHECK(cudaEventCreate(&start));
             CUDA_CHECK(cudaEventCreate(&end));
             
@@ -3333,6 +3338,9 @@ namespace ntt {
                 }
             }
 
+            if (debug) {
+                CUDA_CHECK(cudaEventRecord(transfer_start));
+            }
 
             u32 * x;
             if (data_on_gpu) {
@@ -3347,9 +3355,9 @@ namespace ntt {
             }
 
             if (debug) {
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
+                // dim3 block(768);
+                // dim3 grid((len - 1) / block.x + 1);
+                // number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
                 CUDA_CHECK(cudaGetLastError());
                 CUDA_CHECK(cudaEventRecord(start));
             }
@@ -3612,21 +3620,25 @@ namespace ntt {
             }
 
             if (debug) {
+                // dim3 block(768);
+                // dim3 grid((len - 1) / block.x + 1);
+                // element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
+            }
+
+            rlock.unlock();
+
+            if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+
+            if (debug) {
                 CUDA_CHECK(cudaEventRecord(end));
                 CUDA_CHECK(cudaEventSynchronize(end));
                 CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
+                CUDA_CHECK(cudaEventElapsedTime(&total_milliseconds, transfer_start, end));
                 CUDA_CHECK(cudaGetLastError());
             }
 
             CUDA_CHECK(cudaEventDestroy(start));
             CUDA_CHECK(cudaEventDestroy(end));
-
-            rlock.unlock();
-
-            if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
 
             if (!data_on_gpu) CUDA_CHECK(cudaFreeAsync(x, stream));
 
