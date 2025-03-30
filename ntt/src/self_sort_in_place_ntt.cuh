@@ -3,6 +3,7 @@
 #include "ntt.cuh"
 #include <cassert>
 #include <cstdio>
+#include <cooperative_groups.h>
 
 namespace ntt {
     template <typename Field, u32 io_group>
@@ -2460,79 +2461,102 @@ namespace ntt {
 
         auto u = s + group_id * ((1 << deg) + 1) * WORDS;
 
-        const u32 lgp = log_stride - deg + 1;
-        const u32 end_stride = 1 << lgp; //stride of the last butterfly
+        const u32 lgp_global = log_stride - deg + 1;
+        const u32 end_stride = 1 << lgp_global; //stride of the last butterfly
 
         // each segment is independent
-        const u32 segment_start = (index >> lgp) << (lgp + deg);
+        const u32 segment_start = (index >> lgp_global) << (lgp_global + deg);
         const u32 segment_id = index & (end_stride - 1);
         
         const u32 subblock_sz = 1 << (deg - 1); // # of neighbouring butterfly in the last round
 
         x += ((u64)(segment_start + segment_id)) * WORDS; // use u64 to avoid overflow
 
-        const u32 io_id = lid & (io_group - 1);
-        const u32 lid_start = lid - io_id;
+        // const u32 io_id = lid & (io_group - 1);
+        // const u32 lid_start = lid - io_id;
         const u32 shared_read_stride = (lsize << 1) + 1;
-        const u32 cur_io_group = io_group < lsize ? io_group : lsize;
-        const u32 io_per_thread = io_group / cur_io_group;
+        // const u32 cur_io_group = io_group < lsize ? io_group : lsize;
+        // const u32 io_per_thread = io_group / cur_io_group;
+        Field a, b;
+        auto tile = cooperative_groups::tiled_partition<2>(cooperative_groups::this_thread_block());
 
-        int io_st, io_ed, io_stride;
+        u32 sub_deg = min(6, deg);
+        u32 warp_sz = 1 << (sub_deg - 1);
+        u32 warp_id = lid / warp_sz;
+            
+        u32 lgp = deg - sub_deg;
+        u32 end_stride_warp = 1 << lgp;
 
-        io_st = lid_start;
-        io_ed = lid_start + cur_io_group;
-        io_stride = 1;
+        u32 segment_start_warp = (warp_id >> lgp) << (lgp + sub_deg);
+        u32 segment_id_warp = warp_id & (end_stride_warp - 1);
+        
+        u32 laneid = lid & (warp_sz - 1);
 
-        // Read data
-        for (int i = io_st; i != io_ed; i += io_stride) {
-            for (u32 j = 0; j < io_per_thread; j++) {
-                u32 io = io_id + j * cur_io_group;
-                if (io * 4 < WORDS) {
-                    u32 group_id = i & (subblock_sz - 1);
-                    u64 gpos = group_id << (lgp);
-                    uint4 a, b;
-                    if (!process) {
-                        a = reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
-                        b = reinterpret_cast<uint4*> (x + (gpos+ (end_stride << (deg - 1))) * WORDS)[io];
-                    } else {
-                        a = gpos >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + gpos * WORDS)[io];
-                        b = (gpos+ (end_stride << (deg - 1))) >= start_len ? make_uint4(0, 0, 0, 0) : reinterpret_cast<uint4*> (x + (gpos+ (end_stride << (deg - 1))) * WORDS)[io];
-                    }
-                    u[(i) + (0 + io * 4) * shared_read_stride] = a.x;
-                    u[(i) + (1 << (deg - 1)) + (0 + io * 4) * shared_read_stride] = b.x;
-                    u[(i) + (1 + io * 4) * shared_read_stride] = a.y;
-                    u[(i) + (1 << (deg - 1)) + (1 + io * 4) * shared_read_stride] = b.y;
-                    u[(i) + (2 + io * 4) * shared_read_stride] = a.z;
-                    u[(i) + (1 << (deg - 1)) + (2 + io * 4) * shared_read_stride] = b.z;
-                    u[(i) + (3 + io * 4) * shared_read_stride] = a.w;
-                    u[(i) + (1 << (deg - 1)) + (3 + io * 4) * shared_read_stride] = b.w;
-                }
+        u32 bit = subblock_sz;
+        u32 i0 = (segment_start_warp + segment_id_warp + laneid * end_stride_warp);
+        u32 i1 = i0 + bit;
+
+        if (WORDS == 0 && false) {
+            u32 peer_i0 = tile.shfl_xor(i0, 1);
+            u64 m_i0 = tile.thread_rank() ? peer_i0 : i0;
+            u64 n_i0 = tile.thread_rank() ? i0 : peer_i0;
+
+            reinterpret_cast<uint4*>(a.n.limbs)[0] = reinterpret_cast<uint4*>(x + (m_i0 << lgp_global) * WORDS)[tile.thread_rank()];
+            reinterpret_cast<uint4*>(a.n.limbs)[1] = reinterpret_cast<uint4*>(x + (n_i0 << lgp_global) * WORDS)[tile.thread_rank()];
+
+            reinterpret_cast<uint4*>(b.n.limbs)[0] = reinterpret_cast<uint4*>(x + ((m_i0 + bit) << lgp_global) * WORDS)[tile.thread_rank()];
+            reinterpret_cast<uint4*>(b.n.limbs)[1] = reinterpret_cast<uint4*>(x + ((n_i0 + bit) << lgp_global) * WORDS)[tile.thread_rank()];
+
+            uint4 shfla = tile.thread_rank() ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
+            uint4 shflb = tile.thread_rank() ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
+
+            shfla.x = tile.shfl_xor(shfla.x, 1), shfla.y = tile.shfl_xor(shfla.y, 1), shfla.z = tile.shfl_xor(shfla.z, 1), shfla.w = tile.shfl_xor(shfla.w, 1);
+            shflb.x = tile.shfl_xor(shflb.x, 1), shflb.y = tile.shfl_xor(shflb.y, 1), shflb.z = tile.shfl_xor(shflb.z, 1), shflb.w = tile.shfl_xor(shflb.w, 1);
+
+            if (tile.thread_rank()) {
+                reinterpret_cast<uint4*>(a.n.limbs)[0] = shfla;
+                reinterpret_cast<uint4*>(b.n.limbs)[0] = shflb;
+            } else {
+                reinterpret_cast<uint4*>(a.n.limbs)[1] = shfla;
+                reinterpret_cast<uint4*>(b.n.limbs)[1] = shflb;
             }
+        } else {
+            a = Field::load(x + (i0 << lgp_global) * WORDS);
+            b = Field::load(x + (i1 << lgp_global) * WORDS);
         }
+
+        // u64 token;
+        // if (deg <= 6) token = bar.arrive(); /* this thread arrives. Arrival does not block a thread */
 
         __syncthreads();
 
         const u32 pqshift = log_len - 1 - log_stride;
 
         for(u32 rnd = 0; rnd < deg; rnd += 6) {
-            u32 sub_deg = min(6, deg - rnd);
-            u32 warp_sz = 1 << (sub_deg - 1);
-            u32 warp_id = lid / warp_sz;
+            if (rnd != 0) {
+                sub_deg = min(6, deg - rnd);
+                warp_sz = 1 << (sub_deg - 1);
+                warp_id = lid / warp_sz;
             
-            u32 lgp = deg - rnd - sub_deg;
-            u32 end_stride_warp = 1 << lgp;
-
-            u32 segment_start_warp = (warp_id >> lgp) << (lgp + sub_deg);
-            u32 segment_id_warp = warp_id & (end_stride_warp - 1);
+                lgp = deg - rnd - sub_deg;
+                end_stride_warp = 1 << lgp;
+    
+                segment_start_warp = (warp_id >> lgp) << (lgp + sub_deg);
+                segment_id_warp = warp_id & (end_stride_warp - 1);
             
-            u32 laneid = lid & (warp_sz - 1);
+                laneid = lid & (warp_sz - 1);
+                bit = subblock_sz >> rnd;
+                i0 = segment_start_warp + segment_id_warp + laneid * end_stride_warp;
+                i1 = i0 + bit;
 
-            u32 bit = subblock_sz >> rnd;
-            u32 i0 = segment_start_warp + segment_id_warp + laneid * end_stride_warp;
-            u32 i1 = i0 + bit;
-
-            auto a = Field::load(u + i0, shared_read_stride);
-            auto b = Field::load(u + i1, shared_read_stride);
+                #pragma unroll
+                for (u32 i = 0; i < WORDS / 4; i++) {
+                    reinterpret_cast<uint4*>(a.n.limbs)[i] = reinterpret_cast<uint4*>(u)[i0 + i * shared_read_stride];
+                    reinterpret_cast<uint4*>(b.n.limbs)[i] = reinterpret_cast<uint4*>(u)[i1 + i * shared_read_stride];
+                }
+                // a = Field::load(u + i0, shared_read_stride);
+                // b = Field::load(u + i1, shared_read_stride);
+            }
 
             if (process) if(rnd == 0) {
                 auto ida = ((segment_start + segment_id) + i0 * end_stride);
@@ -2576,25 +2600,49 @@ namespace ntt {
 
             i0 = segment_start_warp + segment_id_warp + laneid * 2 * end_stride_warp;
             i1 = i0 + end_stride_warp;
-            a.store(u + i0, shared_read_stride);
-            b.store(u + i1, shared_read_stride);
 
-            __syncthreads();
+            if (rnd + 6 < deg) {
+                #pragma unroll
+                for (u32 i = 0; i < WORDS / 4; i++) {
+                    reinterpret_cast<uint4*>(u)[i0 + i * shared_read_stride] = reinterpret_cast<uint4*>(a.n.limbs)[i];
+                    reinterpret_cast<uint4*>(u)[i1 + i * shared_read_stride] = reinterpret_cast<uint4*>(b.n.limbs)[i];
+                }
+                // a.store(u + i0, shared_read_stride);
+                // b.store(u + i1, shared_read_stride);
+                __syncthreads();
+            }
         }
 
-        // Write back
-        for (int i = io_st; i != io_ed; i += io_stride) {
-            for (u32 j = 0; j < io_per_thread; j++) {
-                u32 io = io_id + j * cur_io_group;
-                if (io * 4 < WORDS) {
-                    u32 group_id = i & (subblock_sz - 1);
-                    u64 gpos = group_id << (lgp + 1);
-                    uint4 a = make_uint4(u[(i << 1) + (0 + io * 4) * shared_read_stride], u[(i << 1) + (1 + io * 4) * shared_read_stride], u[(i << 1) + (2 + io * 4) * shared_read_stride], u[(i << 1) + (3 + io * 4) * shared_read_stride]);
-                    uint4 b = make_uint4(u[(i << 1) + 1 + (0 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (1 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (2 + io * 4) * shared_read_stride], u[(i << 1) + 1 + (3 + io * 4) * shared_read_stride]);
-                    reinterpret_cast<uint4*> (x + gpos * WORDS)[io] = a;
-                    reinterpret_cast<uint4*> (x + (gpos + end_stride) * WORDS)[io] = b;
-                }
+        // if (deg <= 6) bar.wait(std::move(token)); /* wait for all threads participating in the barrier to complete bar.arrive()*/
+        if (WORDS != 8) {
+            // TODO: switch to cub::WarpExchange
+            u32 group_id = lid & (subblock_sz - 1);
+            u64 gpos = group_id << (lgp_global + 1);
+            a.store(x + gpos * WORDS);
+            b.store(x + (gpos + end_stride) * WORDS);
+        } else {
+            u64 m_gpos = ((tile.meta_group_rank() * 2) & (subblock_sz - 1)) << (lgp_global + 1);
+            u64 n_gpos = ((tile.meta_group_rank() * 2 + 1) & (subblock_sz - 1)) << (lgp_global + 1);
+            
+            uint4 shfla = tile.thread_rank() ? reinterpret_cast<uint4*>(a.n.limbs)[0] : reinterpret_cast<uint4*>(a.n.limbs)[1];
+            uint4 shflb = tile.thread_rank() ? reinterpret_cast<uint4*>(b.n.limbs)[0] : reinterpret_cast<uint4*>(b.n.limbs)[1];
+
+            shfla.x = tile.shfl_xor(shfla.x, 1), shfla.y = tile.shfl_xor(shfla.y, 1), shfla.z = tile.shfl_xor(shfla.z, 1), shfla.w = tile.shfl_xor(shfla.w, 1);
+            shflb.x = tile.shfl_xor(shflb.x, 1), shflb.y = tile.shfl_xor(shflb.y, 1), shflb.z = tile.shfl_xor(shflb.z, 1), shflb.w = tile.shfl_xor(shflb.w, 1);
+            
+            if (tile.thread_rank()) {
+                reinterpret_cast<uint4*>(a.n.limbs)[0] = shfla;
+                reinterpret_cast<uint4*>(b.n.limbs)[0] = shflb;
+            } else {
+                reinterpret_cast<uint4*>(a.n.limbs)[1] = shfla;
+                reinterpret_cast<uint4*>(b.n.limbs)[1] = shflb;
             }
+
+            reinterpret_cast<uint4*>(x + m_gpos * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(a.n.limbs)[0];
+            reinterpret_cast<uint4*>(x + n_gpos * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(a.n.limbs)[1];
+
+            reinterpret_cast<uint4*>(x + (m_gpos + end_stride) * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(b.n.limbs)[0];
+            reinterpret_cast<uint4*>(x + (n_gpos + end_stride) * WORDS)[tile.thread_rank()] = reinterpret_cast<uint4*>(b.n.limbs)[1];
         }
     }
 
