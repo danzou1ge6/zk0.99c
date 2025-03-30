@@ -66,6 +66,15 @@ task("sync-epcc")
         }
     }
 
+target("transpose")
+    set_languages("c++17")
+    set_optimize("fastest")
+    add_files("ntt/src/transpose/*.cpp")
+    add_cxflags("-mavx2")
+    add_cxflags("-march=native")
+    add_links("pthread")
+
+
 includes("runtime")
 includes("ntt")
 includes("wrapper")
