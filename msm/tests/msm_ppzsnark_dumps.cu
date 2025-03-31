@@ -93,8 +93,7 @@ float run_msm(MsmPoints<G> &points, MsmScalars &scalars, u32 len)
   std::vector<GXYZZ> r(batch_size);
 
   std::vector<u32> cards;
-  int card_count;
-  cudaGetDeviceCount(&card_count);
+  int card_count = 1;
   for (int i = 0; i < card_count; i++)
   {
     cards.push_back(i);
