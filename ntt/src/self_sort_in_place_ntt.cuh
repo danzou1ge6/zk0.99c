@@ -3455,6 +3455,8 @@ namespace ntt {
                         SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+
+                        CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
                         
                         kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
                         
@@ -3638,6 +3640,7 @@ namespace ntt {
                     (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, true>
                     : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, false>)
                     : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, false, false>;
+                    CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
                     kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
 
