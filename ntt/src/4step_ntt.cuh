@@ -2,13 +2,14 @@
 #include "inplace_transpose/cuda/transpose.cuh"
 #include "recompute_ntt.cuh"
 #include "self_sort_in_place_ntt.cuh"
+#include "transpose/matrix_transpose.h"
 #include <memory>
-#include <pybind11/embed.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/numpy.h>
-#include <pybind11/pytypes.h>
+// #include <pybind11/embed.h>
+// #include <pybind11/pybind11.h>
+// #include <pybind11/numpy.h>
+// #include <pybind11/pytypes.h>
 
-// #define CPU_TRANSPOSE
+#define CPU_TRANSPOSE
 
 namespace ntt {
 
@@ -95,22 +96,22 @@ namespace ntt {
     void offchip_ntt(u32 *input, u32 *output, int logn, const u32 *omega) {
         constexpr usize WORDS = Field::LIMBS;
 
-        pybind11::scoped_interpreter guard{};
+        // pybind11::scoped_interpreter guard{};
 
-        pybind11::exec(R"(
-            import numpy as np
-            def transpose(src, dst, a, b, c):
-                x = np.frombuffer(src, dtype=np.uint32)
-                x = x.reshape(a,b,c)
-                y = np.frombuffer(dst, dtype=np.uint32)
-                y = y.reshape(b,a,c)
-                np.copyto(y, np.transpose(x, (1, 0, 2)))
+        // pybind11::exec(R"(
+        //     import numpy as np
+        //     def transpose(src, dst, a, b, c):
+        //         x = np.frombuffer(src, dtype=np.uint32)
+        //         x = x.reshape(a,b,c)
+        //         y = np.frombuffer(dst, dtype=np.uint32)
+        //         y = y.reshape(b,a,c)
+        //         np.copyto(y, np.transpose(x, (1, 0, 2)))
                 
-        )");
+        // )");
 
 
         // 获取 Python 中的 transpose 函数
-        pybind11::object transpose_func = pybind11::module::import("__main__").attr("transpose");
+        // pybind11::object transpose_func = pybind11::module::import("__main__").attr("transpose");
 
         usize avail, total;
         cudaMemGetInfo(&avail, &total);
@@ -165,9 +166,10 @@ namespace ntt {
         cudaMalloc(&unit0_d, sizeof(Field));
         cudaMemcpy(unit0_d, &unit0, sizeof(Field), cudaMemcpyHostToDevice);
 
-        cudaEvent_t start, stop;
+        cudaEvent_t start, stop, stop_cal;
         cudaEventCreate(&start);
         cudaEventCreate(&stop);
+        cudaEventCreate(&stop_cal);
         cudaEventRecord(start);
 
         for (int i = 0, id = 0; i < (1 << lgq); i += len_per_line, id ^= 1) {
@@ -212,19 +214,18 @@ namespace ntt {
         cudaStreamSynchronize(stream[0]);
         cudaStreamSynchronize(stream[1]);
 
-        ntt->clean_gpu();
-
+        cudaEventRecord(stop_cal);
 
         #ifdef CPU_TRANSPOSE
 
 
-        auto src = pybind11::memoryview::from_buffer(input, {(1 << lgp), (1 << lgq), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgq), sizeof(u32) * WORDS, sizeof(u32)});
-        auto dst = pybind11::memoryview::from_buffer(output, {(1 << lgq), (1 << lgp), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgp), sizeof(u32) * WORDS, sizeof(u32)});
+        // auto src = pybind11::memoryview::from_buffer(input, {(1 << lgp), (1 << lgq), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgq), sizeof(u32) * WORDS, sizeof(u32)});
+        // auto dst = pybind11::memoryview::from_buffer(output, {(1 << lgq), (1 << lgp), (int)WORDS}, {sizeof(u32) * WORDS * (1 << lgp), sizeof(u32) * WORDS, sizeof(u32)});
 
 
-        transpose_func(src, dst, 1ll << lgp, 1ll << lgq, WORDS);
-
-
+        // transpose_func(src, dst, 1ll << lgp, 1ll << lgq, WORDS);
+        transpose(reinterpret_cast<LargeInteger<WORDS * 4>*>(input), reinterpret_cast<LargeInteger<WORDS * 4>*>(output), 1 << lgp, 1 << lgq);
+            
         #else
 
         for (int i = 0, id = 0; i < (1 << lgq); i += len_per_line, id ^= 1) {
@@ -247,9 +248,10 @@ namespace ntt {
 
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
-        float milliseconds = 0;
+        float milliseconds = 0, cal_milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
-        printf("gpu: %fms\n", milliseconds);
+        cudaEventElapsedTime(&cal_milliseconds, start, stop_cal);
+        printf("k = %d, time = %f ms, cal time = %f ms\n", logn, milliseconds, cal_milliseconds);
 
         ntt->clean_gpu();
         cudaFree(buffer_d[0]);
