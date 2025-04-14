@@ -1,14 +1,33 @@
-#include "../src/bn254.cuh"
-#include "../src/msm.cuh"
-
 #include <iostream>
 #include <fstream>
 
-using bn254::Point;
-using bn254::PointAffine;
-using bn254::PointAll;
-using bn254::PointAffineAll;
-using Number = mont::Number<8>;
+// #include "../src/bn254.cuh"
+// #include "../src/msm.cuh"
+
+// using bn254::Point;
+// using bn254::PointAffine;
+// using bn254::PointAll;
+// using bn254::PointAffineAll;
+// using Number = mont::Number<8>;
+
+// #include "../src/bls12381.cuh"
+// #include "../src/msm.cuh"
+
+// using bls12381::Point;
+// using bls12381::PointAffine;
+// using bls12381::PointAll;
+// using bls12381::PointAffineAll;
+// using Number = mont::Number<8>;
+
+#include "../src/mnt4753.cuh"
+#include "../src/msm.cuh"
+
+using mnt4753::Point;
+using mnt4753::PointAffine;
+using mnt4753::PointAll;
+using mnt4753::PointAffineAll;
+using Number = mont::Number<24>;
+
 using mont::u32;
 using mont::u64;
 
@@ -17,12 +36,12 @@ using mont::u64;
 #endif
 
 #ifndef ALPHA
-#define ALPHA 16
+#define ALPHA 64
 #endif
 
 struct MsmProblem
 {
-  u32 len;
+  u64 len;
   PointAffine *points;
   Number *scalers;
 };
@@ -82,7 +101,7 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Number), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine) * TPI, cudaHostRegisterDefault);
 
-  using Config = msm::MsmConfig<255, WINDOW_S, ALPHA, false>;
+  using Config = msm::MsmConfig<753, WINDOW_S, ALPHA, false>;
   u32 batch_size = 1;
   u32 batch_per_run;
   u32 parts;
@@ -112,7 +131,7 @@ int main(int argc, char *argv[])
 
   for(batch_per_run = 1; batch_per_run <= batch_size; batch_per_run *= 2)
   {
-    for(parts = 2; parts <= 2; parts *= 2)
+    for(parts = 2; parts <= 4; parts *= 2)
     {
       msm::MultiGPUMSM<Config, Number, Point, PointAffine, PointAll> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 

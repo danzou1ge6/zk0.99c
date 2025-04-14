@@ -530,7 +530,6 @@ namespace mont
           Number
   {
     static const usize LIMBS = LIMBS_;
-    static const u32 TPI = 2;
     u32 limbs[LIMBS];
 
     __device__ __host__ __forceinline__ 
@@ -676,121 +675,10 @@ namespace mont
     is_zero() const &
     {
       bool r = true;
-#ifdef __CUDA_ARCH__  
-      if (TPI == 1) {        
-  #pragma unroll
-        for (usize i = 0; i < LIMBS; i++)
-          r = r && (limbs[i] == 0);
-        return r;
-      }
-      else {
-        int32_t group_thread=threadIdx.x & TPI-1;
-        int32_t limb;
-        int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
-
-        #pragma unroll
-        for(limb=0;limb<PER_LIMBS;limb++) {
-            if(group_thread*PER_LIMBS<LIMBS-limb) {
-                if(limbs[group_thread*PER_LIMBS+limb] != 0) {
-                    r = false;
-                    break;
-                }                
-            }
-        }
-        uint32_t warp_thread = threadIdx.x % 32;
-        uint32_t move = warp_thread / TPI * TPI;
-        uint32_t sync = 1;
-        for(int i=0; i<TPI; ++i) {
-          sync *= 2;
-        }
-        sync = (sync - 1) << move;
-        uint32_t g = __ballot_sync(sync, r==false);
-        // printf("thread %d : g %x\n", threadIdx.x, g);
-        if(g != 0)
-          return false;
-        else
-          return true;
-      }
-#else
-  #pragma unroll
-    for (usize i = 0; i < LIMBS; i++)
-      r = r && (limbs[i] == 0);
-    return r;
-#endif
-    }
-
-    // Return the [`i`, `i + N`) words in big number.
-    template <usize N>
-    __host__ __device__ __forceinline__
-        Number<N>
-        limbs_slice(u32 i)
-    {
-      Number<N> r;
-      for (usize j = i; j < N; j++)
-        r.limbs[j - i] = limbs[j];
+#pragma unroll
+      for (usize i = 0; i < LIMBS; i++)
+        r = r && (limbs[i] == 0);
       return r;
-    }
-
-    // Big number multiplication.
-    // Result takes twice the number of bits of operands.
-    __host__ __device__ __forceinline__
-        Number<LIMBS * 2>
-        operator*(const Number &rhs) const &
-    {
-      Number<LIMBS * 2> r;
-#ifdef __CUDA_ARCH__
-      device_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
-#else
-      host_arith::multiply<LIMBS>(r.limbs, limbs, rhs.limbs);
-#endif
-      return r;
-    }
-
-    // Big number addition
-    __host__ __device__ __forceinline__
-        Number
-        operator+(const Number &rhs) const &
-    {
-      Number r;
-#ifdef __CUDA_ARCH__
-      device_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
-#else
-      host_arith::add<LIMBS>(r.limbs, limbs, rhs.limbs);
-#endif
-      return r;
-    }
-
-    // Big number subtraction
-    __host__ __device__ __forceinline__
-        Number
-        operator-(const Number &rhs) const &
-    {
-      u32 useless;
-      auto r = sub_borrowed(rhs, useless);
-      return r;
-    }
-
-    // Big number subtraction.
-    // Carry of subtraction is written to `borrow_ret`: `UINT32_MAX` if borrow occurred, otherwise 0.
-    __host__ __device__ __forceinline__
-        Number
-        sub_borrowed(const Number &rhs, u32 &borrow_ret) const &
-    {
-      Number r;
-#ifdef __CUDA_ARCH__
-      borrow_ret = device_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
-#else
-      borrow_ret = host_arith::sub<LIMBS>(r.limbs, limbs, rhs.limbs);
-#endif
-      return r;
-    }
-
-    // Big number square
-    __host__ __device__ __forceinline__
-        Number<LIMBS * 2>
-        square() const &
-    {
-      return *this * *this;
     }
   };
 
@@ -811,12 +699,6 @@ namespace mont
     // Number<LIMBS> n;
 
     __host__ __device__ __forceinline__  Element() {}
-    __host__ __device__ __forceinline__ Element(Number<LIMBS> n_) {
-      #pragma unroll
-      for(int i=0;i<LIMBS;++i) {
-        n._limbs[i] = n_.limbs[i];
-      }
-    }
 
     static __host__ __device__ __forceinline__
         Element
@@ -835,56 +717,6 @@ namespace mont
       for (usize i = 0; i < LIMBS; i++)
         p[i * stride] = n._limbs[i];
     }
-
-    __host__ __device__ __forceinline__
-        typename env_t::cgbn_t
-        slr(env_t::cgbn_t rhs, u32 k) const &
-    {
-      typename env_t::cgbn_t r;
-      device_arith::slr<LIMBS>(r._limbs, rhs._limbs, k);
-      return r;
-    }
-
-    template <u32 windows, u32 bits_per_window>
-    __host__ __device__ __forceinline__
-    void bit_slice(int (&r)[windows]) {
-      static_assert(bits_per_window <= 31, "Too many bits per window");
-
-      // can be optimized by using hand written __funnelshift sequences
-      typename env_t::cgbn_t t = n;
-      #pragma unroll
-      for (u32 i = 0; i < windows; i++) {
-        r[i] = t._limbs[0] & ((1 << bits_per_window) - 1);
-        t = slr(t, bits_per_window);
-      }
-    }
-
-    // template<class env_t>
-    // __device__ __forceinline__ void load_cg(typename env_t::cgbn_t &r, const u32 *a) const {
-    //     int32_t group_thread=threadIdx.x & TPI-1;
-    //     int32_t limb;
-    //     int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
-
-    //     #pragma unroll
-    //     for(limb=0;limb<PER_LIMBS;limb++) {
-    //         if(group_thread*PER_LIMBS<LIMBS-limb) {
-    //             r._limbs[limb]=a[group_thread*PER_LIMBS + limb];
-    //         }
-    //     }
-    // }
-
-    // template<class env_t>
-    // __device__ __forceinline__ void store_cg(u32 *a, typename env_t::cgbn_t &r) const {
-    //     int32_t group_thread=threadIdx.x & TPI-1;
-    //     int32_t limb;
-    //     int32_t PER_LIMBS = div_ceil(LIMBS, TPI);
-
-    //     #pragma unroll
-    //     for(limb=0;limb<PER_LIMBS;limb++) {
-    //         if(group_thread*PER_LIMBS<LIMBS-limb)
-    //             a[group_thread*PER_LIMBS + limb]=r._limbs[limb];
-    //     }
-    // }
 
     // Addition identity on field
     static __host__ __device__ __forceinline__ 
@@ -937,7 +769,7 @@ namespace mont
       bool x = true;
       #pragma unroll
       for(int32_t limb=0;limb<LIMBS;limb++) {
-          if(n.limbs[limb] != rhs.n.limbs[limb]) {
+          if(n._limbs[limb] != rhs.n._limbs[limb]) {
             x = false;
             break;
           }
@@ -968,7 +800,7 @@ namespace mont
       bool x = false;
       #pragma unroll
       for(int32_t limb=0;limb<LIMBS;limb++) {
-          if(n.limbs[limb] != rhs.n.limbs[limb]) {
+          if(n._limbs[limb] != rhs.n._limbs[limb]) {
               x = true;
               break;
           }

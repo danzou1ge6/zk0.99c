@@ -1,8 +1,11 @@
 #pragma once
 
 #include "../../mont/src/field.cuh"
-#include "../../mont/src/bn254_scalar.cuh"
 #include <iostream>
+
+// #include "../../mont/src/bn254_scalar.cuh"
+// #include "../../mont/src/bls12381_fq.cuh"
+#include "../../mont/src/mnt4753_fq.cuh"
 
 #ifdef __CUDA_ARCH__
 #define likely(x) (__builtin_expect((x), 1))
@@ -18,7 +21,9 @@ namespace curve
 {
     using mont::u32;
     using mont::usize;
-    using Params1 = bn254_scalar::Params;
+    // using Params1 = bn254_scalar::Params;
+    // using Params1 = bls12381_fq::Params;
+    using Params1 = mnt4753_fq::Params;
 
     template <class Params>
     struct EC {
@@ -129,17 +134,17 @@ namespace curve
                 return x == rhs.x && y == rhs.y;
             }
 
-            __device__ __host__ __forceinline__ bool is_on_curve() const & {
-                Element t0, t1;
-                u32 group_thread = threadIdx.x & (TPI-1);
-                t0 = x.square();
-                if (!Params::a_is_zero()) t0 = t0 + Params::template a<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_);
-                t0 = t0 * x;
-                t0 = t0 + Params::template b<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_);
-                t1 = y.square();
-                t0 = t1 - t0;
-                return t0.is_zero();
-            }
+            // __device__ __host__ __forceinline__ bool is_on_curve() const & {
+            //     Element t0, t1;
+            //     u32 group_thread = threadIdx.x & (TPI-1);
+            //     t0 = x.square();
+            //     if (!Params::a_is_zero()) t0 = t0 + Params::template a<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_);
+            //     t0 = t0 * x;
+            //     t0 = t0 + Params::template b<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_);
+            //     t1 = y.square();
+            //     t0 = t1 - t0;
+            //     return t0.is_zero();
+            // }
 
             __device__ __host__ __forceinline__ PointXYZZ<LIMBS_> to_point() const& {
                 if unlikely(is_identity()) return PointXYZZ<LIMBS_>::identity();
@@ -148,6 +153,7 @@ namespace curve
 
             // https://hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#doubling-mdbl-2008-s-1
             __device__ __host__ __forceinline__ PointXYZZ<LIMBS_> add_self() const& {
+#ifdef __CUDA_ARCH__
                 u32 group_thread = threadIdx.x & (TPI-1);
                 auto u = y + y;
                 auto v = u.square();
@@ -160,6 +166,19 @@ namespace curve
                 auto x3 = m.square() - s - s;
                 auto y3 = m * (s - x3) - w * y;
                 return PointXYZZ<LIMBS_>(x3, y3, v, w);
+#else
+                auto u = y + y;
+                auto v = u.square();
+                auto w = u * v;
+                auto s = x * v;
+                auto x2 = x.square();
+                auto m = x2 + x2 + x2;
+                if (!Params::a_is_zero()) 
+                    m = m + Params::template a<LIMBS_>(0, LIMBS_);
+                auto x3 = m.square() - s - s;
+                auto y3 = m * (s - x3) - w * y;
+                return PointXYZZ(x3, y3, v, w);
+#endif
             }
 
             __host__ __device__ void device_print() const &
@@ -209,26 +228,6 @@ namespace curve
                 zz.store(p + LIMBS_ * 2);
                 zzz.store(p + LIMBS_ * 3);
             }
-            // __device__ __forceinline__ void load_cg(const u32 *p) {
-            //     int group_thread = threadIdx.x & (TPI-1);
-            //     int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
-            //     for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
-            //         x.n.limbs[i] = p[i];
-            //         y.n.limbs[i] = p[Element::LIMBS + i];
-            //         zz.n.limbs[i] = p[Element::LIMBS * 2 + i];
-            //         zzz.n.limbs[i] = p[Element::LIMBS * 3 + i];
-            //     }
-            // }
-            // __device__ __forceinline__ void store_cg(u32 *p) {
-            //     int group_thread = threadIdx.x & (TPI-1);
-            //     int PER_LIMBS = (Element::LIMBS + TPI - 1) / TPI;
-            //     for(int i=group_thread*PER_LIMBS; i<(group_thread+1)*PER_LIMBS && i<Element::LIMBS; ++i) {
-            //         p[i] = x.n.limbs[i];
-            //         p[Element::LIMBS + i] = y.n.limbs[i];
-            //         p[Element::LIMBS * 2 + i] = zz.n.limbs[i];
-            //         p[Element::LIMBS * 3 + i] = zzz.n.limbs[i];
-            //     }
-            // }
             __host__ __device__ __forceinline__
                 PointXYZZ<LIMBS_>
                 operator=(const PointXYZZ<LIMBS_> &rhs) &
@@ -257,23 +256,10 @@ namespace curve
             __host__ __device__ __forceinline__ bool operator==(const PointXYZZ<LIMBS_> &rhs) const & {
                 if (zz.is_zero() != rhs.zz.is_zero())
                     return false;
-                // auto lhs = normalized();
-                // auto rhs = rhs_.normalized();
-                // printf("lhs:\n");
-                // lhs.device_print();
-                // printf("rhs:\n");
-                // rhs.device_print();
                 auto x1 = x * rhs.zz;
                 auto x2 = rhs.x * zz;
                 auto y1 = y * rhs.zzz;
                 auto y2 = rhs.y * zzz;
-                // printf(
-                //     "thread %d\n{ x1 = %x %x %x %x %x %x %x %x\n, x2 = %x %x %x %x %x %x %x %x\n, y1 = %x %x %x %x %x %x %x %x\n, y2 = %x %x %x %x %x %x %x %x }\n",
-                //     threadIdx.x, x1.n.limbs[7], x1.n.limbs[6], x1.n.limbs[5], x1.n.limbs[4], x1.n.limbs[3], x1.n.limbs[2], x1.n.limbs[1], x1.n.limbs[0], 
-                //     x2.n.limbs[7], x2.n.limbs[6], x2.n.limbs[5], x2.n.limbs[4], x2.n.limbs[3], x2.n.limbs[2], x2.n.limbs[1], x2.n.limbs[0], 
-                //     y1.n.limbs[7], y1.n.limbs[6], y1.n.limbs[5], y1.n.limbs[4], y1.n.limbs[3], y1.n.limbs[2], y1.n.limbs[1], y1.n.limbs[0], 
-                //     y2.n.limbs[7], y2.n.limbs[6], y2.n.limbs[5], y2.n.limbs[4], y2.n.limbs[3], y2.n.limbs[2], y2.n.limbs[1], y2.n.limbs[0]
-                // );
                 return x1 == x2 && y1 == y2;
             }
 
@@ -283,21 +269,21 @@ namespace curve
             // y^2 = x^3 + a*x + b
             // Y^2/ZZZ^2 = X^3/ZZ^3 + a*X/ZZ + b
             // Y^2 = X^3 + a*X*ZZ^2 + b*ZZ^3
-            __host__ __device__ __forceinline__ bool is_on_curve() const & {
-                // auto self = normalized();
-                u32 group_thread = threadIdx.x & (TPI-1);
-                auto y2 = y.square();
-                auto x3 = x.square() * x;
-                auto zz2 = zz.square();
-                auto zz3 = zz * zz2;
-                auto zzz2 = zzz.square();
-                if (zz3 != zzz2) return false;
-                Element a_x_zz2;
-                if (Params::a_is_zero()) a_x_zz2 = Element::zero();
-                else a_x_zz2 = Params::template a<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_) * x * zz2;
-                auto b_zz3 = Params::template b<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_) * zz3;
-                return y2 == x3 + a_x_zz2 + b_zz3;
-            }
+            // __host__ __device__ __forceinline__ bool is_on_curve() const & {
+            //     // auto self = normalized();
+            //     u32 group_thread = threadIdx.x & (TPI-1);
+            //     auto y2 = y.square();
+            //     auto x3 = x.square() * x;
+            //     auto zz2 = zz.square();
+            //     auto zz3 = zz * zz2;
+            //     auto zzz2 = zzz.square();
+            //     if (zz3 != zzz2) return false;
+            //     Element a_x_zz2;
+            //     if (Params::a_is_zero()) a_x_zz2 = Element::zero();
+            //     else a_x_zz2 = Params::template a<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_) * x * zz2;
+            //     auto b_zz3 = Params::template b<LIMBS_>(group_thread*LIMBS_, (group_thread+1)*LIMBS_) * zz3;
+            //     return y2 == x3 + a_x_zz2 + b_zz3;
+            // }
 
             __device__ __host__ __forceinline__ bool is_elements_lt_2m() const &
             {
@@ -388,6 +374,7 @@ namespace curve
 
             // https://hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#doubling-dbl-2008-s-1
             __device__ __host__ __forceinline__ PointXYZZ<LIMBS_> self_add() const & {
+#ifdef __CUDA_ARCH__
                 u32 group_thread = threadIdx.x & (TPI-1);
                 if unlikely(zz.is_zero()) return *this;
                 auto u = y + y;
@@ -404,6 +391,22 @@ namespace curve
                 auto zz3 = v * zz;
                 auto zzz3 = w * zzz;
                 return PointXYZZ<LIMBS_>(x3, y3, zz3, zzz3);
+#else
+                if unlikely(zz.is_zero()) return *this;
+                auto u = y + y;
+                auto v = u.square();
+                auto w = u * v;
+                auto s = x * v;
+                auto x2 = x.square();
+                auto m = x2 + x2 + x2;
+                if (!Params::a_is_zero()) 
+                    m = m + (Params::template a<LIMBS_>(0, LIMBS_) * zz.square());
+                auto x3 = m.square() - s - s;
+                auto y3 = m * (s - x3) - w * y;
+                auto zz3 = v * zz;
+                auto zzz3 = w * zzz;
+                return PointXYZZ(x3, y3, zz3, zzz3);
+#endif
             }
 
             static __device__ __host__ __forceinline__ void multiple_iter(const PointXYZZ<LIMBS_> &p, bool &found_one, PointXYZZ<LIMBS_> &res, u32 n) {

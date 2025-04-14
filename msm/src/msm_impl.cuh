@@ -1,5 +1,4 @@
 #include "msm.cuh"
-#include "../../mont/src/bn254_scalar.cuh"
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda/pipeline>
 #include <array>
@@ -29,8 +28,6 @@
 #define TPI 2
 
 namespace msm {
-
-    using Params1 = bn254_scalar::Params;
 
     template <u32 windows, u32 bits_per_window>
     __host__ __device__ __forceinline__ void signed_digit(int (&r)[windows]) {
@@ -505,10 +502,10 @@ namespace msm {
                 }
 
                 // Do bucket sum
-                block_size = 256;
+                block_size = 64;
                 grid_size = num_sm;
                 // printf("Stage6\n");
-                bucket_sum<Config, 8, Point, PointAffine><<<grid_size, block_size, 0, stream>>>(
+                bucket_sum<Config, 2, Point, PointAffine><<<grid_size, block_size, 0, stream>>>(
                     cur_len * Config::actual_windows,
                     cnt_zero,
                     indexs,
@@ -716,7 +713,7 @@ namespace msm {
                 for (u32 i = 0; i < n_reduce; i++) {
                     PointAll p;
                     for(u32 k = 0; k < TPI; ++k) {
-                        int PER_LIMBS = Config::LIMBS / TPI;
+                        int PER_LIMBS = PointAffine::N_WORDS / 2;
                         for(u32 l = 0; l < PER_LIMBS; ++l) {
                             p.x.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].x.n._limbs[l];
                             p.y.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].y.n._limbs[l];
