@@ -3197,7 +3197,11 @@ namespace ntt {
         };
 
         const SSIP_config config;
+        // Time for Computation
         float milliseconds = 0;
+
+        // Time for Transfer (if any) and Computation
+        float total_milliseconds = 0;
 
         self_sort_in_place_ntt(
             const u32* omega, u32 log_len, 
@@ -3366,7 +3370,9 @@ namespace ntt {
 
             if (log_len == 0) return first_err;
 
-            cudaEvent_t start, end;
+            cudaEvent_t transfer_start, start, end, transfer_end;
+            CUDA_CHECK(cudaEventCreate(&transfer_start))
+            CUDA_CHECK(cudaEventCreate(&transfer_end))
             CUDA_CHECK(cudaEventCreate(&start));
             CUDA_CHECK(cudaEventCreate(&end));
             
@@ -3381,6 +3387,9 @@ namespace ntt {
                 }
             }
 
+            if (debug) {
+                CUDA_CHECK(cudaEventRecord(transfer_start));
+            }
 
             u32 * x;
             if (data_on_gpu) {
@@ -3395,9 +3404,9 @@ namespace ntt {
             }
 
             if (debug) {
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
+                // dim3 block(768);
+                // dim3 grid((len - 1) / block.x + 1);
+                // number_to_element <Field> <<< grid, block, 0, stream >>> (x, len);
                 CUDA_CHECK(cudaGetLastError());
                 CUDA_CHECK(cudaEventRecord(start));
             }
@@ -3455,6 +3464,8 @@ namespace ntt {
                         SSIP_NTT_stage1_warp_no_twiddle <Field, true> : SSIP_NTT_stage1_warp_no_twiddle <Field, false>;
 
                         u32 shared_size = (sizeof(u32) * ((1 << deg) + 1) * WORDS) * group_num;
+
+                        CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
                         
                         kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, 1 << (deg - 1), roots_d, zeta_d, start_n);
                         
@@ -3638,6 +3649,7 @@ namespace ntt {
                     (process ? SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, true>
                     : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, true, false>)
                     : SSIP_NTT_stage2_warp_no_share_no_twiddle <Field, false, false>;
+                    CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
 
                     kernel <<< grid, block, shared_size, stream >>>(x, log_len, log_stride, deg, ((1 << (deg << 1)) >> 2), roots_d, inv_n_d, zeta_d);
 
@@ -3660,21 +3672,26 @@ namespace ntt {
             }
 
             if (debug) {
+                // dim3 block(768);
+                // dim3 grid((len - 1) / block.x + 1);
+                // element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
                 CUDA_CHECK(cudaEventRecord(end));
                 CUDA_CHECK(cudaEventSynchronize(end));
                 CUDA_CHECK(cudaEventElapsedTime(&milliseconds, start, end));
-                dim3 block(768);
-                dim3 grid((len - 1) / block.x + 1);
-                element_to_number <Field> <<< grid, block, 0, stream >>> (x, len);
-                CUDA_CHECK(cudaGetLastError());
             }
-
-            CUDA_CHECK(cudaEventDestroy(start));
-            CUDA_CHECK(cudaEventDestroy(end));
 
             rlock.unlock();
 
             if (first_err == cudaSuccess && !data_on_gpu) CUDA_CHECK(cudaMemcpyAsync(data, x, len * WORDS * sizeof(u32), cudaMemcpyDeviceToHost, stream));
+
+            if (debug) {
+                CUDA_CHECK(cudaEventRecord(transfer_end));
+                CUDA_CHECK(cudaEventSynchronize(transfer_end));
+                CUDA_CHECK(cudaEventElapsedTime(&total_milliseconds, transfer_start, transfer_end));
+            }
+
+            CUDA_CHECK(cudaEventDestroy(start));
+            CUDA_CHECK(cudaEventDestroy(end));
 
             if (!data_on_gpu) CUDA_CHECK(cudaFreeAsync(x, stream));
 

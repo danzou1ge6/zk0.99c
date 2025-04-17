@@ -99,7 +99,9 @@ int main() {
     }
 
     uint *data_gpu;
-    data_gpu = new uint [length * WORDS];
+    // data_gpu = new uint [length * WORDS];
+
+    cudaMallocHost(&data_gpu, sizeof(uint) * length * WORDS);
 
     uint unit[WORDS];
     memset(unit, 0, sizeof(uint) * WORDS);
@@ -178,7 +180,6 @@ int main() {
     delete [] data;
     delete [] data_copy;
     delete [] reverse;
-    delete [] data_gpu;
-
+    cudaFreeHost(data_gpu);
     return 0;
 }
