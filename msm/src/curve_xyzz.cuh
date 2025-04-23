@@ -15,7 +15,7 @@
 #define unlikely(x) (x) [[unlikely]]
 #endif 
 
-#define TPI 2
+#define TPI 4
 
 namespace curve
 {
@@ -190,12 +190,12 @@ namespace curve
                 );
             }
 
-            __device__ __host__ __forceinline__ PointAffine<LIMBS_> shuffle_down(const u32 delta) const & {
+            __device__ __host__ __forceinline__ PointAffine<LIMBS_> shuffle_down(const u32 delta, u32 mask = 0xFFFFFFFF) const & {
                 PointAffine<LIMBS_> res;
                 #pragma unroll
                 for (usize i = 0; i < LIMBS_; i++) {
-                    res.x.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n._limbs[i], delta);
-                    res.y.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n._limbs[i], delta);
+                    res.x.n._limbs[i] = __shfl_down_sync(mask, x.n._limbs[i], delta);
+                    res.y.n._limbs[i] = __shfl_down_sync(mask, y.n._limbs[i], delta);
                 }
                 return res;
             }
@@ -426,14 +426,14 @@ namespace curve
                 return res;
             }
 
-            __device__ __host__ __forceinline__ PointXYZZ<LIMBS_> shuffle_down(const u32 delta) const & {
+            __device__ __host__ __forceinline__ PointXYZZ<LIMBS_> shuffle_down(const u32 delta, u32 mask = 0xFFFFFFFF) const & {
                 PointXYZZ<LIMBS_> res;
                 #pragma unroll
                 for (usize i = 0; i < LIMBS_; i++) {
-                    res.x.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, x.n._limbs[i], delta);
-                    res.y.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, y.n._limbs[i], delta);
-                    res.zz.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, zz.n._limbs[i], delta);
-                    res.zzz.n._limbs[i] = __shfl_down_sync(0xFFFFFFFF, zzz.n._limbs[i], delta);
+                    res.x.n._limbs[i] = __shfl_down_sync(mask, x.n._limbs[i], delta);
+                    res.y.n._limbs[i] = __shfl_down_sync(mask, y.n._limbs[i], delta);
+                    res.zz.n._limbs[i] = __shfl_down_sync(mask, zz.n._limbs[i], delta);
+                    res.zzz.n._limbs[i] = __shfl_down_sync(mask, zzz.n._limbs[i], delta);
                 }
                 return res;
             }

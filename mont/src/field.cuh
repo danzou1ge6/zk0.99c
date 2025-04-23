@@ -689,7 +689,7 @@ namespace mont
     using ParamsType = Params;
     static const usize LIMBS = LIMBS_;
 
-    static const u32 TPI = 2;
+    static const u32 TPI = 4;
 
     typedef cgbn_context_t<TPI>         context_t;
     typedef cgbn_env_t<context_t, LIMBS*TPI*32> env_t;

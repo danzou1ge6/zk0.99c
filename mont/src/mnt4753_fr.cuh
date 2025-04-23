@@ -1,7 +1,7 @@
 #pragma once
 #include "field.cuh"
 
-#define TPI 2
+#define TPI 4
 
 namespace mnt4753_fr
 {
