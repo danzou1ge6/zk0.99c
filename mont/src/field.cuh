@@ -934,8 +934,10 @@ namespace mont
         env_t bn_env(bn_context);
         u32 group_thread = threadIdx.x & (TPI-1);
 
-        cgbn_sub(bn_env, r.n, n, rhs.n);
-        if (cgbn_compare(bn_env, rhs.n, n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        int x = cgbn_sub(bn_env, r.n, n, rhs.n);
+        if(x < 0)
+          cgbn_add(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        // if (cgbn_compare(bn_env, rhs.n, n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
       }
 #else
       host_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::m_all());

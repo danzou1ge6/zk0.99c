@@ -93,6 +93,17 @@ namespace curve
                 x.store(p);
                 y.store(p + LIMBS_);
             }
+            static __device__ __forceinline__ PointAffine<LIMBS_> loadAll(const u32 *p) {
+                u32 group_thread = threadIdx.x & (TPI-1);
+                auto x = Element::load(p + group_thread * LIMBS_);
+                auto y = Element::load(p + LIMBS_ * (TPI + group_thread));
+                return PointAffine<LIMBS_>(x, y);
+            }
+            __device__ __forceinline__ void storeAll(u32 *p) {
+                u32 group_thread = threadIdx.x & (TPI-1);
+                x.store(p + group_thread * LIMBS_);
+                y.store(p + LIMBS_ * (TPI + group_thread));
+            }            
 
             // __device__ __forceinline__ void load_cg(const u32 *p) {
             //     int group_thread = threadIdx.x & (TPI-1);

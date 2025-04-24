@@ -42,7 +42,7 @@ using mont::u64;
 struct MsmProblem
 {
   u64 len;
-  PointAffine *points;
+  PointAffineAll *points;
   Number *scalers;
 };
 
@@ -51,19 +51,11 @@ operator>>(std::istream &is, MsmProblem &msm)
 {
   is >> msm.len;
   msm.scalers = new Number[msm.len];
-  msm.points = new PointAffine[msm.len * TPI];
+  msm.points = new PointAffineAll[msm.len];
   for (u32 i = 0; i < msm.len; i++)
   {
     char _;
-    PointAffineAll p;
-    is >> msm.scalers[i] >> _ >> p;
-    for(int j=0; j<TPI; ++j) {
-      int PER_LIMBS = PointAffine::N_WORDS / 2;
-      for(int k=0; k<PER_LIMBS; k++) {
-        msm.points[i*TPI+j].x.n._limbs[k] = p.x.n._limbs[j*PER_LIMBS+k];
-        msm.points[i*TPI+j].y.n._limbs[k] = p.y.n._limbs[j*PER_LIMBS+k];
-      }
-    }
+    is >> msm.scalers[i] >> _ >> msm.points[i];
   }
   return is;
 }
@@ -99,7 +91,7 @@ int main(int argc, char *argv[])
   rf >> msm;
 
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Number), cudaHostRegisterDefault);
-  cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffine) * TPI, cudaHostRegisterDefault);
+  cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffineAll), cudaHostRegisterDefault);
 
   using Config = msm::MsmConfig<753, WINDOW_S, ALPHA, false>;
   u32 batch_size = 1;
@@ -111,7 +103,7 @@ int main(int argc, char *argv[])
   std::array<u32*, Config::n_precompute> h_points;
   h_points[0] = (u32*)msm.points;
   for (u32 i = 1; i < Config::n_precompute; i++) {
-    cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffine) * TPI, cudaHostAllocDefault);
+    cudaHostAlloc(&h_points[i], msm.len * sizeof(PointAffineAll), cudaHostAllocDefault);
   }
 
   
@@ -133,13 +125,13 @@ int main(int argc, char *argv[])
   {
     for(parts = 2; parts <= 4; parts *= 2)
     {
-      msm::MultiGPUMSM<Config, Number, Point, PointAffine, PointAll> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
+      msm::MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll> msm_solver(msm.len, batch_per_run, parts, stage_scalers, stage_points, cards);
 
       std::cout << "start precompute" << std::endl;
 
       cudaStream_t stream;
       cudaStreamCreate(&stream);
-      msm::MSMPrecompute<Config, Point, PointAffine>::precompute(msm.len, h_points, 4);
+      msm::MSMPrecompute<Config, Point, PointAffine, PointAffineAll>::precompute(msm.len, h_points, 4);
       msm_solver.set_points(h_points);
 
       std::cout << "Precompute done" << std::endl;

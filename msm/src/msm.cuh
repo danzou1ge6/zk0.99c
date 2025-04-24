@@ -72,7 +72,7 @@ namespace msm {
         static constexpr bool debug = DEBUG;
     };
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
     class MSM {
         int device;
         std::array<const u32*, Config::n_precompute> h_points;
@@ -98,8 +98,8 @@ namespace msm {
         u32 **points;
         cudaEvent_t *begin_scaler_copy, *end_scaler_copy;
         cudaEvent_t *begin_point_copy, *end_point_copy;
-        Point **reduce_buffer;
-        Point **h_reduce_buffer;
+        PointAll **reduce_buffer;
+        PointAll **h_reduce_buffer;
         u32 num_sm, reduce_blocks;
         u32 stage_scaler, stage_point, stage_point_transporting;
         const u32 batch_per_run;
@@ -128,7 +128,7 @@ namespace msm {
         ~MSM();
     };
 
-    template <typename Config, typename Point, typename PointAffine>
+    template <typename Config, typename Point, typename PointAffine, typename PointAffineAll>
     class MSMPrecompute {
         static cudaError_t run(u64 len, u64 part_len, std::array<u32*, Config::n_precompute> h_points, cudaStream_t stream = 0);
         public:
@@ -137,12 +137,12 @@ namespace msm {
     };
 
     // each msm will be decomposed into multiple msm instances, each instance will be run on a single GPU
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
     class MultiGPUMSM {
         u32 parts, scaler_stages, point_stages, batch_per_run;
         u64 len, part_len;
         const std::vector<u32> cards;
-        std::vector<MSM<Config, Number, Point, PointAffine, PointAll>> msm_instances;
+        std::vector<MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>> msm_instances;
         std::vector<cudaStream_t> streams;
         // TODO: use thread pool
         std::vector<std::thread> threads;

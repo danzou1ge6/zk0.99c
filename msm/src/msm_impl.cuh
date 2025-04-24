@@ -125,7 +125,7 @@ namespace msm {
             unlock(mutex_ptr);
      }
 
-    template <typename Config, u32 WarpPerBlock, typename Point, typename PointAffine>
+    template <typename Config, u32 WarpPerBlock, typename Point, typename PointAffine, typename PointAffineAll>
     __global__ void bucket_sum(
         const u64 len,
         const u32 *cnt_zero,
@@ -135,8 +135,8 @@ namespace msm {
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
         Array2D<Point, Config::n_windows, Config::n_buckets * TPI> sum
     ) {
-        extern __shared__ u32 smem[];
-        Array2D<u32, WarpPerBlock * THREADS_PER_WARP, PointAffine::N_WORDS * 2 + 4> point_buffer(smem);
+        // extern __shared__ u32 smem[];
+        // Array2D<u32, WarpPerBlock * THREADS_PER_WARP, PointAffine::N_WORDS * 2 + 4> point_buffer(smem);
         // __shared__ u32 point_buffer[WarpPerBlock * THREADS_PER_WARP][PointAffine::N_WORDS * 2 + 4]; // +4 for padding and alignment
         const static u32 key_mask = (1u << Config::s) - 1;
         const static u32 sign_mask = 1u << Config::s;
@@ -154,12 +154,7 @@ namespace msm {
 
         indexs += zero_num;
 
-        int stage = 0;
-        uint4 *smem_ptr0 = reinterpret_cast<uint4*>(point_buffer.addr(threadIdx.x, 0));
-        uint4 *smem_ptr1 = reinterpret_cast<uint4*>(point_buffer.addr(threadIdx.x, PointAffine::N_WORDS));
-
         bool first = true; // only the first bucket and the last bucket may have conflict with other threads
-        auto pip_thread = cuda::make_pipeline(); // pipeline for this thread
 
         u64 index = indexs[start_id];
         u64 pointer = index >> (Config::s + 1 + Config::window_bits);
@@ -172,34 +167,11 @@ namespace msm {
         u32 last_key = last_index & key_mask;
         u32 last_window_id = (last_index >> (Config::s + 1)) & window_mask;
 
-        pip_thread.producer_acquire();
-        cuda::memcpy_async(smem_ptr0, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS * TPI + group_thread * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-        stage ^= 1;
-        pip_thread.producer_commit();
-
         auto acc = Point::identity();
 
         for (u32 i = start_id + 1; i < end_id; i++) {
             u64 next_index = indexs[i];
-            pointer = next_index >> (Config::s + 1 + Config::window_bits);
-
-            uint4 *g2s_ptr, *s2r_ptr;
-            if (stage == 0) {
-                g2s_ptr = smem_ptr0;
-                s2r_ptr = smem_ptr1;
-            } else {
-                g2s_ptr = smem_ptr1;
-                s2r_ptr = smem_ptr0;
-            }
-
-            pip_thread.producer_acquire();
-            cuda::memcpy_async(g2s_ptr, reinterpret_cast<const uint4*>(points + pointer * PointAffine::N_WORDS * TPI + group_thread * PointAffine::N_WORDS), sizeof(PointAffine), pip_thread);
-            pip_thread.producer_commit();
-            stage ^= 1;
-            
-            cuda::pipeline_consumer_wait_prior<1>(pip_thread);
-            PointAffine p = PointAffine::load(reinterpret_cast<u32*>(s2r_ptr));
-            pip_thread.consumer_release();
+            PointAffine p = PointAffine::loadAll(points + pointer * PointAffineAll::N_WORDS);
 
             if (sign) p = p.neg();
             acc = acc + p;
@@ -243,11 +215,10 @@ namespace msm {
             key = next_key;
             sign = (next_index & sign_mask) != 0;
             window_id = next_window_id;
+            pointer = next_index >> (Config::s + 1 + Config::window_bits);
         }
 
-        pip_thread.consumer_wait();
-        PointAffine p = PointAffine::load(reinterpret_cast<u32*>(stage == 0 ? smem_ptr1 : smem_ptr0));
-        pip_thread.consumer_release();
+        PointAffine p = PointAffine::loadAll(points + pointer * PointAffineAll::N_WORDS);
 
         if (sign) p = p.neg();
         acc = acc + p;
@@ -347,11 +318,11 @@ namespace msm {
         // __syncwarp();
     }
 
-    template<typename Config, u32 WarpPerBlock, typename Point>
+    template<typename Config, u32 WarpPerBlock, typename Point, typename PointAll>
     __launch_bounds__(256,1)
     __global__ void reduceBuckets(
         Array2D<Point, Config::n_windows, Config::n_buckets * TPI> buckets_sum, 
-        Point *reduceMemory,
+        PointAll *reduceMemory,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized
     ) {
 
@@ -432,27 +403,33 @@ namespace msm {
             for (u32 i = 0; i < window_id * Config::s; i++) {
                 sum_of_sums = sum_of_sums.self_add();
             }
-            reduceMemory[blockIdx.x * TPI + group_thread] = sum_of_sums;
-        }        
+            u32 len = Point::N_WORDS / 4;
+            for(u32 i = 0; i < len; ++i) {
+                reduceMemory[blockIdx.x].x.n._limbs[group_thread * len + i] = sum_of_sums.x.n._limbs[i];
+                reduceMemory[blockIdx.x].y.n._limbs[group_thread * len + i] = sum_of_sums.y.n._limbs[i];
+                reduceMemory[blockIdx.x].zz.n._limbs[group_thread * len + i] = sum_of_sums.zz.n._limbs[i];
+                reduceMemory[blockIdx.x].zzz.n._limbs[group_thread * len + i] = sum_of_sums.zzz.n._limbs[i];
+            }
+        }
     }
 
-    template <typename Config, typename Point, typename PointAffine>
+    template <typename Config, typename Point, typename PointAffine, typename PointAffineAll>
     __global__ void precompute_kernel(u32 *points, u64 len) {
-        u64 gid = threadIdx.x + blockIdx.x * blockDim.x;
+        u64 gid = (threadIdx.x + blockIdx.x * blockDim.x) / TPI;
         if (gid >= len) return;
-        auto p = PointAffine::load(points + gid * PointAffine::N_WORDS).to_point();
+        Point p = PointAffine::loadAll(points + gid * PointAffineAll::N_WORDS).to_point();
         for (u32 i = 1; i < Config::n_precompute; i++) {
             #pragma unroll
             for (u32 j = 0; j < Config::n_windows * Config::s; j++) {
                 p = p.self_add();
                 // p = p.self_add_pre();
             }
-            p.to_affine().store(points + (gid + i * len) * PointAffine::N_WORDS);
+            p.to_affine().storeAll(points + (gid + i * len) * PointAffineAll::N_WORDS);
         }
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll>::run(const u32 batches, std::vector<u32*>::const_iterator h_scalers, bool first_run, cudaStream_t stream) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::run(const u32 batches, std::vector<u32*>::const_iterator h_scalers, bool first_run, cudaStream_t stream) {
         cudaError_t err;
 
         u64 part_len = div_ceil(len, parts);
@@ -574,9 +551,9 @@ namespace msm {
                     u32 point_left = cur_len - points_transported;
                     if (point_left > 0) for (int i = 0; i < Config::n_precompute; i++) {
                         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(
-                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffine::N_WORDS * TPI,
-                            h_points[i] + (offset + points_transported) * PointAffine::N_WORDS * TPI,
-                            sizeof(PointAffine) * point_left * TPI, cudaMemcpyHostToDevice, copy_stream
+                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffineAll::N_WORDS,
+                            h_points[i] + (offset + points_transported) * PointAffineAll::N_WORDS,
+                            sizeof(PointAffineAll) * point_left, cudaMemcpyHostToDevice, copy_stream
                         ));
                     }
                     PROPAGATE_CUDA_ERROR(cudaEventRecord(end_point_copy[stage_point_transporting], copy_stream));
@@ -587,9 +564,9 @@ namespace msm {
 
                     for (int i = 0; i < Config::n_precompute; i++) {
                         PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(
-                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffine::N_WORDS * TPI,
-                            h_points[i] + (next_offset + points_transported) * PointAffine::N_WORDS * TPI,
-                            sizeof(PointAffine) * points_per_transfer * TPI, cudaMemcpyHostToDevice, copy_stream
+                            points[stage_point_transporting] + (i * cur_len + points_transported) * PointAffineAll::N_WORDS,
+                            h_points[i] + (next_offset + points_transported) * PointAffineAll::N_WORDS,
+                            sizeof(PointAffineAll) * points_per_transfer, cudaMemcpyHostToDevice, copy_stream
                         ));
                     }
                     points_transported += points_per_transfer;
@@ -612,13 +589,14 @@ namespace msm {
                 grid_size = num_sm;
                 constexpr u32 warp_num = 12;
                 // printf("Stage6\n");
-                usize shared_size = (PointAffine::N_WORDS * 2 + 4) * warp_num * THREADS_PER_WARP * sizeof(u32);
+                // usize shared_size = (PointAffine::N_WORDS * 2 + 4) * warp_num * THREADS_PER_WARP * sizeof(u32);
  
-                auto sum_kernel = bucket_sum<Config, warp_num, Point, PointAffine>;
+                // auto sum_kernel = bucket_sum<Config, warp_num, Point, PointAffine>;
  
-                PROPAGATE_CUDA_ERROR(cudaFuncSetAttribute(sum_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
+                // PROPAGATE_CUDA_ERROR(cudaFuncSetAttribute(sum_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_size));
  
-                sum_kernel<<<grid_size, block_size, shared_size, stream>>>(
+                // sum_kernel<<<grid_size, block_size, shared_size, stream>>>(
+                bucket_sum<Config, warp_num, Point, PointAffine, PointAffineAll><<<grid_size, block_size, 0, stream>>>(
                     cur_len * Config::actual_windows,
                     cnt_zero,
                     indexs,
@@ -665,7 +643,7 @@ namespace msm {
                 cudaEventRecord(start, stream);
             }
             
-            reduceBuckets<Config, 8, Point> <<< grid, 256, 0, stream >>> (buckets_sum[j], reduce_buffer[j], initialized[j]);
+            reduceBuckets<Config, 8, Point, PointAll> <<< grid, 256, 0, stream >>> (buckets_sum[j], reduce_buffer[j], initialized[j]);
 
             PROPAGATE_CUDA_ERROR(cudaGetLastError());
 
@@ -680,8 +658,8 @@ namespace msm {
         return cudaSuccess;
         }
  
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    MSM<Config, Number, Point, PointAffine, PointAll>::MSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, int device)
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::MSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, int device)
     : len(len), batch_per_run(batch_per_run), parts(parts), max_scaler_stages(scaler_stages), max_point_stages(point_stages),
     stage_scaler(0), stage_point(0), stage_point_transporting(0), device(device) {
         cudaDeviceProp deviceProp;
@@ -698,11 +676,11 @@ namespace msm {
         end_scaler_copy = new cudaEvent_t[scaler_stages];
         begin_point_copy = new cudaEvent_t[point_stages];
         end_point_copy = new cudaEvent_t[point_stages];
-        reduce_buffer = new Point*[batch_per_run];
-        h_reduce_buffer = new Point*[batch_per_run];
+        reduce_buffer = new PointAll*[batch_per_run];
+        h_reduce_buffer = new PointAll*[batch_per_run];
         
         for (int j = 0; j < batch_per_run; j++) {
-            cudaMallocHost(&h_reduce_buffer[j], sizeof(Point) * reduce_blocks * TPI, cudaHostAllocDefault);
+            cudaMallocHost(&h_reduce_buffer[j], sizeof(PointAll) * reduce_blocks, cudaHostAllocDefault);
         }
         h_points_offset[0] = 0;
         for (u32 i = 0; i < Config::n_windows; i++) {
@@ -713,16 +691,16 @@ namespace msm {
         assert(h_points_offset[Config::n_windows] == Config::actual_windows);
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    void MSM<Config, Number, Point, PointAffine, PointAll>::set_points(std::array<u32*, Config::n_precompute> host_points) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    void MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::set_points(std::array<u32*, Config::n_precompute> host_points) {
         for (u32 i = 0; i < Config::n_precompute; i++) {
             h_points[i] = host_points[i];
         }
         points_set = true;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll>::alloc_gpu(cudaStream_t stream) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::alloc_gpu(cudaStream_t stream) {
         cudaError_t err;
         PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
         u64 part_len = div_ceil(len, parts);
@@ -742,7 +720,7 @@ namespace msm {
             PROPAGATE_CUDA_ERROR(cudaMallocAsync(&scalers[i], sizeof(u32) * Config::LIMBS * part_len, stream));
         }
         for (int i = 0; i < max_point_stages; i++) {
-            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[i], sizeof(u32) * PointAffine::N_WORDS * part_len * Config::n_precompute * TPI, stream));
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points[i], sizeof(u32) * PointAffineAll::N_WORDS * part_len * Config::n_precompute, stream));
         }
         cub::DeviceRadixSort::SortKeys(
             nullptr, temp_storage_bytes_sort,
@@ -751,7 +729,7 @@ namespace msm {
         );
         PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_temp_storage_sort, temp_storage_bytes_sort, stream));
         for (int i = 0; i < batch_per_run; i++) {
-            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&reduce_buffer[i], sizeof(Point) * reduce_blocks * TPI, stream));
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&reduce_buffer[i], sizeof(PointAll) * reduce_blocks, stream));
         }
         for (int i = 0; i < max_scaler_stages; i++) {
             PROPAGATE_CUDA_ERROR(cudaEventCreate(begin_scaler_copy + i));
@@ -765,8 +743,8 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll>::free_gpu(cudaStream_t stream) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::free_gpu(cudaStream_t stream) {
         cudaError_t err;
         PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
         if (!allocated) return cudaSuccess;
@@ -800,8 +778,8 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll>::msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result, cudaStream_t stream) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result, cudaStream_t stream) {
         // note: this function is not async, it will block until all computation is done
         // this is because the host reduce is done on the cpu
         assert(points_set);
@@ -814,7 +792,7 @@ namespace msm {
         // TODO: use thread pool
         std::thread host_reduce_thread; // overlap host reduce with GPU computation
 
-        auto host_reduce = [](Point **reduce_buffer, std::vector<PointAll>::iterator h_result, u32 n_reduce, u32 batches, cudaEvent_t start_reduce) {
+        auto host_reduce = [](PointAll **reduce_buffer, std::vector<PointAll>::iterator h_result, u32 n_reduce, u32 batches, cudaEvent_t start_reduce) {
             cudaEventSynchronize(start_reduce);
             // host timer
             std::chrono::high_resolution_clock::time_point start, end;
@@ -824,17 +802,7 @@ namespace msm {
             for (u32 j = 0; j < batches; j++, h_result++) {
                 *h_result = PointAll::identity();
                 for (u32 i = 0; i < n_reduce; i++) {
-                    PointAll p;
-                    for(u32 k = 0; k < TPI; ++k) {
-                        int PER_LIMBS = PointAffine::N_WORDS / 2;
-                        for(u32 l = 0; l < PER_LIMBS; ++l) {
-                            p.x.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].x.n._limbs[l];
-                            p.y.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].y.n._limbs[l];
-                            p.zz.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].zz.n._limbs[l];
-                            p.zzz.n._limbs[k*PER_LIMBS+l] = reduce_buffer[j][i*TPI+k].zzz.n._limbs[l];
-                        }
-                    }
-                    *h_result = *h_result + p;
+                    *h_result = *h_result + reduce_buffer[j][i];
                 }
             }
             if constexpr (Config::debug) {
@@ -854,7 +822,7 @@ namespace msm {
             if (i > 0) host_reduce_thread.join();
             
             for (int j = 0; j < cur_batch; j++) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_reduce_buffer[j], reduce_buffer[j], sizeof(Point) * reduce_blocks * TPI, cudaMemcpyDeviceToHost, stream));
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_reduce_buffer[j], reduce_buffer[j], sizeof(PointAll) * reduce_blocks, cudaMemcpyDeviceToHost, stream));
             }
             PROPAGATE_CUDA_ERROR(cudaEventRecord(start_reduce, stream));
             // printf("Stage11\n");
@@ -870,8 +838,8 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    MSM<Config, Number, Point, PointAffine, PointAll>::~MSM() {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::~MSM() {
         free_gpu();
         delete [] d_buckets_sum_buf;
         delete [] buckets_sum;
@@ -890,26 +858,26 @@ namespace msm {
         delete [] h_reduce_buffer;
     }
 
-    template <typename Config, typename Point, typename PointAffine>
-    cudaError_t MSMPrecompute<Config, Point, PointAffine>::run(u64 len, u64 part_len, std::array<u32*, Config::n_precompute> h_points, cudaStream_t stream) {
+    template <typename Config, typename Point, typename PointAffine, typename PointAffineAll>
+    cudaError_t MSMPrecompute<Config, Point, PointAffine, PointAffineAll>::run(u64 len, u64 part_len, std::array<u32*, Config::n_precompute> h_points, cudaStream_t stream) {
         cudaError_t err;
         if constexpr (Config::n_precompute == 1) {
             return cudaSuccess;
         }
         u32 *points;
-        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points, sizeof(PointAffine) * part_len * Config::n_precompute * TPI, stream));
+        PROPAGATE_CUDA_ERROR(cudaMallocAsync(&points, sizeof(PointAffineAll) * part_len * Config::n_precompute, stream));
         for (int i = 0; i * part_len < len; i++) {
             u64 offset = i * part_len;
             u64 cur_len = std::min(part_len, len - offset);
 
-            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points, h_points[0] + offset * PointAffine::N_WORDS * TPI, sizeof(PointAffine) * part_len * TPI, cudaMemcpyHostToDevice, stream));
+            PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points, h_points[0] + offset * PointAffineAll::N_WORDS, sizeof(PointAffineAll) * part_len, cudaMemcpyHostToDevice, stream));
 
             u32 grid = div_ceil(cur_len, 256) * TPI;
             u32 block = 256;
-            precompute_kernel<Config, Point, PointAffine><<<grid, block, 0, stream>>>(points, cur_len * TPI);
+            precompute_kernel<Config, Point, PointAffine, PointAffineAll><<<grid, block, 0, stream>>>(points, cur_len);
 
             for (int j = 1; j < Config::n_precompute; j++) {
-                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_points[j] + offset * PointAffine::N_WORDS * TPI, points + j * cur_len * PointAffine::N_WORDS * TPI, sizeof(PointAffine) * cur_len * TPI, cudaMemcpyDeviceToHost, stream));
+                PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(h_points[j] + offset * PointAffineAll::N_WORDS, points + j * cur_len * PointAffineAll::N_WORDS, sizeof(PointAffineAll) * cur_len, cudaMemcpyDeviceToHost, stream));
             }
         }
         PROPAGATE_CUDA_ERROR(cudaFreeAsync(points, stream));
@@ -917,8 +885,8 @@ namespace msm {
     }
 
     // synchronous function
-    template <typename Config, typename Point, typename PointAffine>
-    cudaError_t MSMPrecompute<Config, Point, PointAffine>::precompute(u64 len, std::array<u32*, Config::n_precompute> h_points, int max_devices) {
+    template <typename Config, typename Point, typename PointAffine, typename PointAffineAll>
+    cudaError_t MSMPrecompute<Config, Point, PointAffine, PointAffineAll>::precompute(u64 len, std::array<u32*, Config::n_precompute> h_points, int max_devices) {
         cudaError_t err;
         int devices;
         PROPAGATE_CUDA_ERROR(cudaGetDeviceCount(&devices));
@@ -935,7 +903,7 @@ namespace msm {
             PROPAGATE_CUDA_ERROR(cudaStreamCreate(&streams[i]));
             std::array<u32*, Config::n_precompute> cur_points;
             for (int j = 0; j < Config::n_precompute; j++) {
-                cur_points[j] = h_points[j] + offset * PointAffine::N_WORDS * TPI;
+                cur_points[j] = h_points[j] + offset * PointAffineAll::N_WORDS;
             }
             PROPAGATE_CUDA_ERROR(run(cur_len, std::min(cur_len, 1ul << 20), cur_points, streams[i]));
         }
@@ -947,8 +915,8 @@ namespace msm {
     }
 
     // each msm will be decomposed into multiple msm instances, each instance will be run on a single GPU
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::MultiGPUMSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, std::vector<u32> cards)
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::MultiGPUMSM(u64 len, u32 batch_per_run, u32 parts, u32 scaler_stages, u32 point_stages, std::vector<u32> cards)
     : len(len), part_len(div_ceil(len, cards.size())), batch_per_run(batch_per_run), parts(parts),
     scaler_stages(scaler_stages), point_stages(point_stages), cards(cards) {
         msm_instances.reserve(cards.size());
@@ -961,8 +929,8 @@ namespace msm {
         }
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::alloc_gpu() {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::alloc_gpu() {
         cudaError_t err;
         if (allocated) return cudaSuccess;
         for (u32 i = 0; i < cards.size(); i++) {
@@ -974,8 +942,8 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::free_gpu() {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::free_gpu() {
         cudaError_t err;
         if (!allocated) return cudaSuccess;
         for (u32 i = 0; i < cards.size(); i++) {
@@ -988,21 +956,21 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    void MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::set_points(std::array<u32*, Config::n_precompute> host_points) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    void MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::set_points(std::array<u32*, Config::n_precompute> host_points) {
         for (u32 i = 0; i < cards.size(); i++) {
             u64 offset = i * part_len;
             u64 cur_len = std::min(part_len, len - offset);
             std::array<u32*, Config::n_precompute> cur_points;
             for (int j = 0; j < Config::n_precompute; j++) {
-                cur_points[j] = host_points[j] + offset * PointAffine::N_WORDS * TPI;
+                cur_points[j] = host_points[j] + offset * PointAffineAll::N_WORDS;
             }
             msm_instances[i].set_points(cur_points);
         }
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result) {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    cudaError_t MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::msm(const std::vector<u32*>& h_scalers, std::vector<PointAll> &h_result) {
         assert(h_scalers.size() == h_result.size());
 
         cudaError_t err;
@@ -1014,7 +982,7 @@ namespace msm {
             results[i].resize(h_result.size());
         }
         
-        auto run_msm = [](MSM<Config, Number, Point, PointAffine, PointAll> &msm, const std::vector<u32*> &h_scalers, std::vector<PointAll> &h_result, cudaStream_t stream) {
+        auto run_msm = [](MSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll> &msm, const std::vector<u32*> &h_scalers, std::vector<PointAll> &h_result, cudaStream_t stream) {
             msm.msm(h_scalers, h_result, stream);
         };
 
@@ -1045,8 +1013,8 @@ namespace msm {
         return cudaSuccess;
     }
 
-    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll>
-    MultiGPUMSM<Config, Number, Point, PointAffine, PointAll>::~MultiGPUMSM() {
+    template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
+    MultiGPUMSM<Config, Number, Point, PointAffine, PointAll, PointAffineAll>::~MultiGPUMSM() {
         free_gpu();
     }
 }
