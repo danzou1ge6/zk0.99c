@@ -214,16 +214,18 @@ def ss(old, plambd):
 
 def alphas(old, lambd):
     s, = old
-    return range(2, division_ceil(lambd, s) + 1)
+    return range(1, division_ceil(lambd, s) + 1)
 
 def ecs(old, k, plambd):
-    if k <= 25:
-        return range(18, k)
+    if k < 18:
+        return range(max(k-4, 1), k + 1)
+    elif k <= 25:
+        return range(18, k + 1)
     else:
         if plambd < 400:
-            return range(22, k)
+            return range(22, k + 1)
         else:
-            return range(20, k)
+            return range(20, k + 1)
 
 def hs(old, n):
     if n == 1:
@@ -236,51 +238,75 @@ def hs(old, n):
         result.append(power)
     return result
 
+import argparse
 
-k = 26
-n = 16
-l = 768
-p = 768
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--k", default=20, type=int, help="degree of the MSM")
+    parser.add_argument("--n", default=1, type=int, help="number of MSMs")
+    parser.add_argument("--l", default=256, type=int, help="bits of the scalar")
+    parser.add_argument("--p", type=int, default=256, help="bits of the point base field")
+    parser.add_argument("--mem", default=40 * 2 ** 30, type=int, help="memory limit")
+    return parser.parse_args()
 
-search_grid = grid([ss, alphas, ecs, hs], [p], [l], [k, p], [n])
+if __name__ == "__main__":
+    args = parse_args()
+    k = args.k
+    n = args.n
+    l = args.l
+    p = args.p
+    gpu_mem = args.mem
 
-models = [
-    Model(
-        i=Instance(
-            lambd=l,
-            plambd=p,
-            delta=8,
-            k=k,
-            n=n,
-            g=10 * 2 ** 30
-        ),
-        p=Parameters(
-            s=s,
-            alpha=alpha,
-            w=2 ** (k - ec),
-            h=h,
-            c=2 ** ec
-        ),
-        e=Estimations(
-            r_scatter=1,
-            r_buckets_sum=7,
-            r_buckets_reduction=40,
-            r_max1=1.5,
-            r_max2=1.05,
-            r_transfer=0.8
+    # k = 20
+    # n = 1
+    # l = 256
+    # p = 256
+
+
+    # k = 26
+    # n = 16
+    # l = 768
+    # p = 768
+
+    search_grid = grid([ss, alphas, ecs, hs], [p], [l], [k, p], [n])
+
+    models = [
+        Model(
+            i=Instance(
+                lambd=l,
+                plambd=p,
+                delta=8,
+                k=k,
+                n=n,
+                g=gpu_mem
+            ),
+            p=Parameters(
+                s=s,
+                alpha=alpha,
+                w=2 ** (k - ec),
+                h=h,
+                c=2 ** ec
+            ),
+            e=Estimations(
+                r_scatter=1,
+                r_buckets_sum=7,
+                r_buckets_reduction=40,
+                r_max1=1.5,
+                r_max2=1.05,
+                r_transfer=0.8
+            )
         )
-    )
-    for s, alpha, ec, h in search_grid
-]
+        for s, alpha, ec, h in search_grid
+    ]
 
-best = min((m for m in models if constrain(m)), key=lambda m: total_time(m))
+    best = min((m for m in models if constrain(m)), key=lambda m: total_time(m))
 
-print(best.p.alpha)
-print(best.p.s)
-print(best.p.c)
-print(best.p.w)
-print(best.p.h)
-print('\n')
+    print(f"alpha: {best.p.alpha}")
+    print(f"s: {best.p.s}")
+    print(f"c: {best.p.c}")
+    print(f"divide: {best.p.w}")
+    print(f"h: {best.p.h}")
+    print('\n')
 
 # A100
 # bn254 255

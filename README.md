@@ -66,6 +66,30 @@ xmake run test-json
 For Rust binding tests:
 ```sh
 cargo test
+cargo test --package zk0d99c_msm --release --test msm -- --nocapture # test msm
+```
+# Cost Model
+
+You can run `utils/cost_model.py` to get the best configuration for MSM.
+use `python ./utils/cost_model.py -h` to see the parameters.
+
+The output will looks like this:
+```
+alpha: 8
+s: 16
+c: 262144
+divide: 4
+h: 1
+```
+To apply this to the code, you need change `wrapper/msm/c_api/msm_c_api.cu`
+where
+```
+using Config = msm::MsmConfig<field-bits, s, alpha, false>;
+u32 batch_size = you batch size;
+u32 batch_per_run = h;
+u32 parts = divide;
+u32 stage_scalers = 2;
+u32 stage_points = 2;
 ```
 
 ## Documentation
