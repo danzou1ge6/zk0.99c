@@ -1,8 +1,6 @@
 #pragma once
 #include "field.cuh"
 
-#define TPI 2
-
 // scalar field for BLS12-381
 namespace bls12381_fr
 {
@@ -21,6 +19,7 @@ namespace bls12381_fr
     u32 r_mod[8] = BIG_INTEGER_CHUNKS8(0x1824b159, 0xacc5056f, 0x998c4fef, 0xecbc4ff5, 0x5884b7fa, 0x00034802, 0x00000001, 0xfffffffe);
     u32 r2_mod[8] = BIG_INTEGER_CHUNKS8(0x748d9d9, 0x9f59ff11, 0x05d31496, 0x7254398f, 0x2b6cedcb, 0x87925c23, 0xc999e990, 0xf3f29c6d);
 
+    template <u32 TPI>
     struct Params
     {
         static const mont::usize LIMBS = 8;

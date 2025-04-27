@@ -1,8 +1,6 @@
 #pragma once
 #include "field.cuh"
 
-#define TPI 2
-
 namespace bn254_fr
 {
     // bn254_fr
@@ -22,6 +20,7 @@ namespace bn254_fr
     u32 r_mod[8] = BIG_INTEGER_CHUNKS8(0xe0a77c1, 0x9a07df2f, 0x666ea36f, 0x7879462e, 0x36fc7695, 0x9f60cd29, 0xac96341c, 0x4ffffffb);
     u32 r2_mod[8] = BIG_INTEGER_CHUNKS8(0x216d0b1, 0x7f4e44a5, 0x8c49833d, 0x53bb8085, 0x53fe3ab1, 0xe35c59e3, 0x1bb8e645, 0xae216da7);
 
+    template <u32 TPI>
     struct Params
     {
         static const mont::usize LIMBS = 8;

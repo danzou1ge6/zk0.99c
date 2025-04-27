@@ -3,8 +3,6 @@
 #include <array>
 #include <thread>
 
-#define TPI 4
-
 namespace msm {
 
     using mont::u32;
@@ -51,7 +49,7 @@ namespace msm {
     };
 
     template <u32 BITS = 255, u32 WINDOW_SIZE = 22,
-    u32 TARGET_WINDOWS = 1, bool DEBUG = true>
+    u32 TARGET_WINDOWS = 1, bool DEBUG = true, u32 TPI1 = 1>
     struct MsmConfig {
         static constexpr u32 lambda = BITS;
         static constexpr u32 LIMBS = div_ceil(BITS, 32);
@@ -70,6 +68,8 @@ namespace msm {
         static constexpr u32 n_precompute = div_ceil(actual_windows, n_windows);
 
         static constexpr bool debug = DEBUG;
+
+        static constexpr u32 tpi = TPI1;
     };
 
     template <typename Config, typename Number, typename Point, typename PointAffine, typename PointAll, typename PointAffineAll>
@@ -77,7 +77,7 @@ namespace msm {
         int device;
         std::array<const u32*, Config::n_precompute> h_points;
         Point **d_buckets_sum_buf;
-        Array2D<Point, Config::n_windows, Config::n_buckets*TPI> *buckets_sum;
+        Array2D<Point, Config::n_windows, Config::n_buckets*Config::tpi> *buckets_sum;
         unsigned short *mutex_buf;
         unsigned short **initialized_buf;
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> *initialized;

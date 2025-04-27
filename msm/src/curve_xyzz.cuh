@@ -15,8 +15,6 @@
 #define unlikely(x) (x) [[unlikely]]
 #endif 
 
-#define TPI 4
-
 namespace curve
 {
     using mont::u32;
@@ -25,7 +23,7 @@ namespace curve
     // using Params1 = bls12381_fq::Params;
     using Params1 = mnt4753_fq::Params;
 
-    template <class Params>
+    template <class Params, u32 TPI>
     struct EC {
         template <u32 LIMBS_>
         struct PointXYZZ;
@@ -37,7 +35,7 @@ namespace curve
         struct PointAffine {
             static const usize N_WORDS = 2 * LIMBS_;
 
-            using Element = mont::Element<Params1, LIMBS_>;
+            using Element = mont::Element<Params1, LIMBS_, TPI>;
 
             Element x, y;
 
@@ -220,7 +218,7 @@ namespace curve
         template <u32 LIMBS_>
         struct PointXYZZ {
             static const usize N_WORDS = 4 * LIMBS_;
-            using Element = mont::Element<Params1, LIMBS_>;
+            using Element = mont::Element<Params1, LIMBS_, TPI>;
             Element x, y, zz, zzz;
 
             __host__ __device__ __forceinline__ PointXYZZ() {};

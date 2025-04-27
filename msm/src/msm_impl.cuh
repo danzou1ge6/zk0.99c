@@ -27,8 +27,6 @@
 #define unlikely(x) (x) [[unlikely]]
 #endif 
 
-#define TPI 4
-
 namespace msm {
 
     template <u32 windows, u32 bits_per_window>
@@ -108,16 +106,16 @@ namespace msm {
          u32 key,
          Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
          Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
-         Array2D<Point, Config::n_windows, Config::n_buckets * TPI> sum
+         Array2D<Point, Config::n_windows, Config::n_buckets * Config::tpi> sum
      ) {
-        const u32 group_thread = threadIdx.x & (TPI-1);
+        const u32 group_thread = threadIdx.x & (Config::tpi-1);
         auto mutex_ptr = mutex.addr(window_id, key - 1);
         if(group_thread == 0)
             lock(mutex_ptr);
         if (initialized.get(window_id, key - 1)) {
-            sum.get(window_id, (key - 1) * TPI + group_thread) = sum.get(window_id, (key - 1) * TPI + group_thread) + acc;
+            sum.get(window_id, (key - 1) * Config::tpi + group_thread) = sum.get(window_id, (key - 1) * Config::tpi + group_thread) + acc;
         } else {
-            sum.get(window_id, (key - 1) * TPI + group_thread) = acc;
+            sum.get(window_id, (key - 1) * Config::tpi + group_thread) = acc;
             if(group_thread == 0)
                 initialized.get(window_id, key - 1) = 1;
         }
@@ -133,7 +131,7 @@ namespace msm {
         const u32 *points,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> mutex,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized,
-        Array2D<Point, Config::n_windows, Config::n_buckets * TPI> sum
+        Array2D<Point, Config::n_windows, Config::n_buckets * Config::tpi> sum
     ) {
         // extern __shared__ u32 smem[];
         // Array2D<u32, WarpPerBlock * THREADS_PER_WARP, PointAffine::N_WORDS * 2 + 4> point_buffer(smem);
@@ -142,9 +140,9 @@ namespace msm {
         const static u32 sign_mask = 1u << Config::s;
         const static u32 window_mask = (1u << Config::window_bits) - 1;
 
-        const u32 gtid = (threadIdx.x + blockIdx.x * blockDim.x) / TPI;
-        const u32 threads = (blockDim.x * gridDim.x) / TPI;
-        const u32 group_thread = threadIdx.x & (TPI-1);
+        const u32 gtid = (threadIdx.x + blockIdx.x * blockDim.x) / Config::tpi;
+        const u32 threads = (blockDim.x * gridDim.x) / Config::tpi;
+        const u32 group_thread = threadIdx.x & (Config::tpi-1);
         const u32 zero_num = *cnt_zero;
 
         u32 work_len = div_ceil(len - zero_num, threads);
@@ -187,10 +185,10 @@ namespace msm {
                     if(group_thread == 0)
                         lock(mutex_ptr);
                     if (initialized.get(window_id, key - 1)) {
-                        sum.get(window_id, (key - 1) * TPI + group_thread) = sum.get(window_id, (key - 1) * TPI + group_thread) + acc;
+                        sum.get(window_id, (key - 1) * Config::tpi + group_thread) = sum.get(window_id, (key - 1) * Config::tpi + group_thread) + acc;
                         // sum.get(window_id, key - 1) = sum.get(window_id, key - 1).add_pre(acc);
                     } else {
-                        sum.get(window_id, (key - 1) * TPI + group_thread) = acc;
+                        sum.get(window_id, (key - 1) * Config::tpi + group_thread) = acc;
                         if(group_thread == 0)
                             initialized.get(window_id, key - 1) = 1;
                     }
@@ -199,7 +197,7 @@ namespace msm {
                     first = false;
                 }
                 else {
-                    sum.get(window_id, (key - 1) * TPI + group_thread) = acc;
+                    sum.get(window_id, (key - 1) * Config::tpi + group_thread) = acc;
                     if(group_thread == 0)
                         initialized.get(window_id, key - 1) = 1;
                 }
@@ -207,7 +205,7 @@ namespace msm {
                 // __syncwarp();
 
                 if (initialized.get(next_window_id, next_key - 1) && (next_key != last_key || next_window_id != last_window_id)) {
-                    acc = sum.get(next_window_id, (next_key - 1) * TPI + group_thread);
+                    acc = sum.get(next_window_id, (next_key - 1) * Config::tpi + group_thread);
                 } else {
                     acc = Point::identity();
                 }
@@ -228,10 +226,10 @@ namespace msm {
         bool different_peer = false;
         bool write_back = false;
         #pragma unroll
-        for (u32 lg_delta = LOG2(TPI); lg_delta < 5; lg_delta++) {
+        for (u32 lg_delta = LOG2(Config::tpi); lg_delta < 5; lg_delta++) {
             // if(blockIdx.x == 0 && threadIdx.x == 0)
             //     printf("lg_delta: %d\n", lg_delta);
-            if (lg_delta != LOG2(TPI) && __all_sync(0xFFFFFFFF, different_peer)) {
+            if (lg_delta != LOG2(Config::tpi) && __all_sync(0xFFFFFFFF, different_peer)) {
                 // all threads have different peer, write back directly
                 if(!write_back) {                
                     sum_back<Config>(acc, window_id, key, mutex, initialized, sum);
@@ -245,8 +243,8 @@ namespace msm {
             Point peer_acc = acc.shuffle_down(delta);
  
             // different_peer = window_id != peer_window_id || key != peer_key;
-            u32 m = 1 << (lg_delta - LOG2(TPI));
-            if ((lane_id / (m * TPI)) % 2 != 0) {
+            u32 m = 1 << (lg_delta - LOG2(Config::tpi));
+            if ((lane_id / (m * Config::tpi)) % 2 != 0) {
                 if (!write_back && (window_id != peer_window_id || key != peer_key)) {
                     // write back by myself
                     sum_back<Config>(acc, window_id, key, mutex, initialized, sum);
@@ -321,22 +319,22 @@ namespace msm {
     template<typename Config, u32 WarpPerBlock, typename Point, typename PointAll>
     __launch_bounds__(256,1)
     __global__ void reduceBuckets(
-        Array2D<Point, Config::n_windows, Config::n_buckets * TPI> buckets_sum, 
+        Array2D<Point, Config::n_windows, Config::n_buckets * Config::tpi> buckets_sum, 
         PointAll *reduceMemory,
         Array2D<unsigned short, Config::n_windows, Config::n_buckets> initialized
     ) {
 
         assert(gridDim.x % Config::n_windows == 0);
 
-        __shared__ u32 smem[WarpPerBlock * TPI][Point::N_WORDS + 4]; // +4 for padding
+        __shared__ u32 smem[WarpPerBlock * Config::tpi][Point::N_WORDS + 4]; // +4 for padding
 
-        const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x / TPI;
+        const u32 total_threads_per_window = gridDim.x / Config::n_windows * blockDim.x / Config::tpi;
         u32 window_id = blockIdx.x / (gridDim.x / Config::n_windows);
 
-        u32 wtid = ((blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x) / TPI;
+        u32 wtid = ((blockIdx.x % (gridDim.x / Config::n_windows)) * blockDim.x + threadIdx.x) / Config::tpi;
           
         const u32 buckets_per_thread = div_ceil(Config::n_buckets, total_threads_per_window);
-        u32 group_thread = threadIdx.x & (TPI-1);
+        u32 group_thread = threadIdx.x & (Config::tpi-1);
 
         Point sum, sum_of_sums;
 
@@ -355,7 +353,7 @@ namespace msm {
         for(u32 i=buckets_per_thread; i > 0; i--) {
             u32 loadIndex = wtid * buckets_per_thread + i;
             if(loadIndex <= Config::n_buckets && initialized.get(window_id, loadIndex - 1)) {
-                sum = sum + buckets_sum.get(window_id, (loadIndex - 1) * TPI + group_thread);
+                sum = sum + buckets_sum.get(window_id, (loadIndex - 1) * Config::tpi + group_thread);
             }
             sum_of_sums = sum_of_sums + sum;
         }
@@ -373,33 +371,33 @@ namespace msm {
         u32 warp_id = threadIdx.x / 32;
         u32 lane_id = threadIdx.x % 32;
 
-        for(int i=16; i>=TPI; i=i/2) {
+        for(int i=16; i>=Config::tpi; i=i/2) {
             sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(i);
         }
 
-        if(lane_id < TPI) {
-            sum_of_sums.store(smem[warp_id * TPI + group_thread]);
+        if(lane_id < Config::tpi) {
+            sum_of_sums.store(smem[warp_id * Config::tpi + group_thread]);
         }
 
         __syncthreads();
 
         if (warp_id > 0) return;
 
-        if (threadIdx.x < WarpPerBlock * TPI) {
+        if (threadIdx.x < WarpPerBlock * Config::tpi) {
             sum_of_sums = Point::load(smem[threadIdx.x]);
         } else {
             sum_of_sums = Point::identity();
         }
 
         // Reduce in warp1
-        if constexpr (TPI <= 16 && WarpPerBlock * TPI > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
-        if constexpr (TPI <= 8 && WarpPerBlock * TPI > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
-        if constexpr (TPI <= 4 && WarpPerBlock * TPI > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
-        if constexpr (TPI <= 2 && WarpPerBlock * TPI > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
-        if constexpr (TPI <= 1 && WarpPerBlock * TPI > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
+        if constexpr (Config::tpi <= 16 && WarpPerBlock * Config::tpi > 16) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(16);
+        if constexpr (Config::tpi <= 8 && WarpPerBlock * Config::tpi > 8) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(8);
+        if constexpr (Config::tpi <= 4 && WarpPerBlock * Config::tpi > 4) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(4);
+        if constexpr (Config::tpi <= 2 && WarpPerBlock * Config::tpi > 2) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(2);
+        if constexpr (Config::tpi <= 1 && WarpPerBlock * Config::tpi > 1) sum_of_sums = sum_of_sums + sum_of_sums.shuffle_down(1);
 
         // Store to global memory    
-        if (threadIdx.x < TPI) {
+        if (threadIdx.x < Config::tpi) {
             for (u32 i = 0; i < window_id * Config::s; i++) {
                 sum_of_sums = sum_of_sums.self_add();
             }
@@ -415,7 +413,7 @@ namespace msm {
 
     template <typename Config, typename Point, typename PointAffine, typename PointAffineAll>
     __global__ void precompute_kernel(u32 *points, u64 len) {
-        u64 gid = (threadIdx.x + blockIdx.x * blockDim.x) / TPI;
+        u64 gid = (threadIdx.x + blockIdx.x * blockDim.x) / Config::tpi;
         if (gid >= len) return;
         Point p = PointAffine::loadAll(points + gid * PointAffineAll::N_WORDS).to_point();
         for (u32 i = 1; i < Config::n_precompute; i++) {
@@ -667,7 +665,7 @@ namespace msm {
         num_sm = deviceProp.multiProcessorCount;
         reduce_blocks = div_ceil(num_sm, Config::n_windows) * Config::n_windows;
         d_buckets_sum_buf = new Point*[batch_per_run];
-        buckets_sum = new Array2D<Point, Config::n_windows, Config::n_buckets * TPI>[batch_per_run];
+        buckets_sum = new Array2D<Point, Config::n_windows, Config::n_buckets * Config::tpi>[batch_per_run];
         initialized_buf = new unsigned short*[batch_per_run];
         initialized = new Array2D<unsigned short, Config::n_windows, Config::n_buckets>[batch_per_run];
         scalers = new u32*[scaler_stages];
@@ -705,8 +703,8 @@ namespace msm {
         PROPAGATE_CUDA_ERROR(cudaSetDevice(device));
         u64 part_len = div_ceil(len, parts);
         for (u32 i = 0; i < batch_per_run; i++) {
-            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_buckets_sum_buf[i], sizeof(Point) * Config::n_windows * Config::n_buckets * TPI, stream));
-            buckets_sum[i] = Array2D<Point, Config::n_windows, Config::n_buckets * TPI>(d_buckets_sum_buf[i]);
+            PROPAGATE_CUDA_ERROR(cudaMallocAsync(&d_buckets_sum_buf[i], sizeof(Point) * Config::n_windows * Config::n_buckets * Config::tpi, stream));
+            buckets_sum[i] = Array2D<Point, Config::n_windows, Config::n_buckets * Config::tpi>(d_buckets_sum_buf[i]);
             PROPAGATE_CUDA_ERROR(cudaMallocAsync(&initialized_buf[i], sizeof(unsigned short) * (Config::n_buckets) * Config::n_windows, stream));
             initialized[i] = Array2D<unsigned short, Config::n_windows, Config::n_buckets>(initialized_buf[i]);
         }
@@ -872,7 +870,7 @@ namespace msm {
 
             PROPAGATE_CUDA_ERROR(cudaMemcpyAsync(points, h_points[0] + offset * PointAffineAll::N_WORDS, sizeof(PointAffineAll) * part_len, cudaMemcpyHostToDevice, stream));
 
-            u32 grid = div_ceil(cur_len, 256) * TPI;
+            u32 grid = div_ceil(cur_len, 256) * Config::tpi;
             u32 block = 256;
             precompute_kernel<Config, Point, PointAffine, PointAffineAll><<<grid, block, 0, stream>>>(points, cur_len);
 

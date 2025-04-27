@@ -4,6 +4,8 @@
 #include "../../mont/src/bls12381_fq.cuh"
 #include "curve_xyzz.cuh"
 
+#define TPI 1
+
 namespace bls12381
 {
   using mont::u32;
@@ -23,10 +25,10 @@ namespace bls12381
 
     template <usize LIMBS>
     static __device__ __host__ __forceinline__
-        mont::Element<Params1, LIMBS>
+        mont::Element<Params1, LIMBS, TPI>
         a(int i, int j)
     {
-        mont::Element<Params1, LIMBS> r;
+        mont::Element<Params1, LIMBS, TPI> r;
         for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
             r.n._limbs[k] = a_d[i+k];
@@ -43,10 +45,10 @@ namespace bls12381
 
     template <usize LIMBS>
     static __device__ __host__ __forceinline__
-        mont::Element<Params1, LIMBS>
+        mont::Element<Params1, LIMBS, TPI>
         b(int i, int j)
     {
-        mont::Element<Params1, LIMBS> r;
+        mont::Element<Params1, LIMBS, TPI> r;
         for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
             r.n._limbs[k] = b_d[i+k];
@@ -59,10 +61,10 @@ namespace bls12381
 
     template <usize LIMBS>
     static __device__ __host__ __forceinline__
-        mont::Element<Params1, LIMBS>
+        mont::Element<Params1, LIMBS, TPI>
         b3(int i, int j)
     {
-        mont::Element<Params1, LIMBS> r;
+        mont::Element<Params1, LIMBS, TPI> r;
         for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
             r.n._limbs[k] = b3_d[i+k];
@@ -81,10 +83,10 @@ namespace bls12381
     }
   };
 
-  using Point = curve::EC<Params>::PointXYZZ<Params1::LIMBS/TPI>;
-  using PointAffine = curve::EC<Params>::PointAffine<Params1::LIMBS/TPI>;
-  using PointAll = curve::EC<Params>::PointXYZZ<Params1::LIMBS>;
-  using PointAffineAll = curve::EC<Params>::PointAffine<Params1::LIMBS>;
+  using Point = curve::EC<Params, TPI>::PointXYZZ<Params1::LIMBS/TPI>;
+  using PointAffine = curve::EC<Params, TPI>::PointAffine<Params1::LIMBS/TPI>;
+  using PointAll = curve::EC<Params, TPI>::PointXYZZ<Params1::LIMBS>;
+  using PointAffineAll = curve::EC<Params, TPI>::PointAffine<Params1::LIMBS>;
 }
 
 #endif

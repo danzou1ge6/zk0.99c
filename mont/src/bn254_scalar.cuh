@@ -2,8 +2,6 @@
 #define BN254_SCALAR_H
 #include "field.cuh"
 
-#define TPI 2
-
 namespace bn254_scalar
 {
   using mont::u32;
@@ -26,7 +24,6 @@ namespace bn254_scalar
     template <class cgbn_env_t>
     static __host__ __device__ __forceinline__ typename cgbn_env_t::cgbn_t m(const cgbn_env_t &env, int i, int j)
     {
-//       assert((j-i) == (LIMBS/TPI));
       typename cgbn_env_t::cgbn_t r;
       for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
@@ -49,7 +46,6 @@ namespace bn254_scalar
       template <class cgbn_env_t>
       static __host__ __device__ __forceinline__ typename cgbn_env_t::cgbn_t mm2(const cgbn_env_t &env, int i, int j)
       {
-        // assert((j-i) == (LIMBS/TPI));
         typename cgbn_env_t::cgbn_t r;
         for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
@@ -72,7 +68,6 @@ namespace bn254_scalar
     template <class cgbn_env_t>
     static __host__ __device__ __forceinline__ typename cgbn_env_t::cgbn_t m_sub2(const cgbn_env_t &env, int i, int j)
     {
-//       assert((j-i) == (LIMBS/TPI));
       typename cgbn_env_t::cgbn_t r;
       for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
@@ -97,7 +92,6 @@ namespace bn254_scalar
     template <class cgbn_env_t>
     static __host__ __device__ __forceinline__ typename cgbn_env_t::cgbn_t r_mod(const cgbn_env_t &env, int i, int j)
     {
-//       assert((j-i) == (LIMBS/TPI));
       typename cgbn_env_t::cgbn_t r;
       for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__
@@ -120,7 +114,6 @@ namespace bn254_scalar
     template <class cgbn_env_t>
     static __host__ __device__ __forceinline__ typename cgbn_env_t::cgbn_t r2_mod(const cgbn_env_t &env, int i, int j)
     {
-//       assert((j-i) == (LIMBS/TPI));
       typename cgbn_env_t::cgbn_t r;
       for(int k=0; k<j-i; ++k) {
 #ifdef __CUDA_ARCH__

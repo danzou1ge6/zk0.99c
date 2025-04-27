@@ -93,7 +93,7 @@ int main(int argc, char *argv[])
   cudaHostRegister((void*)msm.scalers, msm.len * sizeof(Number), cudaHostRegisterDefault);
   cudaHostRegister((void*)msm.points, msm.len * sizeof(PointAffineAll), cudaHostRegisterDefault);
 
-  using Config = msm::MsmConfig<753, WINDOW_S, ALPHA, false>;
+  using Config = msm::MsmConfig<753, WINDOW_S, ALPHA, false, TPI>;
   u32 batch_size = 1;
   u32 batch_per_run;
   u32 parts;

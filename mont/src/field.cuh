@@ -683,13 +683,11 @@ namespace mont
   };
 
   // An element on field defined by `Params`
-  template <class Params, usize LIMBS_>
+  template <class Params, usize LIMBS_, u32 TPI>
   struct Element
   {
     using ParamsType = Params;
     static const usize LIMBS = LIMBS_;
-
-    static const u32 TPI = 4;
 
     typedef cgbn_context_t<TPI>         context_t;
     typedef cgbn_env_t<context_t, LIMBS*TPI*32> env_t;
@@ -1173,9 +1171,9 @@ namespace mont
     return is;
   }
 
-  template <class Params>
+  template <class Params, u32 TPI>
   __forceinline__  std::istream &
-  operator>>(std::istream &is, Element<Params, Params::LIMBS> &e)
+  operator>>(std::istream &is, Element<Params, Params::LIMBS, TPI> &e)
   {
     is >> std::hex;
     char _;
@@ -1197,9 +1195,9 @@ namespace mont
   //   return os;
   // }
 
-  template <class Params>
+  template <class Params, u32 TPI>
   __forceinline__  std::ostream &
-  operator<<(std::ostream &os, const Element<Params, Params::LIMBS> &e)
+  operator<<(std::ostream &os, const Element<Params, Params::LIMBS, TPI> &e)
   {
     // auto n = e.to_number();
     // os << n;
