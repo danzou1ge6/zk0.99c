@@ -859,7 +859,7 @@ namespace mont
         Element
         mul(const Element &rhs) const &
     {
-      Element r;
+      Element r, r1;
 #ifdef __CUDA_ARCH__
       if(TPI == 1){
         device_arith::montgomery_multiplication<LIMBS, MODULO>(r.n._limbs, n._limbs, rhs.n._limbs, Params::m_all(), Params::m_prime);
@@ -870,7 +870,12 @@ namespace mont
         env_t bn_env(bn_context);
 
         cgbn_mont_mul(bn_env, r.n, n, rhs.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS), Params::m_prime);
-        if (cgbn_compare(bn_env, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        int x = cgbn_sub(bn_env, r1.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        if(x < 0)
+          return r;
+        else
+          return r1;
+        // if (cgbn_compare(bn_env, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
       }
 #else
         host_arith::montgomery_multiplication<LIMBS, MODULO>(r.n._limbs, n._limbs, rhs.n._limbs, Params::m_all(), Params::m_prime);
@@ -898,7 +903,7 @@ namespace mont
         Element
         operator+(const Element &rhs) const &
     {
-      Element r;
+      Element r, r1;
 #ifdef __CUDA_ARCH__
       if(TPI == 1){
         device_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::m_all());
@@ -909,7 +914,12 @@ namespace mont
         u32 group_thread = threadIdx.x & (TPI-1);
 
         cgbn_add(bn_env, r.n, n, rhs.n);
-        if (cgbn_compare(bn_env, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        int x = cgbn_sub(bn_env, r1.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+        if(x < 0)
+          return r;
+        else
+          return r1;
+        // if (cgbn_compare(bn_env, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
       }
 #else
       host_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::m_all());
@@ -943,74 +953,74 @@ namespace mont
       return r;
     }
 
-    __device__ __host__ __forceinline__
-        Element
-        sub_modulo_mm2(const Element &rhs) const &
-    {
-      Element r;
-#ifdef __CUDA_ARCH__
-      if(TPI == 1){
-        device_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
-      }
-      else {
-        context_t bn_context;
-        env_t bn_env(bn_context);
-        u32 group_thread = threadIdx.x & (TPI-1);
+//     __device__ __host__ __forceinline__
+//         Element
+//         sub_modulo_mm2(const Element &rhs) const &
+//     {
+//       Element r;
+// #ifdef __CUDA_ARCH__
+//       if(TPI == 1){
+//         device_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
+//       }
+//       else {
+//         context_t bn_context;
+//         env_t bn_env(bn_context);
+//         u32 group_thread = threadIdx.x & (TPI-1);
 
-        cgbn_sub(bn_env, r.n, n, rhs.n);
-        if (cgbn_compare(bn_env, rhs.n, n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
-      }
-#else
-      host_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
-#endif      
-      return r;
-    }
+//         cgbn_sub(bn_env, r.n, n, rhs.n);
+//         if (cgbn_compare(bn_env, rhs.n, n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+//       }
+// #else
+//       host_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
+// #endif      
+//       return r;
+//     }
 
-    __device__ __host__ __forceinline__
-        Element
-        add_modulo_mm2(const Element &rhs) const &
-    {
-      Element r;
-#ifdef __CUDA_ARCH__
-      if(TPI == 1){
-        device_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
-      }
-      else {
-        context_t bn_context;
-        env_t bn_env(bn_context);
-        u32 group_thread = threadIdx.x & (TPI-1);
+//     __device__ __host__ __forceinline__
+//         Element
+//         add_modulo_mm2(const Element &rhs) const &
+//     {
+//       Element r;
+// #ifdef __CUDA_ARCH__
+//       if(TPI == 1){
+//         device_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
+//       }
+//       else {
+//         context_t bn_context;
+//         env_t bn_env(bn_context);
+//         u32 group_thread = threadIdx.x & (TPI-1);
 
-        cgbn_add(bn_env, r.n, n, rhs.n);
-        if (cgbn_compare(bn_env, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
-      }
-#else
-      host_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
-#endif      
-      return r;
-    }
+//         cgbn_add(bn_env, r.n, n, rhs.n);
+//         if (cgbn_compare(bn_env, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS)) >= 0) cgbn_sub(bn_env, r.n, r.n, Params::template mm2(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+//       }
+// #else
+//       host_arith::add_modulo<LIMBS>(r.n._limbs, n._limbs, rhs.n._limbs, Params::mm2_all());
+// #endif      
+//       return r;
+//     }
 
-    __device__ __host__ __forceinline__
-        Element
-        modulo_m() const &
-    {
-      Element r;
-#ifdef __CUDA_ARCH__
-      if(TPI == 1){
-        device_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, Params::m_all(), Params::m_all());
-      }
-      else {
-        context_t bn_context;
-        env_t bn_env(bn_context);
-        u32 group_thread = threadIdx.x & (TPI-1);
+//     __device__ __host__ __forceinline__
+//         Element
+//         modulo_m() const &
+//     {
+//       Element r;
+// #ifdef __CUDA_ARCH__
+//       if(TPI == 1){
+//         device_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, Params::m_all(), Params::m_all());
+//       }
+//       else {
+//         context_t bn_context;
+//         env_t bn_env(bn_context);
+//         u32 group_thread = threadIdx.x & (TPI-1);
 
-        cgbn_sub(bn_env, r.n, n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
-        if (cgbn_compare(bn_env, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS), n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
-      }
-#else
-      host_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, Params::m_all(), Params::m_all());
-#endif      
-      return r;
-    }
+//         cgbn_sub(bn_env, r.n, n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+//         if (cgbn_compare(bn_env, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS), n) > 0) cgbn_add(bn_env, r.n, r.n, Params::template m(bn_env, group_thread*LIMBS, (group_thread+1)*LIMBS));
+//       }
+// #else
+//       host_arith::sub_modulo<LIMBS>(r.n._limbs, n._limbs, Params::m_all(), Params::m_all());
+// #endif      
+//       return r;
+//     }
 
     __host__ __device__ __forceinline__
         Element

@@ -583,9 +583,15 @@ namespace msm {
                 }
 
                 // Do bucket sum
+#if defined(CURVE_MNT4753)
                 block_size = 384;
                 grid_size = num_sm;
                 constexpr u32 warp_num = 12;
+#else
+                block_size = 256;
+                grid_size = num_sm;
+                constexpr u32 warp_num = 8;
+#endif
                 // printf("Stage6\n");
                 // usize shared_size = (PointAffine::N_WORDS * 2 + 4) * warp_num * THREADS_PER_WARP * sizeof(u32);
  

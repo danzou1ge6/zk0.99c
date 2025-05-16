@@ -117,7 +117,7 @@ class dispatch_resolver_t {
       x[index]=addc_cc(x[index], 0);
   
     result=__shfl_sync(sync, x[PAD_LIMB], PAD_THREAD, tpi);
-    x[PAD_LIMB]=(group_thread!=PAD_THREAD) ? x[PAD_LIMB] : 0;
+    // x[PAD_LIMB]=(group_thread!=PAD_THREAD) ? x[PAD_LIMB] : 0;
     return result;
   }
   
@@ -160,9 +160,9 @@ class dispatch_resolver_t {
       x[index]=addc_cc(x[index], c);
   
     result=__shfl_sync(sync, x[PAD_LIMB], PAD_THREAD, tpi);
-    #pragma unroll
-    for(int32_t index=0;index<LIMBS;index++) 
-      x[index]=(group_base<BITS/32-index) ? x[index] : 0;
+    // #pragma unroll
+    // for(int32_t index=0;index<LIMBS;index++) 
+    //   x[index]=(group_base<BITS/32-index) ? x[index] : 0;
     return result & 1;
   }
 

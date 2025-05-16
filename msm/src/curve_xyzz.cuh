@@ -2,10 +2,13 @@
 
 #include "../../mont/src/field.cuh"
 #include <iostream>
-
-// #include "../../mont/src/bn254_scalar.cuh"
-// #include "../../mont/src/bls12381_fq.cuh"
+#if defined(CURVE_BN254)
+#include "../../mont/src/bn254_scalar.cuh"
+#elif defined(CURVE_BLS12381)
+#include "../../mont/src/bls12381_fq.cuh"
+#elif defined(CURVE_MNT4753)
 #include "../../mont/src/mnt4753_fq.cuh"
+#endif
 
 #ifdef __CUDA_ARCH__
 #define likely(x) (__builtin_expect((x), 1))
@@ -19,9 +22,13 @@ namespace curve
 {
     using mont::u32;
     using mont::usize;
-    // using Params1 = bn254_scalar::Params;
-    // using Params1 = bls12381_fq::Params;
+#if defined(CURVE_BN254)
+    using Params1 = bn254_scalar::Params;
+#elif defined(CURVE_BLS12381)
+    using Params1 = bls12381_fq::Params;
+#elif defined(CURVE_MNT4753)
     using Params1 = mnt4753_fq::Params;
+#endif
 
     template <class Params, u32 TPI>
     struct EC {

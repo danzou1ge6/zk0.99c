@@ -45,20 +45,23 @@ template<uint32_t tpi, uint32_t limbs>
 __device__ __forceinline__ int32_t dcompare(const uint32_t sync, const uint32_t a[limbs], const uint32_t b[limbs]) {
   static const uint32_t TPI_ONES=(1ull<<tpi)-1;
   
+  // uint32_t group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1, group=(warp_thread/tpi+1)*tpi-1;
   uint32_t group_thread=threadIdx.x & tpi-1, warp_thread=threadIdx.x & warpSize-1;
   uint32_t a_ballot, b_ballot;
 
-  if(limbs==1) {
-    a_ballot=__ballot_sync(sync, a[0]>=b[0]);
-    b_ballot=__ballot_sync(sync, a[0]<=b[0]);
-  }
-  else {
+  // if(limbs==1) {
+  //   a_ballot=__ballot_sync(sync, a[0]>=b[0]);
+  //   b_ballot=__ballot_sync(sync, a[0]<=b[0]);
+  // }
+  // else {
     chain_t<> chain1;
     #pragma unroll
     for(int32_t index=0;index<limbs;index++)
       chain1.sub(a[index], b[index]);
     a_ballot=chain1.sub(0, 0);
     a_ballot=__ballot_sync(sync, a_ballot==0);
+    // if((a_ballot & (1<<group)) == 0)
+    //   return -1;
     
     chain_t<> chain2;
     #pragma unroll
@@ -66,7 +69,7 @@ __device__ __forceinline__ int32_t dcompare(const uint32_t sync, const uint32_t 
       chain2.sub(b[index], a[index]);
     b_ballot=chain2.sub(0, 0);
     b_ballot=__ballot_sync(sync, b_ballot==0);
-  }
+  // }
   
   if(tpi<warpSize) {
     uint32_t mask=TPI_ONES<<(warp_thread ^ group_thread);
